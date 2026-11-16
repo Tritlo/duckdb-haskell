@@ -144,7 +144,7 @@ startResultStream mode conn result = mask_ do
         release
         pure Nothing
       else do
-        columns <- collectResultColumns types result
+        columns <- withTypeCache conn \cache -> collectResultColumns types (typeCacheCasts cache) result
         case mode of
           MaterializedResult -> do
             gather
@@ -194,7 +194,8 @@ prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> do
   -- Note [User casts and the casts of the library] in
   -- "Database.DuckDB.Simple.Materialize".
   let readVariant vector = withVariantState cache (`prepareVariantReader` vector)
-      readers = FallbackReaders readVariant (prepareGeometryReader (InstanceFactory (typeCacheCasts cache)))
+      readType = logicalTypeToRep (typeCacheCasts cache)
+      readers = FallbackReaders readType readVariant (prepareGeometryReader (InstanceFactory (typeCacheCasts cache)))
   forM columns \StatementStreamColumn{statementStreamColumnIndex, statementStreamColumnTree, statementStreamColumnLabels} -> do
     vector <- output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex))
     let tree =
@@ -202,7 +203,7 @@ prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> do
             Just rep -> pure rep
             Nothing -> do
               -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
-              rep <- withVectorType vector logicalTypeToRep
+              rep <- withVectorType vector readType
               writeIORef statementStreamColumnTree (Just rep)
               pure rep
     prepareVectorReaderWith readers tree (Just statementStreamColumnLabels) vector
@@ -267,15 +268,15 @@ withStreamRows conn query acquire decode = withQueryError query $
       atomicModifyIORef' pending (\case chunk : rest | chunk == expected -> (rest, Just chunk); chunks -> (chunks, Nothing))
         >>= maybe (throwInternalError (Text.pack "internal error: the owned chunks do not match the chunk fold")) pure
 
-collectResultColumns :: TypeScope -> DuckDBV2ResultHandle -> IO [StatementStreamColumn]
-collectResultColumns types result =
+collectResultColumns :: TypeScope -> DuckDBV2FactoryHandle -> DuckDBV2ResultHandle -> IO [StatementStreamColumn]
+collectResultColumns types factory result =
   bracket (output (c_duckdb_v2_result_get_schema result)) (destroy c_duckdb_v2_schema_destroy) \schema -> do
     count <- fromIntegral <$> output (c_duckdb_v2_schema_get_count schema)
     forM [0 .. count - 1] \idx -> alloca \name -> do
       borrowed <- output (c_duckdb_v2_schema_get_field schema (fromIntegral idx) name)
       columnName <- peek name >>= readIdentifier
       -- The result scope owns the copied type. The schema closes after this loop.
-      columnType <- scopedTypeRep types (output (c_duckdb_v2_logical_type_copy borrowed))
+      columnType <- scopedTypeRep types (pure factory) (output (c_duckdb_v2_logical_type_copy borrowed))
       StatementStreamColumn idx columnName columnType <$> newIORef Nothing <*> newIORef IntMap.empty
 
 buildMaterializedRow :: [StatementStreamColumn] -> [Int -> IO FieldValue] -> Int -> IO [Field]

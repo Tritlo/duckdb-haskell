@@ -64,7 +64,7 @@ import Database.DuckDB.Simple.FromField (
   FromField (..),
  )
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), TypeDeclaration, logicalTypeSQL)
-import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory)
+import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory, readFactoryHandle)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
@@ -386,7 +386,7 @@ scalarFunctionInitHandler initState info _context err = runCallback err do
 makeColumnReader :: TypeScope -> ReadFactory -> DuckDBV2ScalarFunctionExecInfoHandle -> Int -> IO (Int -> IO Field)
 makeColumnReader scope factory info columnIndex =
   output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex))
-    >>= prepareArgumentReader scope (Just factory) columnIndex
+    >>= prepareArgumentReader scope (pure (readFactoryHandle factory)) (Just factory) columnIndex
 
 -- | Write the results of one call to the result vector. Set the size, then
 -- flatten, then read the pointers. A row of a result that is not raw borrows

@@ -68,6 +68,7 @@ import Database.DuckDB.Simple.V2.Copy (
   registerCopyFunctionWith,
   registerMultiFileFunctionWith,
  )
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Database.DuckDB.Simple.VariantCodec (destroyVariantState, newVariantState)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
@@ -205,14 +206,14 @@ copyToSide casts readVariant bindFn initFn sinkFn finalizeFn =
           (destroy c_duckdb_v2_column_data_collection_destroy)
           (materializeCollection (callbackReadFactory casts factory) readVariant types)
       transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_batch_set_batch_data info)) rows
-    flush info _ = withTypeScope \scope -> do
+    flush info context = withTypeScope \scope -> withContextFactory context \factory -> do
       (state, types) <- readCopyBinding (c_duckdb_v2_copy_to_flush_get_bind_data info)
       global <- readCallbackState (c_duckdb_v2_copy_to_flush_get_init_data info)
       rows <- readCallbackState (c_duckdb_v2_copy_to_flush_get_batch_data info)
       -- Bind data owns the types through this callback. Copy them into the
       -- flush scope. See Note [Scoped field types] in
       -- "Database.DuckDB.Simple.TypeScope".
-      columnTypes <- mapM (scopedTypeRep scope . output . c_duckdb_v2_logical_type_copy) types
+      columnTypes <- mapM (scopedTypeRep scope (pure factory) . output . c_duckdb_v2_logical_type_copy) types
       let fields = zipWith3 (\index logical value -> Field (Text.pack ("column" <> show index)) index value logical) [0 ..] columnTypes
       sinkFn (CopySinkInfo state global) (map fields rows)
     finalize info _ = do
@@ -278,7 +279,10 @@ materializeCollection readFactory readVariant types collection =
                       if produced == 0
                         then pure (concat (reverse groups))
                         else do
-                          rows <- materializeChunkRows (FallbackReaders readVariant (prepareGeometryReader readFactory)) chunk
+                          rows <-
+                            materializeChunkRows
+                              (FallbackReaders (logicalTypeToRep (readFactoryHandle readFactory)) readVariant (prepareGeometryReader readFactory))
+                              chunk
                           loop (rows : groups)
                 in  loop []
 

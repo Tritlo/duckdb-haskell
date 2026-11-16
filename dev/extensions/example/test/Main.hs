@@ -70,13 +70,25 @@ tests paths =
         checkProcess
           paths
           [ "SELECT 'first_instance', haskell_add_one(41::BIGINT);"
+          , "SELECT 'first_metadata', haskell_argument_type(1::INTEGER);"
+          , "SELECT 'first_alias', haskell_canonical_argument_type(haskell_canonical_bigint(1::INTEGER));"
           , ".open :memory:"
           , loadAgain
           , "SELECT 'second_instance', haskell_add_one(41::BIGINT);"
           , "SELECT 'second_aggregate', haskell_sum(i) FROM range(10000) AS t(i);"
+          , "SELECT 'second_metadata', haskell_argument_type(1::INTEGER);"
+          , "SELECT 'second_alias', haskell_canonical_argument_type(haskell_canonical_bigint(1::INTEGER));"
           , "SELECT 'second_replacement', amount FROM haskell_missing;"
           ]
-          [["first_instance", "42"], ["second_instance", "42"], ["second_aggregate", "49995000"], ["second_replacement", "42"]]
+          [ ["first_instance", "42"]
+          , ["first_metadata", "1"]
+          , ["first_alias", "1"]
+          , ["second_instance", "42"]
+          , ["second_aggregate", "49995000"]
+          , ["second_metadata", "1"]
+          , ["second_alias", "1"]
+          , ["second_replacement", "42"]
+          ]
           []
     , testCase "scalar functions: native batches, NULL, and text" $
         checkProcess
@@ -157,6 +169,18 @@ tests paths =
           , "SELECT 'no_rows', haskell_sum(i) FROM range(0) AS t(i);"
           ]
           [["groups", "1", "10"], ["groups", "2", "12"], ["groups", "3", "0"], ["rows", "49995000"], ["no_rows", "0"]]
+          []
+    , testCase "aggregate argument metadata preserves casts and canonical aliases" $
+        checkProcess
+          paths
+          [ "SELECT 'base', haskell_argument_type(1::INTEGER);"
+          , "SELECT 'alias', haskell_canonical_argument_type(haskell_canonical_bigint(1::INTEGER));"
+          , "SELECT 'chunks', haskell_canonical_argument_type(haskell_canonical_bigint(i)) FROM range(10000) AS t(i);"
+          ]
+          [ ["base", "1"]
+          , ["alias", "1"]
+          , ["chunks", "49995000"]
+          ]
           []
     , testCase "table function" $
         checkProcess

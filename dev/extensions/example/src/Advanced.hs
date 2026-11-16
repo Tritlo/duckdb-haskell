@@ -1,4 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -21,14 +23,18 @@ import Database.DuckDB.Simple (Aggregate (..), Only (..))
 import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.Extension (Extension)
 import qualified Database.DuckDB.Simple.Extension as Extension
-import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
+import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (ConversionFailed), returnError)
+import Database.DuckDB.Simple.Function (FunctionResult)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeId (LogicalTypeIdBigInt), LogicalTypeRep (..))
 import Database.DuckDB.Simple.Registration (Replacement (..), TypeDeclaration (..))
+import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue)
 
 -- | Register an aggregate, a table function, a custom type, a replacement scan,
 -- a COPY format, and a multi-file reader.
 register :: Extension -> IO ()
 register extension = do
   registerSum extension
+  registerArgumentTypes extension
   registerSquares extension
   Extension.registerCustomType extension "haskell_amount" (TypeExpression "BIGINT")
   Extension.registerReplacementScan extension replaceMissing
@@ -46,6 +52,56 @@ registerSum extension =
       { aggregateInitial = 0 :: Int64
       , aggregateStep = \total (Only value) -> addOrThrow "haskell_sum" total value
       , aggregateCombine = addOrThrow "haskell_sum"
+      , aggregateResult = pure
+      }
+
+-- | A BIGINT argument whose decoder reads its native metadata.
+newtype ArgumentType = ArgumentType Int64
+  deriving newtype (ToDuckValue)
+
+instance DuckDBColumnType ArgumentType where
+  duckdbColumnTypeFor _ = "BIGINT"
+
+instance FromField ArgumentType where
+  fromField field = do
+    logical <- fieldType field
+    if logical == LogicalTypeScalar LogicalTypeIdBigInt
+      then ArgumentType <$> fromField field
+      else returnError ConversionFailed field ("unexpected argument type: " <> Text.pack (show logical))
+
+-- | A BIGINT argument with an alias equal to the canonical type name.
+newtype CanonicalArgumentType = CanonicalArgumentType Int64
+  deriving newtype (ToDuckValue, FunctionResult)
+
+instance DuckDBColumnType CanonicalArgumentType where
+  duckdbColumnTypeFor _ = "BIGINT"
+  duckdbTypeDeclaration _ = Right (StructuredType (LogicalTypeAlias "BIGINT" (LogicalTypeScalar LogicalTypeIdBigInt)))
+
+instance FromField CanonicalArgumentType where
+  fromField field = do
+    logical <- fieldType field
+    if logical == LogicalTypeAlias "BIGINT" (LogicalTypeScalar LogicalTypeIdBigInt)
+      then CanonicalArgumentType <$> fromField field
+      else returnError ConversionFailed field ("unexpected canonical argument type: " <> Text.pack (show logical))
+
+-- | Register aggregates that check the type of their update argument vector.
+-- DuckDB casts an INTEGER to the ordinary BIGINT argument after bind. The
+-- scalar constructor supplies values with the canonical BIGINT alias.
+registerArgumentTypes :: Extension -> IO ()
+registerArgumentTypes extension = do
+  Extension.createFunction extension "haskell_canonical_bigint" CanonicalArgumentType
+  Extension.createAggregate extension "haskell_argument_type" $
+    Aggregate
+      { aggregateInitial = 0 :: Int64
+      , aggregateStep = \total (Only (ArgumentType value)) -> addOrThrow "haskell_argument_type" total value
+      , aggregateCombine = addOrThrow "haskell_argument_type"
+      , aggregateResult = pure
+      }
+  Extension.createAggregate extension "haskell_canonical_argument_type" $
+    Aggregate
+      { aggregateInitial = 0 :: Int64
+      , aggregateStep = \total (Only (CanonicalArgumentType value)) -> addOrThrow "haskell_canonical_argument_type" total value
+      , aggregateCombine = addOrThrow "haskell_canonical_argument_type"
       , aggregateResult = pure
       }
 

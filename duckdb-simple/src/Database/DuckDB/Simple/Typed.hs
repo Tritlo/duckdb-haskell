@@ -48,7 +48,7 @@ import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
 import Database.DuckDB.Simple.TypeScope (TypeScope, scopedTypeRep)
 import Database.DuckDB.Simple.Types (Only (..))
-import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToBaseRep, logicalTypeToRep)
 import Database.DuckDB.Simple.V2.Registration (
   ContextCallback,
   TypeDeclaration,
@@ -153,7 +153,7 @@ variantArgumentReason =
 -- error names the registration and the place of the argument.
 checkArgumentType :: Bool -> Text -> Text -> DuckDBV2LogicalTypeHandle -> IO ()
 checkArgumentType readsGeometry name place logical = do
-  rep <- logicalTypeToRep logical
+  rep <- logicalTypeToBaseRep logical
   let refuse reason = throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, place, reason])
   when (containsType isVariant rep) $
     refuse variantArgumentReason
@@ -176,13 +176,14 @@ checkArgumentType readsGeometry name place logical = do
 -- "Database.DuckDB.Simple.Materialize". The reader must not outlive the vector.
 -- Type actions expire when the scope closes. See Note [Scoped field types] in
 -- "Database.DuckDB.Simple.TypeScope".
-prepareArgumentReader :: TypeScope -> Maybe ReadFactory -> Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
-prepareArgumentReader scope casts index vector = do
+prepareArgumentReader :: TypeScope -> IO DuckDBV2FactoryHandle -> Maybe ReadFactory -> Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
+prepareArgumentReader scope acquireFactory casts index vector = do
   let noVariant = rejectRows (throwInvalidArgument (Text.pack "the type of a typed argument cannot be or contain VARIANT"))
       noGeometry = rejectRows (throwInvalidArgument (Text.pack "a typed argument of this callback cannot be or contain GEOMETRY"))
-  readValue <- prepareVectorReader (FallbackReaders noVariant (maybe noGeometry prepareGeometryReader casts)) vector
+      readType logical = acquireFactory >>= \factory -> logicalTypeToRep factory logical
+  readValue <- prepareVectorReader (FallbackReaders readType noVariant (maybe noGeometry prepareGeometryReader casts)) vector
   -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
-  argumentType <- scopedTypeRep scope (output (c_duckdb_v2_vector_get_logical_type vector))
+  argumentType <- scopedTypeRep scope acquireFactory (output (c_duckdb_v2_vector_get_logical_type vector))
   pure \row -> (\value -> Field (argumentName index) index value argumentType) <$> readValue row
 
 -- | Describe the arguments that 'Database.DuckDB.Simple.FromField.FromField' or

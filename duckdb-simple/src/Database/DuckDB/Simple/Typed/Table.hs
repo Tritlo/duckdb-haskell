@@ -25,7 +25,7 @@ import Database.DuckDB.Simple.Callback (attachOpaque, readCallbackState, targetC
 import Database.DuckDB.Simple.Conversion (runConversion)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
-import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory, materializeValue, rejectRows)
+import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory, materializeValue, readFactoryHandle, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.TypeScope (TypeScope, scopedTypeRep, withTypeScope)
@@ -227,7 +227,7 @@ readArguments scope name count factory input = do
       -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
       Field (argumentName index) index
         <$> materializeValue unexpectedVariant factory value
-        <*> scopedTypeRep scope (output (c_duckdb_v2_value_get_logical_type value))
+        <*> scopedTypeRep scope (pure (readFactoryHandle factory)) (output (c_duckdb_v2_value_get_logical_type value))
   converted <- runConversion (parseRow fromRow fields)
   case converted of
     Ok params -> pure params

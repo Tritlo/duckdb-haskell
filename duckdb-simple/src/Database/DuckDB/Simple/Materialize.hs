@@ -69,13 +69,13 @@ import GHC.Records (getField)
 -- | Prepare a reader for the rows of a vector. The reader must not outlive the vector.
 type VectorReader = DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
 
--- | The readers for the two types that have no committed vector layout. A
--- vector view cannot read these types, and a vector does not carry what their
--- readers need. The VARIANT reader needs a helper connection, and the GEOMETRY
--- reader needs a factory. So the caller supplies both readers. See
--- Note [VARIANT decoding] in "Database.DuckDB.Simple.VariantCodec".
+-- | Readers that need state outside the vector. Type metadata needs a factory,
+-- VARIANT needs a helper connection, and GEOMETRY needs a factory for casts.
+-- See Note [Type trees]. For VARIANT, see Note [VARIANT decoding] in
+-- "Database.DuckDB.Simple.VariantCodec".
 data FallbackReaders = FallbackReaders
-  { variantReader :: VectorReader
+  { typeReader :: DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
+  , variantReader :: VectorReader
   , geometryReader :: VectorReader
   }
 
@@ -102,7 +102,10 @@ prepareVariantReader :: VariantCodec.VariantState -> VectorReader
 prepareVariantReader =
   VariantCodec.prepareVariantDecoder
     (materializeValue noVariant . InstanceFactory)
-    (\factory vector -> prepareVectorReader (FallbackReaders noVariant (prepareGeometryReader (InstanceFactory factory))) vector >>= ($ 0))
+    ( \factory vector ->
+        prepareVectorReader (FallbackReaders (logicalTypeToRep factory) noVariant (prepareGeometryReader (InstanceFactory factory))) vector
+          >>= ($ 0)
+    )
   where
     noVariant = rejectRows (throwInternalError (Text.pack "expected a value without VARIANT"))
 
@@ -136,7 +139,8 @@ materializeValue readVariant factory value =
     withOwnedVector (readFactoryHandle factory) logical \vector -> do
       checked (c_duckdb_v2_vector_set_size vector 1)
       checked (c_duckdb_v2_vector_set_value vector 0 value)
-      prepareVectorReader (FallbackReaders readVariant (prepareGeometryReader factory)) vector >>= ($ 0)
+      prepareVectorReader (FallbackReaders (logicalTypeToRep (readFactoryHandle factory)) readVariant (prepareGeometryReader factory)) vector
+        >>= ($ 0)
 
 {- Note [Type trees]
 ~~~~~~~~~~~~~~~~~~~~
@@ -192,7 +196,7 @@ prepareVectorReader readers vector = do
   -- The cache of ENUM labels lives as long as this reader. See Note [ENUM labels].
   labels <- newIORef IntMap.empty
   -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
-  prepareVectorReaderWith readers (withVectorType vector logicalTypeToRep) (Just labels) vector
+  prepareVectorReaderWith readers (withVectorType vector (typeReader readers)) (Just labels) vector
 
 -- | The labels of an ENUM type that readers read, by index. 'Nothing' means
 -- that the type tree holds the labels. See Note [ENUM labels].
@@ -457,7 +461,7 @@ prepareGeometryReader readFactory vector = do
       factory = readFactoryHandle readFactory
       readBlobs target = do
         let notBlob = rejectRows (throwInternalError (Text.pack "expected a BLOB vector"))
-        readBlob <- prepareVectorReader (FallbackReaders notBlob notBlob) target
+        readBlob <- prepareVectorReader (FallbackReaders (logicalTypeToRep factory) notBlob notBlob) target
         forM [0 .. count - 1] readBlob
   blobs <-
     bracket

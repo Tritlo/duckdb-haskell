@@ -18,7 +18,7 @@ import Control.Exception (bracket, bracketOnError, evaluate, finally, throwIO, u
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Database.DuckDB.Simple.Conversion (Conversion, liftConversion)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
-import Database.DuckDB.Simple.Native (DuckDBV2LogicalTypeHandle, SQLError (..), destroyLogicalType, releaseItems)
+import Database.DuckDB.Simple.Native (DuckDBV2FactoryHandle, DuckDBV2LogicalTypeHandle, SQLError (..), destroyLogicalType, releaseItems)
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 
 -- | The owner of native field types for one result or callback.
@@ -32,11 +32,14 @@ serializes acquisition, type reads, and closure. A closed scope rejects each
 read, including a cache hit. A snapshot already returned to the caller is pure
 and remains valid after closure.
 
-Only internal native metadata operations run while the scope is locked. The
-acquisition action must not run user code. logicalTypeToRep reads type ids,
-names, and parameters through native getters. These getters do not run SQL or
-callbacks. A failed or interrupted read leaves the native type available for
-another attempt. Only a successful read fills the snapshot cache.
+Only internal native operations run while the scope is locked. The type and
+factory acquisition actions must not run user code. The factory owner must
+outlive the scope. The factory is acquired only for an uncached read; an
+extension aggregate can initialize its bind-owned helper at that point.
+logicalTypeToRep reads type ids, names, and parameters, and compares temporary
+alias copies. These operations do not run SQL or callbacks. A failed or
+interrupted read leaves the native type available for another attempt. Only
+a successful read fills the snapshot cache.
 
 Closure waits for an active metadata operation, then destroys every native
 type and clears every snapshot cache. Cleanup uses only internal metadata
@@ -70,8 +73,8 @@ withTypeScope = bracket newTypeScope closeTypeScope
 -- | Acquire an owned native type and read its Haskell snapshot on demand.
 -- The acquisition action must use only native metadata operations.
 -- See Note [Scoped field types].
-scopedTypeRep :: TypeScope -> IO DuckDBV2LogicalTypeHandle -> IO (Conversion LogicalTypeRep)
-scopedTypeRep (TypeScope scope) create = modifyMVarMasked scope \case
+scopedTypeRep :: TypeScope -> IO DuckDBV2FactoryHandle -> IO DuckDBV2LogicalTypeHandle -> IO (Conversion LogicalTypeRep)
+scopedTypeRep (TypeScope scope) acquireFactory create = modifyMVarMasked scope \case
   Nothing -> closedTypeScope
   Just entries -> bracketOnError create destroyLogicalType \native -> do
     snapshot <- newIORef Nothing
@@ -81,7 +84,8 @@ scopedTypeRep (TypeScope scope) create = modifyMVarMasked scope \case
             readIORef snapshot >>= \case
               Just logical -> pure logical
               Nothing -> do
-                logical <- logicalTypeToRep native >>= evaluate
+                factory <- acquireFactory
+                logical <- logicalTypeToRep factory native >>= evaluate
                 writeIORef snapshot (Just logical)
                 pure logical
     pure (Just ((native, snapshot) : entries), liftConversion readType)

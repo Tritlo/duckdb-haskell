@@ -73,10 +73,19 @@ no name.
 LogicalTypeAlias holds the alias and the base type. logicalTypeToRep in
 "Database.DuckDB.Simple.V2.LogicalRep" makes it at each depth. The V2 API has
 no function that gives only the alias. duckdb_v2_logical_type_get_name gives
-the alias of a type, or the name of the type id for a type with no alias. Thus
-a name that is not the name of the type id (logicalTypeIdName in
-"Database.DuckDB.Simple.Native") is an alias. logicalTypeFromRep writes the
-alias with duckdb_v2_factory_create_type_with_alias.
+the alias of a type, or the name of the type id for a type with no alias. A
+name that is not the name of the type id (logicalTypeIdName in
+"Database.DuckDB.Simple.Native") is an alias. When the names are equal,
+logicalTypeToRep makes a temporary copy with that alias and compares the two
+native types. DuckDB includes the alias in type equality, so equal types mean
+that the original type has the alias. This also distinguishes INTEGER from
+INTEGER with the alias INTEGER, whose type texts are equal.
+
+logicalTypeToRep borrows a factory for this comparison. The factory can be
+from any instance. The comparison does not parse a type, run SQL, or call user
+code. The temporary type is destroyed before the function returns.
+logicalTypeFromRep writes the alias with
+duckdb_v2_factory_create_type_with_alias.
 
 The base type decides each conversion of the library. Thus the binding of
 parameters, and the readers of a DECIMAL and a GEOMETRY, use
@@ -147,9 +156,10 @@ These rules follow LogicalType::ToString of DuckDB 2.0.0:
 - A field name of a STRUCT and a member name of a UNION are in double quotes,
   with each double quote doubled, when the name needs quotes. A name needs
   quotes when it has a character that is not an ASCII letter, a digit, or an
-  underscore, when it starts with a digit, or when it is a keyword of DuckDB
-  in any case (KeywordHelper::RequiresQuotes). The keywords are the 502 names
-  of duckdb_keywords() of DuckDB 2.0.0.
+  underscore, when it starts with a digit or an underscore followed by a digit,
+  or when it is a keyword of DuckDB in any case (SQLIdentifier::ToString).
+  The keywords are the 502 names of duckdb_keywords() of DuckDB 2.0.0.
+- An empty STRUCT or TUPLE has only its type name, with no parentheses.
 
 A test case compares the text with duckdb_v2_logical_type_to_text for one type of
 each kind and for a STRUCT with each keyword as a field name.
@@ -168,8 +178,12 @@ logicalTypeSQL = \case
   LogicalTypeList element -> logicalTypeSQL element <> "[]"
   LogicalTypeArray element size -> logicalTypeSQL element <> "[" <> number size <> "]"
   LogicalTypeMap key value -> "MAP(" <> logicalTypeSQL key <> ", " <> logicalTypeSQL value <> ")"
-  LogicalTypeStruct fields -> "STRUCT(" <> commas [identifier name <> " " <> logicalTypeSQL rep | StructField name rep <- elems fields] <> ")"
-  LogicalTypeTuple fields -> "TUPLE(" <> commas (map logicalTypeSQL (elems fields)) <> ")"
+  LogicalTypeStruct fields
+    | null (elems fields) -> "STRUCT"
+    | otherwise -> "STRUCT(" <> commas [identifier name <> " " <> logicalTypeSQL rep | StructField name rep <- elems fields] <> ")"
+  LogicalTypeTuple fields
+    | null (elems fields) -> "TUPLE"
+    | otherwise -> "TUPLE(" <> commas (map logicalTypeSQL (elems fields)) <> ")"
   LogicalTypeUnion members -> "UNION(" <> commas [identifier name <> " " <> logicalTypeSQL rep | UnionMemberType name rep <- elems members] <> ")"
   LogicalTypeEnum labels -> "ENUM(" <> commas (map (quoted '\'') (elems labels)) <> ")"
   LogicalTypeAlias name _ -> name
@@ -183,6 +197,7 @@ logicalTypeSQL = \case
       | otherwise = name
     needsQuotes name =
       Text.null name
+        || (Text.isPrefixOf "_" name && maybe False (isDigit . fst) (Text.uncons (Text.drop 1 name)))
         || not (and (zipWith plain [0 :: Int ..] (Text.unpack name)))
         || Set.member (Text.toLower name) duckDBKeywords
     plain index char = isAsciiLower char || isAsciiUpper char || char == '_' || (index > 0 && isDigit char)

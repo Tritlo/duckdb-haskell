@@ -114,7 +114,7 @@ identifierMatches column = normalize column <> " = " <> normalize "?"
 
 -- | Copy a native base-table description using a parsed qualified name.
 describeTable :: Connection -> Text -> IO TableDescription
-describeTable conn name = withConnectionHandle conn $ \handle ->
+describeTable conn name = withConnectionHandle conn $ \handle -> withConnectionFactory handle $ \factory ->
   withText name $ \text -> bracket (output (c_duckdb_v2_qname_parse text)) (destroy c_duckdb_v2_qname_destroy) $ \qname ->
     bracket (output (c_duckdb_v2_connection_describe_table handle qname)) (destroy c_duckdb_v2_table_description_destroy) $ \table -> do
       copiedName <- bracket (output (c_duckdb_v2_table_description_get_qname table)) (destroy c_duckdb_v2_qname_destroy) $ \resolved -> do
@@ -125,7 +125,7 @@ describeTable conn name = withConnectionHandle conn $ \handle ->
       columns <- forM (indices count) $ \index ->
         bracket (output (c_duckdb_v2_table_description_get_column table index)) (destroy c_duckdb_v2_column_description_destroy) $ \column -> do
           columnName <- output (c_duckdb_v2_column_description_get_name column) >>= readIdentifier
-          columnType <- output (c_duckdb_v2_column_description_get_type column) >>= logicalTypeToRep
+          columnType <- output (c_duckdb_v2_column_description_get_type column) >>= logicalTypeToRep factory
           defaultValue <- output (c_duckdb_v2_column_description_has_default column)
           generated <- output (c_duckdb_v2_column_description_has_generated column)
           pure (ColumnDescription columnName columnType (defaultValue /= 0) (generated /= 0))

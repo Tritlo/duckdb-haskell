@@ -32,7 +32,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep, logicalTypeFromRepWith, logicalTypeToRep)
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep, logicalTypeFromRepWith, logicalTypeToBaseRep)
 import Database.DuckDB.Simple.VariantCodec (VariantState, destroyVariantState, newVariantState)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
@@ -210,7 +210,7 @@ emptyPointWKB = BS.pack [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 248, 127, 0, 0, 0, 0, 
 -- ownership of the types. See Note [CRS types of a connection].
 geometryTypes :: [Text] -> [DuckDBV2LogicalTypeHandle] -> IO NativeTypes
 geometryTypes crss owned = do
-  reported <- mapM logicalTypeToRep owned
+  reported <- mapM logicalTypeToBaseRep owned
   when (any (\rep -> case rep of LogicalTypeGeometry (Just _) -> False; _ -> True) reported) $
     throwInvalidArgument "the type query did not preserve a configured GEOMETRY CRS"
   pure

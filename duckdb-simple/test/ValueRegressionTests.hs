@@ -79,7 +79,7 @@ import Database.DuckDB.Simple.Ok (Ok (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
-import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
+import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToBaseRep, logicalTypeToRep)
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
 import Foreign.Ptr (castPtr, nullPtr)
@@ -1593,8 +1593,10 @@ valueRegressionTests =
         (query conn "SELECT typeof(?), ?" (tuple, tuple) :: IO [(Text, TupleValue FieldValue)]) >>= (@?= [("TUPLE", tuple)])
         (query conn "SELECT typeof(?), ?" (struct, struct) :: IO [(Text, StructValue FieldValue)]) >>= (@?= [("STRUCT", struct)])
         withConnectionHandle conn \native -> withConnectionFactory native \factory ->
-          bracket (logicalTypeFromRep factory (tupleValueTypeRep tuple)) destroyLogicalType \logical ->
-            logicalTypeToRep logical >>= (@?= tupleValueTypeRep tuple)
+          forM_ [tupleValueTypeRep tuple, structValueTypeRep struct] \rep ->
+            bracket (logicalTypeFromRep factory rep) destroyLogicalType \logical -> do
+              logicalTypeToRep factory logical >>= (@?= rep)
+              nativeTypeText logical >>= (@?= logicalTypeSQL rep)
         assertInputError (query conn "SELECT ?" (Only tuple{tupleValueFields = listArray (4, 4) [FieldNull]}) :: IO [Only FieldValue])
     , testCase "filtered tuple cursors retain positional fields" $ withConnection ":memory:" \conn -> do
         rows <- Streaming.fold_ conn "SELECT row(i::BIGINT, 'λ') FROM range(6) t(i) WHERE i % 2 = 1" [] $ \values (Only tuple) ->
@@ -1614,11 +1616,11 @@ valueRegressionTests =
         [Only tuple] <- query_ conn "SELECT row('A' COLLATE nocase)" :: IO [Only (TupleValue FieldValue)]
         (query conn "SELECT value[1]='a' FROM (SELECT ? AS value)" (Only tuple) :: IO [Only Bool]) >>= (@?= [Only True])
         withConnectionHandle conn \native -> withConnectionFactory native \factory ->
-          bracket (logicalTypeFromRep factory collated) destroyLogicalType \logical -> logicalTypeToRep logical >>= (@?= collated)
+          bracket (logicalTypeFromRep factory collated) destroyLogicalType \logical -> logicalTypeToRep factory logical >>= (@?= collated)
     , testCase "logical type Unicode names round trip" $ withConnection ":memory:" \conn -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
         let logical = LogicalTypeStruct (listArray (0, 0) [StructField "íslenska_λ_😀" (LogicalTypeScalar LogicalTypeIdBigInt)])
         bracket (logicalTypeFromRep factory logical) destroyLogicalType \handle ->
-          logicalTypeToRep handle >>= (@?= logical)
+          logicalTypeToRep factory handle >>= (@?= logical)
     , testCase "a column type keeps the alias JSON at each depth, and reads as its base type" $ withConnection ":memory:" \conn -> do
         let json = LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)
             varchar = LogicalTypeScalar LogicalTypeIdVarchar
@@ -1682,10 +1684,39 @@ valueRegressionTests =
         withConnectionHandle conn \native -> withConnectionFactory native \factory ->
           forM_ [(json, "JSON"), (money, "money"), (LogicalTypeList json, "JSON[]")] \(logical, text) ->
             bracket (logicalTypeFromRep factory logical) destroyLogicalType \handle -> do
-              logicalTypeToRep handle >>= (@?= logical)
+              logicalTypeToRep factory handle >>= (@?= logical)
               -- The type is the type that DuckDB gives for the type text.
               bracket (R.withText text (R.output . c_duckdb_v2_factory_create_type_from_text factory)) destroyLogicalType \parsed ->
                 R.output (c_duckdb_v2_logical_type_is_equal handle parsed) >>= (@?= 1)
+    , testCase "aliases equal to their type id names retain native type identity" $ withConnection ":memory:" \conn ->
+        withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
+          let integer = LogicalTypeScalar LogicalTypeIdInteger
+              decimal = LogicalTypeDecimal 9 2
+              struct = LogicalTypeStruct (listArray (0, 0) [StructField "a" integer])
+              integerAlias = LogicalTypeAlias "INTEGER" integer
+              decimalAlias = LogicalTypeAlias "DECIMAL" decimal
+              structAlias = LogicalTypeAlias "STRUCT" struct
+              nested =
+                LogicalTypeStruct
+                  (listArray (0, 2) [StructField "i" integerAlias, StructField "d" decimalAlias, StructField "s" structAlias])
+          forM_
+            [ integerAlias
+            , decimalAlias
+            , structAlias
+            , LogicalTypeAlias "STRUCT" (LogicalTypeStruct (listArray (0, -1) []))
+            , LogicalTypeAlias "TUPLE" (LogicalTypeTuple (listArray (0, -1) []))
+            , LogicalTypeAlias "ENUM" (LogicalTypeEnum (listArray (0, 1) ["first", "it's second"]))
+            , LogicalTypeAlias "VARCHAR" (LogicalTypeCollatedVarchar "nocase")
+            , LogicalTypeList integerAlias
+            , nested
+            ]
+            \rep -> bracket (logicalTypeFromRep factory rep) destroyLogicalType \logical -> do
+              copied <- logicalTypeToRep factory logical
+              copied @?= rep
+              logicalTypeToBaseRep logical >>= (@?= withoutAliases rep)
+              nativeTypeText logical >>= (@?= logicalTypeSQL copied)
+              bracket (logicalTypeFromRep factory copied) destroyLogicalType \rebuilt ->
+                R.output (c_duckdb_v2_logical_type_is_equal logical rebuilt) >>= (@?= 1)
     , testCase "logicalTypeSQL gives the type text of DuckDB for each kind, and a read error names that text" $ withConnection ":memory:" \conn -> do
         R.registerCustomType conn "money" (StructuredType (LogicalTypeDecimal 9 2))
         keywords <- map fromOnly <$> (query_ conn "SELECT DISTINCT keyword_name FROM duckdb_keywords() ORDER BY 1" :: IO [Only Text])
@@ -1702,7 +1733,7 @@ valueRegressionTests =
             , "INTEGER[3]"
             , "INTEGER[3][]"
             , "MAP(VARCHAR, BIGINT)"
-            , "STRUCT(a INTEGER, B VARCHAR, \"c d\" BIGINT[], \"x\"\"y\" DOUBLE, \"1a\" INTEGER, \"Name\" INTEGER)"
+            , "STRUCT(a INTEGER, B VARCHAR, \"c d\" BIGINT[], \"x\"\"y\" DOUBLE, \"1a\" INTEGER, \"Name\" INTEGER, \"_1\" INTEGER, _a INTEGER)"
             , "UNION(n INTEGER, s VARCHAR)"
             , "TUPLE(INTEGER, VARCHAR)"
             , "GEOMETRY"
@@ -1718,7 +1749,7 @@ valueRegressionTests =
             \text ->
               bracket (R.withText text (R.output . c_duckdb_v2_factory_create_type_from_text factory)) destroyLogicalType \logical -> do
                 expected <- nativeTypeText logical
-                rep <- logicalTypeToRep logical
+                rep <- logicalTypeToRep factory logical
                 assertEqual (Text.unpack (Text.take 80 text)) expected (logicalTypeSQL rep)
         -- A read error names the column type. Under VARIANT it names the type of
         -- the stored value, in the same text.

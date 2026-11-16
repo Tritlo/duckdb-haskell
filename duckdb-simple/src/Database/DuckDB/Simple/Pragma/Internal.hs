@@ -26,7 +26,7 @@ import Database.DuckDB.Simple.Conversion (runConversion)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal (Connection)
-import Database.DuckDB.Simple.Materialize (callbackReadFactory, materializeValue, rejectRows)
+import Database.DuckDB.Simple.Materialize (callbackReadFactory, materializeValue, readFactoryHandle, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.TypeScope (TypeScope, scopedTypeRep, withTypeScope)
@@ -123,6 +123,8 @@ pragmaArguments scope casts name info context = withContextFactory context \cont
           (output (c_duckdb_v2_function_bind_get_arg_value info index))
           destroyValue
           \native ->
-            (,) <$> materializeValue (noVariant argument) factory native <*> scopedTypeRep scope (output (c_duckdb_v2_value_get_logical_type native))
+            (,)
+              <$> materializeValue (noVariant argument) factory native
+              <*> scopedTypeRep scope (pure (readFactoryHandle factory)) (output (c_duckdb_v2_value_get_logical_type native))
       pure (Field argument (fromIntegral index) value argumentType)
     noVariant argument = rejectRows (throwInvalidArgument (Text.intercalate ": " [name, "parameter " <> argument, variantArgumentReason]))

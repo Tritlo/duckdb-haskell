@@ -477,7 +477,7 @@ tests =
     , testCase "logical type construction preserves CRS" $
         withConnection ":memory:" \conn -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
           let logical = LogicalTypeList (LogicalTypeGeometry (Just "OGC:CRS84"))
-          bracket (logicalTypeFromRep factory logical) destroyLogicalType logicalTypeToRep >>= (@?= logical)
+          bracket (logicalTypeFromRep factory logical) destroyLogicalType (logicalTypeToRep factory) >>= (@?= logical)
     , testGroup
         "folds cross chunk boundaries and preserve CRS"
         [ testCase mode $

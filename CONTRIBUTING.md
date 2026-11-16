@@ -38,8 +38,9 @@ tracked. Run the generator without `--check` after an intentional input change.
 Review the new checksums.
 
 `dev/release.sh` generates and verifies both APIs. It then builds the Hackage
-source archives and documentation of all selected packages, and asks for the
-credentials after that. Stop at the prompt for a rehearsal without an upload.
+source archives and documentation of all selected packages, and asks for
+confirmation before the first upload. Answer `n` for a rehearsal without an
+upload. Cabal manages authentication through its configuration and prompts.
 The source archives contain the generated Haskell modules and C ABI checks.
 Package users do not need Nix, LLVM, or hs-bindgen. The release script uploads
 candidates by default. Use `--publish` for an authorized release.

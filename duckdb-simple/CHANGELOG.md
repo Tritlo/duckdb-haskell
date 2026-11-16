@@ -77,15 +77,16 @@
   `SizedArray n a` declares the ARRAY of size `n`. DuckDB casts a LIST of the
   same length to it with no error.
   `Database.DuckDB.Simple.LogicalRep` exports `TypeDeclaration`.
-- `SizedArray n a` is new, and it replaces the instances of `Array Int a`: a
-  list of exactly `n` values, made with `sizedArray` and read with
-  `sizedArrayToList`. It binds as an ARRAY of size `n`, a typed registration
-  declares that type, also for a field of a record through `ViaDuckDB`, and it
-  reads an ARRAY and a LIST of `n` elements. A value of another length raises
-  `Incompatible`. `Array Int a` has no `ToField`, `FromField`,
-  `DuckDBColumnType`, `ToDuckValue`, or `DuckValue` instance. A list reads an
-  ARRAY of each size, and a `FieldArray` is an ARRAY value that a program
-  builds at run time. See MIGRATION.md.
+- `SizedArray n a` is new, and it replaces the instances of `Array Int a`: an
+  `Array Int a` of exactly `n` values, with the bounds `(0, n - 1)`.
+  `sizedArray` makes one from an `Array` with any bounds, `sizedArrayFromList`
+  from a list, and `sizedArrayToArray` gives the `Array`. It binds as an ARRAY
+  of size `n`, a typed registration declares that type, also for a field of a
+  record through `ViaDuckDB`, and it reads an ARRAY and a LIST of `n` elements.
+  A value of another length raises `Incompatible`. `Array Int a` has no
+  `ToField`, `FromField`, `DuckDBColumnType`, `ToDuckValue`, or `DuckValue`
+  instance. A list reads an ARRAY of each size, and a `FieldArray` is an ARRAY
+  value that a program builds at run time. See MIGRATION.md.
 - An ARRAY parameter with more than 100000 elements, the largest ARRAY of
   DuckDB, raises an `SQLError` of the type `ErrorInputInvalid`, as an empty
   ARRAY parameter does.

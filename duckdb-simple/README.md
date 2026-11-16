@@ -412,9 +412,12 @@ Notes:
    an `SQLError` of the type `ErrorTypeConversion`. [Infinite dates and
    timestamps](#infinite-dates-and-timestamps) gives the full rule.
 8. A DuckDB ARRAY type has a size, for example `BIGINT[3]`. A `SizedArray n a`
-   is the Haskell type of that ARRAY: it holds exactly `n` values.
-   `sizedArray` makes one from a list and gives `Nothing` for a list of
-   another length, and `sizedArrayToList` gives the values. A `SizedArray`
+   is the Haskell type of that ARRAY: an `Array Int a` of exactly `n` values,
+   with the bounds `(0, n - 1)`. `sizedArray` makes one from an `Array` with
+   any bounds and gives `Nothing` for an `Array` of another count. The value
+   has the elements in their order, and `sizedArrayToArray` gives its `Array`.
+   `sizedArrayFromList` makes one from a list, and `toList` gives the values.
+   A `SizedArray`
    binds as an ARRAY of size `n`, and a typed registration declares that type
    in each position, also as a field of a record through `ViaDuckDB`. It reads
    an ARRAY and a LIST of `n` elements, as the cast of DuckDB to the ARRAY
@@ -789,11 +792,12 @@ The library supports fixed-length DuckDB arrays and variable-length lists:
 {-# LANGUAGE DataKinds #-}
 
 import Control.Monad (forM_)
+import Data.Array (listArray)
 
 storeArray :: Connection -> IO [SizedArray 3 Int]
 storeArray conn = do
   _ <- execute_ conn "CREATE TABLE arrays (vals INTEGER[3])"
-  forM_ (sizedArray [1, 2, 3] :: Maybe (SizedArray 3 Int)) \arr ->
+  forM_ (sizedArray (listArray (0, 2) [1, 2, 3]) :: Maybe (SizedArray 3 Int)) \arr ->
     execute conn "INSERT INTO arrays VALUES (?)" (Only arr)
   fmap fromOnly <$> query_ conn "SELECT vals FROM arrays"
 

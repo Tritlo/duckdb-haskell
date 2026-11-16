@@ -446,13 +446,13 @@ The SQL workflow stays the same. These changes can affect your code:
   qualified.
 - `Array Int a` has no `ToField`, `FromField`, `DuckDBColumnType`,
   `ToDuckValue`, or `DuckValue` instance. Use `SizedArray n a` for an ARRAY.
-  Its type gives the size (README note 8 of Types).
-  Use a list for an ARRAY of a size that varies: a list reads an ARRAY
-  of each size, and DuckDB casts a bound list to an ARRAY column of the same
-  length. Use a `FieldArray` for an ARRAY value that the program builds at run
-  time. An empty ARRAY parameter raises `SQLError`, where version 0.3 bound an
-  empty `Array` of scalar elements. Bind an empty list for an empty LIST.
-  Version 0.3 code:
+  Its type gives the size (README note 8 of Types), and `sizedArray` converts
+  an `Array Int a` of `n` elements. Use a list for an ARRAY of a size that
+  varies: a list reads an ARRAY of each size, and DuckDB casts a bound list to
+  an ARRAY column of the same length. Use a `FieldArray` for an ARRAY value
+  that the program builds at run time. An empty ARRAY parameter raises
+  `SQLError`, where version 0.3 bound an empty `Array` of scalar elements. Bind
+  an empty list for an empty LIST. Version 0.3 code:
 
   ```haskell
   _ <- execute conn "INSERT INTO t VALUES (?)" (Only (listArray (0, 2) [1, 2, 3] :: Array Int Int64))
@@ -462,7 +462,7 @@ The SQL workflow stays the same. These changes can affect your code:
   Version 1.0 code, with `DataKinds`:
 
   ```haskell
-  forM_ (sizedArray [1, 2, 3] :: Maybe (SizedArray 3 Int64)) \values ->
+  forM_ (sizedArray (listArray (0, 2) [1, 2, 3]) :: Maybe (SizedArray 3 Int64)) \values ->
     execute conn "INSERT INTO t VALUES (?)" (Only values)
   rows <- query_ conn "SELECT v FROM t" :: IO [Only (SizedArray 3 Int64)]
   ```

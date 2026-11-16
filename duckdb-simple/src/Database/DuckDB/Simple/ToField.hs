@@ -1141,7 +1141,10 @@ instance (KnownNat n, DuckDBColumnType a) => DuckDBColumnType (SizedArray n a) w
 ~~~~~~~~~~~~~~~~~~~~~~
 A DuckDB ARRAY type has a size, for example BIGINT[3]. SizedArray n a is the
 Haskell type of T[n]: its type text is T[n], and a typed registration declares
-the ARRAY type of size n. It is the one Haskell type of an ARRAY. For an ARRAY
+the ARRAY type of size n. A SizedArray holds an Array Int a with the bounds
+(0, n - 1). sizedArray takes an Array with any bounds and stores its elements
+with these bounds, so the derived Eq and Ord compare the elements only. It is
+the one Haskell type of an ARRAY. For an ARRAY
 of a size that varies, a list reads an ARRAY of each size, and DuckDB casts a
 bound list to an ARRAY column of the same length. A FieldArray is an ARRAY
 value that a program builds at run time.

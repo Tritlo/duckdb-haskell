@@ -63,34 +63,6 @@ import GHC.Exts (Ptr (..), Word (W#))
 import GHC.Num.Integer (integerFromAddr)
 import GHC.Records (getField)
 
--- | The largest size of a DuckDB ARRAY: @ArrayType::MAX_ARRAY_SIZE@ in
--- @src/include/duckdb/common/types.hpp@ of DuckDB 2.0.0. See
--- Note [Sized ARRAY bounds].
-maxArraySize :: Int
-maxArraySize = 100000
-
--- | Give the reason why a size has no DuckDB ARRAY type, or 'Nothing' for a
--- valid size. See Note [Sized ARRAY bounds].
-arraySizeReason :: Integer -> Maybe Text
-arraySizeReason size
-  | size < 1 = Just "a DuckDB ARRAY has at least one element"
-  | size > toInteger maxArraySize = Just ("a DuckDB ARRAY has at most " <> Text.pack (show maxArraySize) <> " elements")
-  | otherwise = Nothing
-
-{- Note [Sized ARRAY bounds]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-A DuckDB ARRAY has 1 to maxArraySize elements. Its value API does not check
-this limit, so both logical type construction and value binding must check
-the size. Generic declarations check each ARRAY, also below an alias or a
-container.
-
-SizedArray has a type-level Nat, but LogicalTypeArray stores a Word64. The
-generic logical type saturates a Nat above maxBound Word64 to that bound.
-This is an invalid-size sentinel. It cannot wrap into a valid size, and the
-declaration and native construction checks reject it. No pure conversion
-throws an exception.
--}
-
 {- Note [Vector memory layouts]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Some readers and writers use the memory of a vector directly. These are the

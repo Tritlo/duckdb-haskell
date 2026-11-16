@@ -162,7 +162,7 @@ logicalTypeFromRepWith factory resolve = create
           []
           [output (c_duckdb_v2_value_create_utinyint factory width), output (c_duckdb_v2_value_create_utinyint factory scale)]
       LogicalTypeList element -> construct DuckDBV2LogicalTypeIdList [] [boxed element]
-      -- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Element".
+      -- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Native".
       LogicalTypeArray element size -> do
         maybe (pure ()) throwInvalidArgument (arraySizeReason (toInteger size))
         construct DuckDBV2LogicalTypeIdArray [] [boxed element, output (c_duckdb_v2_value_create_bigint factory (fromIntegral size))]

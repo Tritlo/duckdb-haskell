@@ -360,7 +360,7 @@ instance {-# OVERLAPPABLE #-} (DuckValue a) => DuckValue [a] where
 instance (KnownNat n, DuckValue a) => DuckValue (SizedArray n a) where
   duckToField values = FieldArray (fmap duckToField (sizedArrayToArray values))
 
-  -- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Element".
+  -- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Native".
   duckLogicalType _ = LogicalTypeArray (duckLogicalType (Proxy @a)) (fromInteger (min (natVal (Proxy @n)) (toInteger (maxBound :: Word64))))
   duckFromField = duckFromTypedField (LogicalTypeScalar LogicalTypeIdVariant)
   duckFromTypedField logical value = case value of
@@ -369,16 +369,18 @@ instance (KnownNat n, DuckValue a) => DuckValue (SizedArray n a) where
     other -> unexpectedTypedValue logical "ARRAY" other
     where
       size = natVal (Proxy @n)
-      sized entries = case sizedArrayFromList entries of
-        Nothing -> Left (sizeError (length entries))
-        Just values -> traverse (duckFromTypedField (listElementType logical)) values
-      sizeError count =
+      sized entries
+        | Just reason <- arraySizeReason size = Left (sizeError reason)
+        | otherwise = case sizedArrayFromList entries of
+            Nothing -> Left (sizeError (Text.pack ("the value has " <> show (length entries) <> " elements")))
+            Just values -> traverse (duckFromTypedField (listElementType logical)) values
+      sizeError reason =
         displayException
           ( Incompatible
               (fieldTypeName logical value)
               Text.empty
               (Text.pack ("SizedArray " <> show size))
-              (Text.pack ("the value has " <> show count <> " elements"))
+              reason
           )
 
 -- | Map values encode as DuckDB MAP.
@@ -799,7 +801,7 @@ instance GFromField' 'False (M1 D meta U1) where
 -- of the generic logical type, for diagnostics. The declaration is the
 -- structured generic logical type. Each field type comes from 'DuckValue'.
 -- See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
--- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Element".
+-- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Native".
 instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
   duckdbTypeDeclaration _
     | containsType invalidArray logical =

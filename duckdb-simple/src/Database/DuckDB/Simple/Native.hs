@@ -31,6 +31,8 @@ module Database.DuckDB.Simple.Native (
   logicalTypeIdToNative,
   logicalTypeIdFromNative,
   logicalTypeIdName,
+  arraySizeReason,
+  maxArraySize,
   FileFlag (..),
   fileFlagToNative,
   checked,
@@ -91,6 +93,35 @@ import Foreign.Marshal.Array (withArray)
 import Foreign.Marshal.Utils (fillBytes, with, withMany)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable, peek, poke, sizeOf)
+
+-- | The largest size of a DuckDB ARRAY: @ArrayType::MAX_ARRAY_SIZE@ in
+-- @src/include/duckdb/common/types.hpp@ of DuckDB 2.0.0. See
+-- Note [Sized ARRAY bounds].
+maxArraySize :: Int
+maxArraySize = 100000
+
+-- | Give the reason why a size has no DuckDB ARRAY type, or 'Nothing' for a
+-- valid size. See Note [Sized ARRAY bounds].
+arraySizeReason :: Integer -> Maybe Text
+arraySizeReason size
+  | size < 1 = Just "a DuckDB ARRAY has at least one element"
+  | size > toInteger maxArraySize = Just ("a DuckDB ARRAY has at most " <> Text.pack (show maxArraySize) <> " elements")
+  | otherwise = Nothing
+
+{- Note [Sized ARRAY bounds]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A DuckDB ARRAY has 1 to maxArraySize elements. Its value API does not check
+this limit, so both logical type construction and value binding must check
+the size. Generic declarations check each ARRAY, also below an alias or a
+container. A non-NULL SizedArray read also checks the size before it counts
+or converts the elements.
+
+SizedArray has a type-level Nat, but LogicalTypeArray stores a Word64. The
+generic logical type saturates a Nat above maxBound Word64 to that bound.
+This is an invalid-size sentinel. It cannot wrap into a valid size, and the
+declaration and native construction checks reject it. No pure conversion
+throws an exception.
+-}
 
 -- | SQL text encoded as UTF-8 when it is sent to DuckDB.
 newtype Query = Query {fromQuery :: Text}

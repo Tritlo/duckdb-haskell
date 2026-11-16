@@ -86,6 +86,7 @@ import Database.DuckDB.Simple.LogicalRep (
   logicalTypeSQL,
   mapEntryTypes,
  )
+import Database.DuckDB.Simple.Native (arraySizeReason)
 import Database.DuckDB.Simple.Ok
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import GHC.Float (double2Float, float2Double, int2Double, int2Float, rationalToDouble, rationalToFloat, word2Double)
@@ -951,8 +952,8 @@ elementFields f = map element
     -- The elements share one thunk of the element type.
     elementType = listElementType (fieldType f)
 
--- | Reads ARRAY and LIST, as a list does. A value that does not have exactly
--- @n@ elements raises 'Incompatible'. See Note [Sized arrays] in
+-- | Reads ARRAY and LIST, as a list does. A size @n@ with no DuckDB ARRAY type
+-- or a value with another count raises 'Incompatible'. See Note [Sized arrays] in
 -- "Database.DuckDB.Simple.ToField".
 instance (KnownNat n, Typeable a, FromField a) => FromField (SizedArray n a) where
   fromField f@Field{fieldValue} =
@@ -962,8 +963,10 @@ instance (KnownNat n, Typeable a, FromField a) => FromField (SizedArray n a) whe
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
     where
+      size = natVal (Proxy @n)
       sized elements
-        | toInteger count == natVal (Proxy @n) = SizedArray . listArray (0, count - 1) <$> traverse fromField (elementFields f elements)
+        | Just reason <- arraySizeReason size = returnError Incompatible f reason
+        | toInteger count == size = SizedArray . listArray (0, count - 1) <$> traverse fromField (elementFields f elements)
         | otherwise = returnError Incompatible f (Text.pack ("the value has " <> show count <> " elements"))
         where
           count = length elements

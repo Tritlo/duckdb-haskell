@@ -30,7 +30,7 @@ import qualified Database.DuckDB.Simple.V2.Registration as R
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
-import TestUtils (assertInputErrorContaining)
+import TestUtils (assertInputErrorContaining, assertReusable, assertSqlErrorContaining, assertSqlErrorType)
 
 -- | A record with a field of a sized ARRAY type.
 newtype Sized = Sized {sizedValues :: SizedArray 3 Int64}
@@ -111,12 +111,23 @@ sizedArrayTests =
         query conn "SELECT typeof(?), ?" (nested, nested) >>= (@?= [("INTEGER[3][2]" :: Text.Text, nested)])
         let optional = fromJust (sizedArrayFromList @3 [Just 1, Nothing, Just (3 :: Int64)])
         query conn "SELECT typeof(?), ?" (optional, optional) >>= (@?= [("BIGINT[3]" :: Text.Text, optional)])
-    , testCase "a SizedArray of size 0 raises an input error at the bind and at the declaration" $ withConnection ":memory:" \conn -> do
+    , testCase "a SizedArray of size 0 raises an error at the bind, declaration, and read" $ withConnection ":memory:" \conn -> do
         let empty = fromJust (sizedArrayFromList @0 ([] :: [Int64]))
         assertInputErrorContaining "an empty ARRAY parameter is not possible" (query conn "SELECT ?" (Only empty) :: IO [Only (SizedArray 0 Int64)])
         assertInputErrorContaining "a SizedArray of size 0 has no ARRAY type" $
           createFunction conn "sized_empty" \(_ :: SizedArray 0 Int64) -> (1 :: Int64)
-    , testCase "a SizedArray of the largest ARRAY size binds and declares, and a larger one raises an input error" $ withConnection ":memory:" \conn -> do
+        assertSqlErrorContaining "a DuckDB ARRAY has at least one element" $
+          (query_ conn "SELECT []::BIGINT[]" :: IO [Only (SizedArray 0 Int64)])
+        assertSqlErrorContaining "a DuckDB ARRAY has at least one element" $
+          (query_ conn "SELECT [1]::BIGINT[1]" :: IO [Only (SizedArray 0 Int64)])
+        assertSqlErrorType ErrorQueryBinder $
+          (query_ conn "SELECT []::BIGINT[0]" :: IO [Only Int64])
+        case duckFromTypedField (LogicalTypeList (LogicalTypeScalar LogicalTypeIdBigInt)) (FieldList []) :: Either String (SizedArray 0 Int64) of
+          Left message -> assertBool message ("a DuckDB ARRAY has at least one element" `Text.isInfixOf` Text.pack message)
+          Right _ -> assertFailure "expected the generic size error"
+        (query_ conn "SELECT NULL::BIGINT[]" :: IO [Only (Maybe (SizedArray 0 Int64))]) >>= (@?= [Only Nothing])
+        assertReusable conn
+    , testCase "the largest ARRAY size binds and declares, and a larger size fails at the bind, declaration, and read" $ withConnection ":memory:" \conn -> do
         let largest = fromJust (sizedArrayFromList @100000 (replicate 100000 (1 :: Int8)))
             above = fromJust (sizedArrayFromList @100001 (replicate 100001 (1 :: Int8)))
         query conn "SELECT typeof(?), len(?)" (largest, largest) >>= (@?= [("TINYINT[100000]" :: Text.Text, 100000 :: Int64)])
@@ -128,6 +139,17 @@ sizedArrayTests =
           (query conn "SELECT len(?)" (Only above) :: IO [Only Int64])
         assertInputErrorContaining "a SizedArray of size 100001 has no ARRAY type, because a DuckDB ARRAY has at most 100000 elements" $
           createFunction conn "sized_above" \(v :: SizedArray 100001 Int8) -> length v
+        assertSqlErrorContaining "a DuckDB ARRAY has at most 100000 elements" $
+          (query_ conn "SELECT range(100001)::BIGINT[]" :: IO [Only (SizedArray 100001 Int64)])
+        assertSqlErrorType ErrorQueryBinder $
+          (query_ conn "SELECT range(100001)::BIGINT[100001]" :: IO [Only Int64])
+        assertSqlErrorContaining "a DuckDB ARRAY has at most 100000 elements" $
+          (query_ conn "SELECT {'aboveValues': range(100001)::BIGINT[]}" :: IO [Only Above])
+        assertSqlErrorContaining "a DuckDB ARRAY has at most 100000 elements" $
+          (query_ conn "SELECT {'aboveValues': [1]::BIGINT[1]}" :: IO [Only Above])
+        [Only (Above optional)] <- query_ conn "SELECT {'aboveValues': NULL::BIGINT[]}"
+        optional @?= Nothing
+        assertReusable conn
     , testCase "generic ARRAY bounds are checked for NULL, nested containers, and a Nat above Word64" $ withConnection ":memory:" \conn -> do
         assertInputErrorContaining "a DuckDB ARRAY has at most 100000 elements" (query conn "SELECT ?" (Only (Above Nothing)) :: IO [Only Above])
         assertInputErrorContaining

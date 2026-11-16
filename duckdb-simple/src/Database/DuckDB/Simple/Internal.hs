@@ -110,7 +110,7 @@ import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.Simple.CallbackMark (hasCallbackMark)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
-import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.Native hiding (arraySizeReason, maxArraySize)
 import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, defaultGeometryCRS, destroyTypeCache)
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToBaseRep)
 import Foreign.C.ConstPtr (ConstPtr (..))

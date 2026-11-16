@@ -17,6 +17,7 @@ foreign-library haskell_demo
   other-modules:
     Advanced
     Demo
+    TestCast
 
   c-sources: cbits/entry.c
   default-language: Haskell2010

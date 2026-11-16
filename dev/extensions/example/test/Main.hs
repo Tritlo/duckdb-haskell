@@ -15,7 +15,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import Data.List (intercalate)
 import System.Directory (canonicalizePath, createDirectory, doesFileExist, getTemporaryDirectory, removeFile, removePathForcibly)
-import System.Environment (lookupEnv)
+import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO (Handle, hClose, hPutStr, hSetEncoding, openTempFile, utf8)
@@ -82,6 +82,29 @@ tests paths =
           , "SELECT 'rows_x', count(*), sum(haskell_point_x(('POINT (' || i || ' 0)')::GEOMETRY)) FROM range(5000) AS t(i);"
           ]
           [["point_x", "1.0"], ["null_x", "true"], ["rows_x", "5000", "12497500.0"]]
+          []
+    , testCase "a GEOMETRY argument does not run a registered cast from GEOMETRY to BLOB" $
+        -- The variable makes the extension register a native cast from GEOMETRY to
+        -- BLOB that writes NULL and counts its calls (src/TestCast.hs). The reads
+        -- come first, so the count after them must be 0. The CAST after them shows
+        -- that the cast was registered.
+        checkProcessWith
+          [("DUCKDB_HASKELL_DEMO_GEOMETRY_CAST", "1")]
+          paths
+          [ "SELECT 'point_x', haskell_point_x('POINT (1 2)'::GEOMETRY);"
+          , "SELECT 'null_x', haskell_point_x(NULL::GEOMETRY) IS NULL;"
+          , "SELECT 'rows_x', count(*), sum(haskell_point_x(('POINT (' || i || ' 0)')::GEOMETRY)) FROM range(5000) AS t(i);"
+          , "SELECT 'calls_after_reads', haskell_geometry_cast_calls();"
+          , "SELECT 'cast_blob', CAST('POINT (1 2)'::GEOMETRY AS BLOB) IS NULL;"
+          , "SELECT 'calls_after_cast', haskell_geometry_cast_calls() > 0;"
+          ]
+          [ ["point_x", "1.0"]
+          , ["null_x", "true"]
+          , ["rows_x", "5000", "12497500.0"]
+          , ["calls_after_reads", "0"]
+          , ["cast_blob", "true"]
+          , ["calls_after_cast", "true"]
+          ]
           []
     , testCase "scalar and table macros" $
         checkProcess
@@ -315,9 +338,11 @@ killChild child = do
         unless (isDoesNotExistError exception) (throwIO (exception :: IOException))
 
 -- | Run for at most 60 seconds, then kill the child and retain its diagnostics.
-runCLI :: FilePath -> String -> IO (Bool, ExitCode, BS.ByteString, BS.ByteString)
-runCLI executable sql =
-  withCreateProcess configuration $ \input output errors child -> case (input, output, errors) of
+runCLI :: [(String, String)] -> FilePath -> String -> IO (Bool, ExitCode, BS.ByteString, BS.ByteString)
+runCLI extraEnvironment executable sql = do
+  inherited <- getEnvironment
+  let environment = if null extraEnvironment then Nothing else Just (extraEnvironment <> inherited)
+  withCreateProcess configuration{env = environment} $ \input output errors child -> case (input, output, errors) of
     (Just stdinHandle, Just stdoutHandle, Just stderrHandle) ->
       bracket (startReader stdoutHandle) (killThread . fst) $ \(_, stdoutResult) ->
         bracket (startReader stderrHandle) (killThread . fst) $ \(_, stderrResult) -> do
@@ -350,9 +375,13 @@ runCLI executable sql =
 -- | Load the extension, run the statements, and check the exact CSV rows and
 -- the expected SQL error diagnostics.
 checkProcess :: Paths -> [String] -> [[String]] -> [String] -> Assertion
-checkProcess paths@(Paths executable _) statements expectedRows expectedErrors = do
+checkProcess = checkProcessWith []
+
+-- | 'checkProcess' with more environment variables for the DuckDB CLI.
+checkProcessWith :: [(String, String)] -> Paths -> [String] -> [[String]] -> [String] -> Assertion
+checkProcessWith extraEnvironment paths@(Paths executable _) statements expectedRows expectedErrors = do
   load <- loadStatement paths
-  (timedOut, status, stdoutBytes, stderrBytes) <- runCLI executable (unlines ([".bail off", load] <> statements))
+  (timedOut, status, stdoutBytes, stderrBytes) <- runCLI extraEnvironment executable (unlines ([".bail off", load] <> statements))
   let expectedStatus = if null expectedErrors then ExitSuccess else ExitFailure 1
       actualLines = map (BS8.dropWhileEnd (== '\r')) (BS8.lines stdoutBytes)
       expectedLines = map (BS8.pack . intercalate ",") expectedRows

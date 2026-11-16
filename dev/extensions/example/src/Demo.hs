@@ -18,6 +18,7 @@ import qualified Database.DuckDB.Simple.Extension as Extension
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeId (LogicalTypeIdAny), LogicalTypeRep (LogicalTypeScalar))
 import qualified Database.DuckDB.Simple.Pragma as Pragma
 import qualified Database.DuckDB.Simple.V2.Registration as Registration
+import qualified TestCast
 
 -- | Export the registration action called by the C load entrypoint.
 initialize :: ExtensionEntry
@@ -26,7 +27,8 @@ initialize = Extension.runExtension register
 foreign export ccall "duckdb_haskell_demo_register" initialize :: ExtensionEntry
 
 -- | Register typed callbacks, macros, a PRAGMA, a custom option, and a log sink.
--- Then register the other kinds of SQL objects in "Advanced".
+-- Then register the other kinds of SQL objects in "Advanced", and the cast that
+-- only the test suite turns on in "TestCast".
 register :: Extension -> IO ()
 register extension = do
   logEntries <- newIORef (0 :: Int64)
@@ -51,6 +53,7 @@ register extension = do
   Extension.registerLogSink extension "haskell_sink" (\_ -> atomicModifyIORef' logEntries (\count -> (count + 1, ()))) (pure ())
   Extension.createFunction extension "haskell_log_entries" (readIORef logEntries)
   Advanced.register extension
+  TestCast.register extension
 
 -- | The X coordinate of a point. NULL and each other shape give NULL.
 pointX :: Maybe G.Geometry -> Maybe Double

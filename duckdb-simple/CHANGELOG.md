@@ -141,6 +141,12 @@
   `logicalTypeFromRep`, `logicalTypeFromRepWith`, and `destroyLogicalType`.
 - Keep statements alive while reading cached schemas for column metadata and
   parameter types. `Internal.withStatementSchemas` scopes these borrowed handles.
+- Release acquired native handles if evaluation of a lazy input list fails.
+- Mask native parameter cleanup so cancellation cannot skip releases.
+- Read LIST, ARRAY, and MAP elements with a constant stack. Keep native reads in
+  element order.
+- Read VARIANT metadata from its result vector. Construct VARIANT types by name.
+  Read singleton INT64 and UINT64 cast payloads with native getters.
 - `Database.DuckDB.Simple.Internal` changes. It re-exports the native helper
   layer. It no longer exports `toSQLError`, `fetchPrepareError`,
   `fetchResultError`, `throwResultError`, `mkExecuteError`,

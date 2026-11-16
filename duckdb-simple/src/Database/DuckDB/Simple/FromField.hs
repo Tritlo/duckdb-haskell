@@ -452,9 +452,9 @@ nothing until the error renders. These pairs are:
   VARIANT, or keys out of ascending order), a FieldEnum, a FieldMap, a
   FieldUnion, or a GEOMETRY with a CRS, at any depth. The cast to VARIANT gives
   another value. Write c::VARIANT. A VARIANT column decodes only to values of
-  the VARIANT shape. FromField does not know the SQL type of a column, so the
-  one known difference stays: a JSON column reads as its text, as a VARCHAR
-  column does, where c::VARIANT gives the parsed value. The bind side
+  the VARIANT shape. A JSON type at any depth raises Incompatible, because
+  DuckDB parses its text when it casts to VARIANT. Write c::VARIANT for the
+  parsed value. The bind side
   (variantPayloadType in "Database.DuckDB.Simple.ToField") accepts more: it
   binds a FieldArray and a FieldTuple as a VARIANT list, and the fields of each
   FieldStruct as VARIANT values.

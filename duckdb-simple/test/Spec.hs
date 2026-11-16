@@ -87,6 +87,7 @@ import qualified GeometryRegressionTests
 import Numeric.Natural (Natural)
 import Properties (roundTripTests)
 import RegistrationTests (registrationTests)
+import SizedArrayTests (sizedArrayTests)
 import qualified SqlFeatureTests
 import StreamingTests (nativeStreamingTests)
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
@@ -280,6 +281,7 @@ tests =
     , userCastTests
     , geometryArgumentTests
     , valueRegressionTests
+    , sizedArrayTests
     , timeTests
     , SqlFeatureTests.tests
     , withConnectionTests

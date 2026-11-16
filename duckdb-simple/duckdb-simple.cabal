@@ -147,6 +147,7 @@ test-suite duckdb-simple-test
     GeometryRegressionTests
     Properties
     RegistrationTests
+    SizedArrayTests
     SqlFeatureTests
     StreamingTests
     TestUtils

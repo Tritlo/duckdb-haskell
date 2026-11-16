@@ -948,6 +948,21 @@ instance (Typeable a, FromField a) => FromField (Array Int a) where
         let idxText = Text.pack (show idx)
         in  fieldName f <> Text.pack "[" <> idxText <> Text.pack "]"
 
+-- | Reads ARRAY and LIST, as a list does. A value that does not have exactly
+-- @n@ elements raises 'Incompatible'. See Note [Sized arrays] in
+-- "Database.DuckDB.Simple.ToField".
+instance (KnownNat n, Typeable a, FromField a) => FromField (SizedArray n a) where
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldList entries -> sized (zip [0 ..] entries)
+      FieldArray arr -> sized (assocs arr)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
+    where
+      sized elements
+        | toInteger (length elements) == natVal (Proxy @n) = SizedArray <$> traverse fromField (elementFields f elements)
+        | otherwise = returnError Incompatible f (Text.pack ("the value has " <> show (length elements) <> " elements"))
+
 -- | Reads MAP. Each key reads as @k@, and each value reads as @v@.
 instance (Ord k, Typeable k, Typeable v, FromField k, FromField v) => FromField (Map k v) where
   fromField f@Field{fieldValue} =

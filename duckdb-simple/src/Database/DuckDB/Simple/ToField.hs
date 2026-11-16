@@ -63,7 +63,9 @@ import Database.DuckDB.Simple.FromField (
   DecimalValue (..),
   FieldValue (..),
   IntervalValue (..),
+  SizedArray,
   TimeWithZone (..),
+  sizedArrayToList,
  )
 import Database.DuckDB.Simple.Geometry (RawGeometry (..))
 import Database.DuckDB.Simple.Internal (
@@ -104,6 +106,7 @@ import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek)
 import GHC.Exts (Ptr (..))
 import GHC.Num.Integer (integerLog2, integerToAddr)
+import GHC.TypeLits (KnownNat, natVal)
 import Numeric.Natural (Natural)
 
 -- | Represents a named parameter binding using the @:=@ operator.
@@ -862,6 +865,13 @@ instance (DuckDBColumnType a, ToField a) => ToField (Array Int a) where
         let childTarget = collectionChildType target
         arrayDuckValue builder childTarget (bindElement builder childTarget) arr
 
+-- | Bind a 'SizedArray' as an ARRAY of size @n@, with the element rules of an
+-- 'Array'. See Note [Sized arrays].
+instance (DuckDBColumnType a, ToField a) => ToField (SizedArray n a) where
+  toField values = toField (listArray (0, length list - 1) list :: Array Int a)
+    where
+      list = sizedArrayToList values
+
 -- | Bind a list as a LIST value with the element rules of an 'Array'. An empty
 -- list binds as an empty LIST of the element type. When the element type has
 -- no type name, an empty list takes the element type of the parameter, or the
@@ -1142,6 +1152,48 @@ instance (DuckDBColumnType a) => DuckDBColumnType (Array Int a) where
       ( "an Array has no size, so its ARRAY type has no declaration. Use a newtype of the Array with a DuckDBColumnType"
           <> " instance that gives the size, for example BIGINT[3], or a list, which is a LIST."
       )
+
+-- | The type text is @T[n]@, and the declaration is the ARRAY type of size @n@.
+-- See Note [Sized arrays].
+instance (KnownNat n, DuckDBColumnType a) => DuckDBColumnType (SizedArray n a) where
+  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a) <> Text.pack ("[" <> show (natVal (Proxy @n)) <> "]")
+  duckdbTypeDeclaration _
+    | size == 0 = Left "a SizedArray of size 0 has no ARRAY type, because a DuckDB ARRAY has at least one element"
+    | otherwise = arrayDeclaration size <$> duckdbTypeDeclaration (Proxy @a)
+    where
+      size = natVal (Proxy @n)
+
+{- Note [Sized arrays]
+~~~~~~~~~~~~~~~~~~~~~~
+A DuckDB ARRAY type has a size, for example BIGINT[3]. SizedArray n a is the Haskell
+type of T[n]: its type text is T[n], and a typed registration declares the
+ARRAY type of size n. An Array has no size in its type, so it binds an ARRAY of
+its own length, reads an ARRAY of each length, and has no declaration.
+
+- Binds. A SizedArray binds as an Array of its values, with the element rules of an
+  Array.
+- Reads. A SizedArray reads an ARRAY and a LIST, as a list does, and the value must
+  have n elements. The cast of DuckDB from a LIST or an ARRAY to T[n] gives the
+  same value, or an error for another length, so this is a read by the rule of
+  Note [Reads of another SQL type] in "Database.DuckDB.Simple.FromField". The
+  check uses the length of the decoded value and not the column type, so it is
+  the same for a LIST column, an ARRAY column of another size, and a VARIANT.
+  A value of another length raises Incompatible, which names the column type
+  and the SizedArray type.
+- Size 0. DuckDB has no ARRAY of size 0. The declaration of a SizedArray of size 0
+  raises an error at registration, and the bind raises the error of an empty
+  Array.
+- Largest size. DuckDB declares an ARRAY type of size up to 100000. The
+  declaration of a larger SizedArray raises the Binder Error of DuckDB ("ARRAY type
+  size must be at most 100000") at registration. In DuckDB 2.0.0 the value
+  API does not check the size, so a parameter of a larger SizedArray binds.
+-}
+
+-- | Declare an ARRAY of a size with the declaration of its element type. See
+-- Note [Sized arrays].
+arrayDeclaration :: Integer -> TypeDeclaration -> TypeDeclaration
+arrayDeclaration size (TypeExpression element) = TypeExpression (element <> Text.pack ("[" <> show size <> "]"))
+arrayDeclaration size (StructuredType element) = StructuredType (LogicalTypeArray element (fromInteger size))
 
 -- | See Note [Type declarations].
 instance (DuckDBColumnType k, DuckDBColumnType v) => DuckDBColumnType (Map.Map k v) where

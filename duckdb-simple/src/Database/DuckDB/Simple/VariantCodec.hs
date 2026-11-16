@@ -214,7 +214,11 @@ decodeValues plain plainVector state values = do
       target <- scalarType tag
       case rows of
         [(index, value)] -> withCast state value target \cast -> do
-          decoded <- plain casts cast
+          -- The cast fixes the type. Read these payloads without an owned vector.
+          decoded <- case tag of
+            "INT64" -> FieldInt64 <$> output (c_duckdb_v2_value_get_bigint cast)
+            "UINT64" -> FieldWord64 <$> output (c_duckdb_v2_value_get_ubigint cast)
+            _ -> plain casts cast
           pure [(index, ScalarNode decoded)]
         _ ->
           withVariantList state (map snd rows) \list ->

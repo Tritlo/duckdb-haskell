@@ -144,8 +144,7 @@
   `fetchResultError`, `throwResultError`, `mkExecuteError`,
   `throwRegistrationError`, `withClientContext`, and `destroyClientContext`.
   `Connection` adds `connectionInstance`, `connectionLock`,
-  `connectionWindow`, `connectionLockBound`, `connectionStripes`, and
-  `connectionArrowBatch`. `ConnectionOpen` has no
+  `connectionWindow`, and `connectionOptions`. `ConnectionOpen` has no
   `connectionDatabase` and adds `connectionStatements` and
   `connectionReleaseParent`. `Statement` adds `statementArrowResult`,
   `statementBindings`, `statementParameterNames`, and

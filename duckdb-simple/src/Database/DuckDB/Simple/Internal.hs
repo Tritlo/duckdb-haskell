@@ -18,7 +18,11 @@ module Database.DuckDB.Simple.Internal (
   Instance (..),
   InstanceState (..),
   Connection (..),
+  ConnectionOptions (..),
+  defaultConnectionOptions,
+  defaultCallbackLockWait,
   defaultAggregateStripes,
+  defaultArrowBatchSize,
   ConnectionState (..),
   Statement (..),
   StatementState (..),
@@ -106,7 +110,7 @@ import Database.DuckDB.Simple.CallbackMark (hasCallbackMark)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, destroyTypeCache)
+import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, defaultGeometryCRS, destroyTypeCache)
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (CString)
@@ -238,26 +242,100 @@ data Connection = Connection
   , connectionLock :: MVar ()
   -- ^ Held while a native result of this connection runs, and for each fetch
   -- of an explicit stream. A DuckDB callback waits for it at most
-  -- 'connectionLockBound'. See 'withConnectionLock' and Note [Connection lock].
+  -- 'connectionCallbackLockWait'. See 'withConnectionLock' and
+  -- Note [Connection lock].
   , connectionWindow :: IORef (Maybe ThreadId)
   -- ^ The helper thread that runs the current result. See 'withResultWindow'
   -- and Note [Result window].
-  , connectionLockBound :: Maybe Int
-  -- ^ The longest wait in microseconds of a DuckDB callback for
-  -- 'connectionLock'. 'Nothing' sets no bound.
-  , connectionStripes :: Int
-  -- ^ The number of stripes in the state table of a typed aggregate function.
-  -- See Note [State table stripes] in "Database.DuckDB.Simple.Typed.Aggregate".
-  , connectionArrowBatch :: Int
-  -- ^ The largest number of rows in one Arrow array of a result. 0 means
-  -- 131072. See 'executePreparedArrowResult'.
+  , connectionOptions :: ConnectionOptions
+  -- ^ The checked options of the open. 'withConnectionLock' reads
+  -- 'connectionCallbackLockWait', a typed aggregate reads
+  -- 'connectionAggregateStripes', and 'executePreparedArrowResult' reads
+  -- 'connectionArrowBatchSize'.
   }
 
--- | The default of @connectionAggregateStripes@ in @ConnectionOptions@: 64
--- stripes. See Note [State table stripes] in
--- "Database.DuckDB.Simple.Typed.Aggregate".
+-- | Settings that duckdb-simple applies when it opens a connection.
+data ConnectionOptions = ConnectionOptions
+  { connectionConfig :: [(Text, Text)]
+  -- ^ DuckDB configuration flags. 'Database.DuckDB.Simple.openWithOptions'
+  --     applies them when it creates the instance, as
+  --     'Database.DuckDB.Simple.openWithConfig' does.
+  --     'Database.DuckDB.Simple.connectWithOptions' applies them to a new
+  --     connection of a running instance, so options that DuckDB accepts only
+  --     at startup fail there. 'Database.DuckDB.Simple.connectWithOptions'
+  --     writes each option with its default scope. An option whose default
+  --     scope is GLOBAL thus changes the instance. This change applies to all
+  --     connections of the instance.
+  , connectionGeometryCRS :: [Text]
+  -- ^ CRS definitions to preserve in composite parameters. DuckDB constructs
+  --     a recognized name, such as @OGC:CRS84@, and a complete definition
+  --     directly. For each other name, the connection reads a SQL-derived type
+  --     when it opens, and a name that DuckDB drops fails the open. The
+  --     connection keeps each type, and a bind copies it. The default is
+  --     @OGC:CRS84@. Include custom CRS names in this list. A typed
+  --     registration does not use this list. A declared GEOMETRY type with a
+  --     custom CRS name raises the DuckDB error "unrecognized coordinate
+  --     system" at registration: for an argument, a result, the source or the
+  --     target of a cast, a pragma parameter, and a column of a table function.
+  --     A plain GEOMETRY argument reads a value with a custom CRS without the
+  --     CRS, because DuckDB casts the value to the declared type. A query
+  --     column with a custom CRS reads with its CRS.
+  , connectionCallbackLockWait :: Maybe Int
+  -- ^ The longest time in microseconds that a DuckDB callback waits for the
+  --     lock of this connection. A statement of a callback on the connection
+  --     that runs the callback waits for this lock. After the bound, the
+  --     statement raises an 'SQLError' of the type 'ErrorResourceInUse'. For
+  --     most callbacks, the outer statement then fails. The bound applies
+  --     also to a callback that uses this connection while another statement
+  --     runs on it. 'Nothing' sets no bound. The default is
+  --     'defaultCallbackLockWait'. The open rejects a negative value.
+  --     "Database.DuckDB.Simple.Function" gives the cases that the bound does
+  --     not cover.
+  , connectionAggregateStripes :: Int
+  -- ^ The number of stripes in the state table of each typed aggregate
+  --     function that 'Database.DuckDB.Simple.createAggregate' registers
+  --     through this connection. The registration keeps the number, also when
+  --     another connection calls the aggregate. The table holds the live
+  --     aggregate states. Two DuckDB threads that change the table wait for
+  --     each other only when they change the same stripe. No result depends on
+  --     the number. The default is 'defaultAggregateStripes'. The open rejects
+  --     a number that is not positive. The library sets no upper limit. Each
+  --     bind of each call site (a call of the aggregate in a query) makes one
+  --     IORef for each stripe.
+  , connectionArrowBatchSize :: Int
+  -- ^ The largest number of rows in one Arrow array of an Arrow fold on this
+  --     connection ("Database.DuckDB.Simple.Arrow" and
+  --     "Database.DuckDB.Simple.Streaming"). DuckDB can give shorter arrays. As
+  --     in DuckDB, 0 means 131072. The default is 'defaultArrowBatchSize'. The
+  --     open rejects a negative value.
+  }
+  deriving (Eq, Show)
+
+-- | No configuration flags, the CRS @OGC:CRS84@, the default bound for a
+-- callback that waits for the connection lock, the default number of
+-- aggregate stripes, and the default Arrow batch size.
+defaultConnectionOptions :: ConnectionOptions
+defaultConnectionOptions =
+  ConnectionOptions
+    { connectionConfig = []
+    , connectionGeometryCRS = defaultGeometryCRS
+    , connectionCallbackLockWait = Just defaultCallbackLockWait
+    , connectionAggregateStripes = defaultAggregateStripes
+    , connectionArrowBatchSize = defaultArrowBatchSize
+    }
+
+-- | The default of 'connectionCallbackLockWait': 10 seconds, in microseconds.
+defaultCallbackLockWait :: Int
+defaultCallbackLockWait = 10000000
+
+-- | The default of 'connectionAggregateStripes': 64 stripes. See
+-- Note [State table stripes] in "Database.DuckDB.Simple.Typed.Aggregate".
 defaultAggregateStripes :: Int
 defaultAggregateStripes = 64
+
+-- | The default of 'connectionArrowBatchSize': 2048 rows.
+defaultArrowBatchSize :: Int
+defaultArrowBatchSize = 2048
 
 -- | Internal connection state.
 data ConnectionState
@@ -473,23 +551,23 @@ closeInstanceState ref = mask_ $ joinCleanup ref \case
   InstanceClosed -> (InstanceClosed, pure ())
   InstanceOpen raw children -> (InstanceClosed, cleanupAll [closeChildren children, destroy c_duckdb_v2_instance_destroy raw])
 
--- | Create a connection with its CRS names, the bound of a callback that waits
--- for its lock, the number of stripes of a typed aggregate, and the Arrow batch
--- size. The final action releases private convenience parents.
-createConnection :: Instance -> [Text] -> Maybe Int -> Int -> Int -> IO () -> IO Connection
-createConnection parent@Instance{instanceState} crss callbackLockWait stripes arrowBatch releaseParent = keepAlive parent $ mask_ do
+-- | Create a connection with checked options. The connection reads its CRS
+-- names from 'connectionGeometryCRS', and it keeps the options. The final
+-- action releases private convenience parents.
+createConnection :: Instance -> ConnectionOptions -> IO () -> IO Connection
+createConnection parent@Instance{instanceState} options releaseParent = keepAlive parent $ mask_ do
   (rawInstance, children) <-
     readIORef instanceState >>= \case
       InstanceClosed -> throwIO (SQLError "duckdb-simple: instance is closed" Nothing Nothing Nothing)
       InstanceOpen raw children -> pure (raw, children)
   raw <- output (c_duckdb_v2_connection_create rawInstance)
   -- See Note [CRS types of a connection] in "Database.DuckDB.Simple.TypeCache".
-  cache <- createTypeCache rawInstance raw crss `onException` destroy c_duckdb_v2_connection_destroy raw
+  cache <- createTypeCache rawInstance raw (connectionGeometryCRS options) `onException` destroy c_duckdb_v2_connection_destroy raw
   flip onException (destroyTypeCache cache `finally` destroy c_duckdb_v2_connection_destroy raw) do
     statements <- newChildren
     ref <- newIORef (ConnectionOpen raw cache statements releaseParent)
     registerChild forkFinalizer (\case ConnectionOpen{} -> True; _ -> False) children ref (keepAlive parent (closeConnectionState False ref))
-    Connection ref parent <$> newMVar () <*> newIORef Nothing <*> pure callbackLockWait <*> pure stripes <*> pure arrowBatch
+    Connection ref parent <$> newMVar () <*> newIORef Nothing <*> pure options
 
 -- | Close a connection and every prepared statement that belongs to it.
 closeConnection :: Connection -> IO ()
@@ -737,7 +815,7 @@ Note [Callback marks] in "Database.DuckDB.Simple.CallbackMark".
 -- | Run an action with the lock of the connection. The lock is not reentrant.
 -- Do not run a function of the user, such as the step of a fold, in the
 -- action. A thread with a callback mark waits for the lock at most the bound
--- of the connection ('connectionLockBound'), and then raises an 'SQLError' of
+-- of the connection ('connectionCallbackLockWait'), and then raises an 'SQLError' of
 -- the type 'ErrorResourceInUse'. Each other thread waits without a bound. See
 -- Note [Connection lock], and Note [Callback marks] in
 -- "Database.DuckDB.Simple.CallbackMark".
@@ -746,8 +824,8 @@ Note [Callback marks] in "Database.DuckDB.Simple.CallbackMark".
 -- while 'takeMVar' blocks, and then the take has not occurred. After the take,
 -- the same handlers as in 'withMVar' put the lock back.
 withConnectionLock :: Connection -> IO a -> IO a
-withConnectionLock Connection{connectionLock, connectionLockBound} action = do
-  bound <- case connectionLockBound of
+withConnectionLock Connection{connectionLock, connectionOptions} action = do
+  bound <- case connectionCallbackLockWait connectionOptions of
     Nothing -> pure Nothing
     Just micros -> do
       inside <- hasCallbackMark
@@ -983,14 +1061,14 @@ withBoundValues stmt action = do
     action (ConstPtr namesPtr) (ConstPtr valuesPtr) (fromIntegral (length bindings))
 
 -- | Execute a prepared Arrow result and register it for statement cleanup.
--- Each array of the result has at most 'connectionArrowBatch' rows of the
+-- Each array of the result has at most 'connectionArrowBatchSize' rows of the
 -- connection. See Note [Interruptible native calls].
 executePreparedArrowResult :: Statement -> IO DuckDBV2ArrowResultHandle
 executePreparedArrowResult stmt = withStatementHandle stmt \handle -> mask_ $ alloca \slot -> do
   poke slot nullHandle
   flip onException (peek slot >>= destroy c_duckdb_v2_arrow_result_destroy) $
     withBoundValues stmt \names values count -> do
-      let batch = fromIntegral (connectionArrowBatch (statementConnection stmt))
+      let batch = fromIntegral (connectionArrowBatchSize (connectionOptions (statementConnection stmt)))
       runInterruptibleQuery (statementConnection stmt) $
         checked (c_duckdb_v2_prepared_statement_execute_arrow handle names values count batch slot)
       result <- peek slot

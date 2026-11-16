@@ -32,7 +32,7 @@ import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions, 
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (FieldNull))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
 import Database.DuckDB.Simple.Function.Internal (FunctionResult (..), ScalarValue, prepareResultWriter)
-import Database.DuckDB.Simple.Internal (Connection (..), defaultAggregateStripes)
+import Database.DuckDB.Simple.Internal (Connection (..), ConnectionOptions (..), defaultAggregateStripes)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..))
@@ -233,7 +233,7 @@ createAggregateOn target name aggregate = do
   -- An unevaluated count keeps the target, and thus the connection, reachable
   -- from the callbacks.
   stripes <- evaluate case target of
-    ConnectionTarget connection -> connectionStripes connection
+    ConnectionTarget connection -> connectionAggregateStripes (connectionOptions connection)
     ExtensionTarget{} -> defaultAggregateStripes
   let parameters =
         [ (parameter (argumentName index) argumentType){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}

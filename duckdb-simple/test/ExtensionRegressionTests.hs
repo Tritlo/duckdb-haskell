@@ -11,6 +11,7 @@
 -- Description : Regression tests for extension callbacks and native handle ownership.
 module ExtensionRegressionTests (main, extensionRegressionTests) where
 
+import Control.Concurrent (forkIOWithUnmask, killThread, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
 import Control.Exception (
   AsyncException (ThreadKilled),
   ErrorCall,
@@ -23,7 +24,7 @@ import Control.Exception (
   throwIO,
   try,
  )
-import Control.Monad (forM, forM_, replicateM_, void, when)
+import Control.Monad (forM, forM_, forever, replicateM_, void, when)
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef)
 import Data.Int (Int64)
@@ -65,6 +66,7 @@ import System.FilePath (takeDirectory)
 import System.IO (hClose, openBinaryTempFile)
 import System.Mem (performMajorGC)
 import System.Mem.Weak (deRefWeak)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
 import TestUtils (assertInputErrorContaining, assertRangeError, assertReleasedAfter, assertSqlErrorContaining, assertSqlErrorType)
@@ -135,6 +137,41 @@ extensionRegressionTests =
         withConnection ":memory:" \conn -> do
           deleteFunction conn "absent_scalar"
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+    , testCase "clearing bindings permits statement reuse after cancellation" $
+        withConnection ":memory:" \conn -> do
+          let parameters = replicate 32 (toField (Text.replicate 4096 "x"))
+              sql = Query ("SELECT length(concat(" <> Text.intercalate ", " (replicate 32 "?::VARCHAR") <> "))")
+          withStatement conn sql \stmt -> replicateM_ 16 do
+            started <- newEmptyMVar
+            done <- newEmptyMVar
+            -- Each worker alternates binding and clearing. The cancellation
+            -- can occur in either operation. The last query checks reuse.
+            -- Unmask the loop because bracket masks the creation of the worker.
+            bracket
+              ( forkIOWithUnmask \unmask ->
+                  try @SomeException (unmask (putMVar started () >> forever (bind stmt parameters >> clearStatementBindings stmt)))
+                    >>= putMVar done
+              )
+              ( \worker -> do
+                  stopped <- timeout (5 * 1000000) (killThread worker >> readMVar done)
+                  case stopped of
+                    Just _ -> pure ()
+                    Nothing -> assertFailure "the binding worker did not stop during cleanup"
+              )
+              \worker -> do
+                outcome <- timeout (5 * 1000000) do
+                  takeMVar started
+                  threadDelay 1000
+                  killThread worker
+                  readMVar done
+                case outcome of
+                  Just (Left failure) | fromException failure == Just ThreadKilled -> pure ()
+                  Just (Left failure) -> throwIO failure
+                  Just (Right ()) -> assertFailure "the binding worker returned before cancellation"
+                  Nothing -> assertFailure "the binding worker did not finish after cancellation"
+            clearStatementBindings stmt
+            bind stmt parameters
+            nextRow stmt >>= (@?= Just (Only (131072 :: Int64)))
     , testCase "deleteFunction reads the name with the qualified-name rules of DuckDB" $
         withConnection ":memory:" \conn -> do
           let macroCount :: Text.Text -> Text.Text -> IO [Only Int64]

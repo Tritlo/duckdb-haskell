@@ -1150,7 +1150,7 @@ storeBoundValue stmt index value = withStatementHandle stmt \_ -> mask_ do
 
 -- | Release all owned parameter values.
 clearBoundValues :: IORef (IntMap.IntMap DuckDBV2ValueHandle) -> IO ()
-clearBoundValues ref = atomicModifyIORef' ref (IntMap.empty,) >>= releaseItems destroyValue . IntMap.elems
+clearBoundValues ref = mask_ $ atomicModifyIORef' ref (IntMap.empty,) >>= releaseItems destroyValue . IntMap.elems
 
 {- Note [Statement schemas]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~

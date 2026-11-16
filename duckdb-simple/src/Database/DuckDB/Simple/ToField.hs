@@ -973,7 +973,7 @@ instance ToField FieldValue where
     FieldBigNum v -> toField v
     FieldEnum _ label -> toField label
     FieldArray items
-      | null items -> valueBinding (show value) (const emptyArrayError)
+      | Just failure <- arraySizeError (length items) -> valueBinding (show value) (const failure)
       | otherwise -> fieldValueSequence "FieldArray" c_duckdb_v2_value_create_array (elems items)
     FieldList items -> fieldValueSequence "FieldList" c_duckdb_v2_value_create_list items
     FieldMap pairs -> fieldValueMap pairs
@@ -1159,6 +1159,14 @@ instance (KnownNat n, DuckDBColumnType a) => DuckDBColumnType (SizedArray n a) w
   duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a) <> Text.pack ("[" <> show (natVal (Proxy @n)) <> "]")
   duckdbTypeDeclaration _
     | size == 0 = Left "a SizedArray of size 0 has no ARRAY type, because a DuckDB ARRAY has at least one element"
+    | size > toInteger maxArraySize =
+        Left
+          ( "a SizedArray of size "
+              <> Text.pack (show size)
+              <> " has no ARRAY type, because a DuckDB ARRAY has at most "
+              <> Text.pack (show maxArraySize)
+              <> " elements"
+          )
     | otherwise = arrayDeclaration size <$> duckdbTypeDeclaration (Proxy @a)
     where
       size = natVal (Proxy @n)
@@ -1180,13 +1188,14 @@ its own length, reads an ARRAY of each length, and has no declaration.
   the same for a LIST column, an ARRAY column of another size, and a VARIANT.
   A value of another length raises Incompatible, which names the column type
   and the SizedArray type.
-- Size 0. DuckDB has no ARRAY of size 0. The declaration of a SizedArray of size 0
-  raises an error at registration, and the bind raises the error of an empty
-  Array.
-- Largest size. DuckDB declares an ARRAY type of size up to 100000. The
-  declaration of a larger SizedArray raises the Binder Error of DuckDB ("ARRAY type
-  size must be at most 100000") at registration. In DuckDB 2.0.0 the value
-  API does not check the size, so a parameter of a larger SizedArray binds.
+- Sizes. A DuckDB ARRAY has 1 to 100000 elements (maxArraySize). DuckDB
+  rejects the SQL type T[0] and a larger type, for example with "ARRAY type
+  size must be at most 100000". The value API of DuckDB 2.0.0 does not check
+  the largest size, so a parameter of a larger ARRAY would bind a value that
+  the SQL of DuckDB cannot write. Thus the library checks both sizes, as an
+  input check: the declaration of a SizedArray of another size gives Left, and the
+  bind of an Array, a SizedArray, or a FieldArray of another size raises an
+  SQLError of the type ErrorInputInvalid (arraySizeError).
 -}
 
 -- | Declare an ARRAY of a size with the declaration of its element type. See
@@ -1317,8 +1326,9 @@ utcTimestampDuckValue factory value =
   encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value
     >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_tz factory encoded))
 
--- | Construct an ARRAY value. An empty array raises 'SQLError'. See
--- 'withElementType' for the element type.
+-- | Construct an ARRAY value. An array with no element or with more elements
+-- than 'maxArraySize' raises 'SQLError'. See 'withElementType' for the element
+-- type.
 arrayDuckValue
   :: forall a
    . (DuckDBColumnType a)
@@ -1328,15 +1338,37 @@ arrayDuckValue
   -> Array Int a
   -> IO DuckDBV2ValueHandle
 arrayDuckValue builder target elementValue array = do
-  when (null (elems array)) emptyArrayError
+  sequence_ (arraySizeError (length (elems array)))
   sequenceDuckValue (withElementType (Proxy @a) builder target) c_duckdb_v2_value_create_array builder elementValue (elems array)
 
--- | Raise the error for an ARRAY parameter with no element. An 'Array' and a
--- 'FieldArray' raise this error.
-emptyArrayError :: IO a
-emptyArrayError =
-  throwInvalidArgument
-    "an empty ARRAY parameter is not possible, because a DuckDB ARRAY has at least one element; bind an empty list for an empty LIST"
+-- | Give the input error of an ARRAY parameter of a size that DuckDB does not
+-- have: no element, or more elements than 'maxArraySize'. An 'Array', a 'SizedArray',
+-- and a 'FieldArray' raise this error. See Note [Sized arrays].
+arraySizeError :: Int -> Maybe (IO a)
+arraySizeError count
+  | count == 0 =
+      Just
+        ( throwInvalidArgument
+            "an empty ARRAY parameter is not possible, because a DuckDB ARRAY has at least one element; bind an empty list for an empty LIST"
+        )
+  | count > maxArraySize =
+      Just
+        ( throwInvalidArgument
+            ( "an ARRAY parameter of "
+                <> Text.pack (show count)
+                <> " elements is not possible, because a DuckDB ARRAY has at most "
+                <> Text.pack (show maxArraySize)
+                <> " elements; bind a list for a LIST"
+            )
+        )
+  | otherwise = Nothing
+
+-- | The largest size of a DuckDB ARRAY: @ArrayType::MAX_ARRAY_SIZE@ in
+-- @src/include/duckdb/common/types.hpp@ of DuckDB 2.0.0. The SQL of DuckDB
+-- rejects a larger ARRAY type, but its value API does not check the size. See
+-- Note [Sized arrays].
+maxArraySize :: Int
+maxArraySize = 100000
 
 -- | Construct a LIST value. An empty list is an empty LIST of the element type.
 -- See 'withElementType' for the element type.

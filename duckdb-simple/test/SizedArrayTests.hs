@@ -55,14 +55,16 @@ sizedArrayTests =
         assertInputErrorContaining "an empty ARRAY parameter is not possible" (query conn "SELECT ?" (Only empty) :: IO [Only (SizedArray 0 Int64)])
         assertInputErrorContaining "a SizedArray of size 0 has no ARRAY type" $
           createFunction conn "sized_empty" \(_ :: SizedArray 0 Int64) -> (1 :: Int64)
-    , testCase "a SizedArray of the largest ARRAY size of DuckDB binds and declares, and a larger SizedArray does not declare" $ withConnection ":memory:" \conn -> do
+    , testCase "a SizedArray of the largest ARRAY size binds and declares, and a larger one raises an input error" $ withConnection ":memory:" \conn -> do
         let largest = fromJust (sizedArray @100000 (replicate 100000 (1 :: Int8)))
+            above = fromJust (sizedArray @100001 (replicate 100001 (1 :: Int8)))
         query conn "SELECT typeof(?), len(?)" (largest, largest) >>= (@?= [("TINYINT[100000]" :: Text.Text, 100000 :: Int64)])
         createFunction conn "sized_largest" \(v :: SizedArray 100000 Int8) -> length v
         query conn "SELECT sized_largest(?)" (Only largest) >>= (@?= [Only (100000 :: Int)])
-        try (createFunction conn "sized_above" \(v :: SizedArray 100001 Int8) -> length v) >>= \case
-          Left SQLError{sqlErrorType, sqlErrorMessage} -> do
-            sqlErrorType @?= Just ErrorQueryBinder
-            sqlErrorMessage @?= "Binder Error: ARRAY type size must be at most 100000"
-          Right () -> assertFailure "expected the Binder Error of DuckDB for a SizedArray of size 100001"
+        -- The value API of DuckDB would bind the larger value, but its SQL has no such type.
+        assertInputErrorContaining
+          "an ARRAY parameter of 100001 elements is not possible, because a DuckDB ARRAY has at most 100000 elements"
+          (query conn "SELECT len(?)" (Only above) :: IO [Only Int64])
+        assertInputErrorContaining "a SizedArray of size 100001 has no ARRAY type, because a DuckDB ARRAY has at most 100000 elements" $
+          createFunction conn "sized_above" \(v :: SizedArray 100001 Int8) -> length v
     ]

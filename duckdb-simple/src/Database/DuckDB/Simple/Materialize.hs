@@ -218,13 +218,13 @@ lazyTypeRep create = do
   owner <- ownedHandle destroyLogicalTypeAddress create
   unsafeInterleaveIO (withForeignPtr owner (peek >=> logicalTypeToRep))
 
--- | The C finalizer of an owned type. The finalizers ignore the result code,
--- because the destruction of a valid handle does not fail.
-foreign import ccall "&duckdb_v2_logical_type_destroy"
+-- | The C finalizer of an owned type, from duckdb-ffi. See
+-- Note [Column types] in "Database.DuckDB.Simple.FromField".
+foreign import ccall "&duckdb_ffi_destroy_logical_type"
   destroyLogicalTypeAddress :: FinalizerPtr DuckDBV2LogicalTypeHandle
 
--- | The C finalizer of an owned schema.
-foreign import ccall "&duckdb_v2_schema_destroy"
+-- | The C finalizer of an owned schema, from duckdb-ffi.
+foreign import ccall "&duckdb_ffi_destroy_schema"
   destroySchemaAddress :: FinalizerPtr DuckDBV2SchemaHandle
 
 -- | The labels of an ENUM type that readers read, by index. 'Nothing' means

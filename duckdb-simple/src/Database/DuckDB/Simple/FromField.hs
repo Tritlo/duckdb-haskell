@@ -315,7 +315,10 @@ forces makes no conversion, so it reads no ENUM dictionary. A ForeignPtr
 (ownedHandle in "Database.DuckDB.Simple.Materialize") owns the result schema,
 or the type of a callback argument, until the conversion of each type that it
 holds. Its C finalizer destroys the handle at a garbage collection, or at the
-exit of the program. Thus a loop of queries that forces no type holds one
+exit of the program. The finalizers are duckdb_ffi_destroy_schema and
+duckdb_ffi_destroy_logical_type of duckdb-ffi (cbits/finalizers.c), not the
+DuckDB functions: a loadable extension has no DuckDB symbol whose address the
+library can take. Thus a loop of queries that forces no type holds one
 schema for each execution until a garbage collection. The header says that a
 result schema is owned, so a force after the connection, the instance, or the
 environment closes reads the type.

@@ -16,6 +16,7 @@ module TestUtils (
   filteredQueries,
   nativeLocalTime,
   raiseCapabilities,
+  sized,
   withConstCString,
   writeIntegers,
   writeNullRows,
@@ -26,7 +27,7 @@ import Control.Exception (SomeException, try)
 import Control.Monad (forM_, void, when)
 import Data.IORef (IORef, mkWeakIORef, newIORef)
 import Data.Int (Int64)
-import Data.Maybe (isNothing)
+import Data.Maybe (fromMaybe, isNothing)
 import Data.Ratio ((%))
 import qualified Data.Text as Text
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
@@ -45,7 +46,7 @@ import Database.DuckDB.FFI.V2 (
   c_duckdb_v2_vector_set_null,
   c_duckdb_v2_vector_set_size,
  )
-import Database.DuckDB.Simple (Connection, ErrorType (..), Only (..), Query, SQLError (..), query_)
+import Database.DuckDB.Simple (Connection, ErrorType (..), Only (..), Query, SQLError (..), SizedArray, query_, sizedArray)
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..), ToField)
 import Database.DuckDB.Simple.V2.Registration (checked, output)
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -53,6 +54,7 @@ import Foreign.C.String (withCString)
 import Foreign.C.Types (CChar)
 import Foreign.Ptr (castPtr)
 import Foreign.Storable (pokeElemOff)
+import GHC.TypeLits (KnownNat)
 import System.Mem (performMajorGC)
 import System.Mem.Weak (deRefWeak)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, (@?=))
@@ -224,3 +226,8 @@ filteredQueries =
   , ("SELECT i FROM range(1000000) t(i) WHERE i % 100000 = 99999", [99999, 199999 .. 999999])
   , ("SELECT i FROM range(1000000) t(i) WHERE i = 999999", [999999])
   ]
+
+-- | Make a 'SizedArray' from a list of its length. A list of another length
+-- is a defect of the case.
+sized :: (KnownNat n) => [a] -> SizedArray n a
+sized values = fromMaybe (error ("sized: a list of " <> show (length values) <> " elements")) (sizedArray values)

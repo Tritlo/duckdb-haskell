@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE LambdaCase #-}
@@ -15,7 +16,7 @@ module ValueRegressionTests (main, valueRegressionTests) where
 import Control.Applicative ((<|>))
 import Control.Exception (bracket, fromException, try)
 import Control.Monad (forM_)
-import Data.Array (Array, elems, listArray)
+import Data.Array (elems, listArray)
 import Data.Bits (shiftR, xor)
 import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64, Int8)
@@ -72,7 +73,7 @@ import Numeric.Natural (Natural)
 import System.Mem (getAllocationCounter, performMajorGC)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (NativeTimestamp (..), assertInputError, assertRangeError)
+import TestUtils (NativeTimestamp (..), assertInputError, assertRangeError, sized)
 
 -- | The type of a field. The field of the constructor is lazy, so the read
 -- does not force the type.
@@ -134,7 +135,7 @@ instance ToField DelegatedInteger where
   toField (DelegatedInteger value) = toField value
 
 -- | Bind an array through a value built with the explicit factory.
-newtype Scores = Scores (Array Int Int64)
+newtype Scores = Scores (SizedArray 3 Int64)
   deriving (Show)
 
 instance DuckDBColumnType Scores where
@@ -159,7 +160,7 @@ newtype Stamped = Stamped {stampedAt :: UTCTime}
   deriving (FromField) via (ViaDuckDB Stamped)
 
 -- | A generic record with a LIST, an ARRAY, and a MAP field.
-data Holder = Holder {listField :: [Int32], arrayField :: Array Int Int32, mapField :: Map.Map Text Int32}
+data Holder = Holder {listField :: [Int32], arrayField :: SizedArray 2 Int32, mapField :: Map.Map Text Int32}
   deriving stock (Eq, Show, Generic)
   deriving (FromField) via (ViaDuckDB Holder)
 
@@ -169,7 +170,7 @@ data Pair = Pair {pairName :: Text, pairValue :: Int64}
   deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB Pair)
 
 -- | A generic record with an ARRAY field.
-data Scored = Scored {scoredName :: Text, scoredValues :: Array Int Int32}
+data Scored = Scored {scoredName :: Text, scoredValues :: SizedArray 3 Int32}
   deriving stock (Eq, Show, Generic)
   deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB Scored)
 
@@ -177,31 +178,6 @@ data Scored = Scored {scoredName :: Text, scoredValues :: Array Int Int32}
 data Colour = Red | Blue
   deriving stock (Eq, Show, Generic)
   deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB Colour)
-
--- | A generic record with an optional ARRAY field.
-data OptionalScores = OptionalScores {optionalScores :: Maybe (Array Int Int32)}
-  deriving stock (Generic)
-  deriving (DuckDBColumnType, ToField) via (ViaDuckDB OptionalScores)
-
--- | A generic record with a LIST field of ARRAY elements.
-data ListedScores = ListedScores {listedScores :: [Array Int Int32]}
-  deriving stock (Generic)
-  deriving (DuckDBColumnType, ToField) via (ViaDuckDB ListedScores)
-
--- | A generic record with an ARRAY field of ARRAY elements.
-data NestedScores = NestedScores {nestedScores :: Array Int (Array Int Int32)}
-  deriving stock (Generic)
-  deriving (DuckDBColumnType, ToField) via (ViaDuckDB NestedScores)
-
--- | A generic record with a MAP field of ARRAY values.
-data MappedScores = MappedScores {mappedScores :: Map.Map Text (Array Int Int32)}
-  deriving stock (Generic)
-  deriving (DuckDBColumnType, ToField) via (ViaDuckDB MappedScores)
-
--- | A generic sum with a constructor that has an ARRAY field.
-data ChosenScores = SomeScores (Array Int Int32) | NoScores
-  deriving stock (Generic)
-  deriving (DuckDBColumnType, ToField) via (ViaDuckDB ChosenScores)
 
 -- | Run this module without the main integration suite.
 main :: IO ()
@@ -246,60 +222,39 @@ valueRegressionTests =
               sqlErrorType @?= Just ErrorQueryBinder
             Right rows -> assertFailure (show count <> " members: expected the DuckDB member limit error, got " <> show rows)
     , testCase "array elements need only a ToField instance" $ withConnection ":memory:" \conn -> do
-        let values = listArray (0 :: Int, 2) [Nothing, Just (DelegatedInteger 41), Just (DelegatedInteger 99)]
-            expected = listArray (0, 2) [Nothing, Just 41, Just 99] :: Array Int (Maybe Int64)
-        (query conn "SELECT ?" (Only values) :: IO [Only (Array Int (Maybe Int64))]) >>= (@?= [Only expected])
+        let values = sized [Nothing, Just (DelegatedInteger 41), Just (DelegatedInteger 99)] :: SizedArray 3 (Maybe DelegatedInteger)
+            expected = sized [Nothing, Just 41, Just 99] :: SizedArray 3 (Maybe Int64)
+        (query conn "SELECT ?" (Only values) :: IO [Only (SizedArray 3 (Maybe Int64))]) >>= (@?= [Only expected])
     , testCase "array children use default ToDuckValue instances" $ withConnection ":memory:" \conn -> do
         let units = [-1, 0, 1234567]
-            values = listArray (0 :: Int, 2) (map Microseconds units)
-            expected = listArray (0, 2) (map (utcToLocalTime utc . posixSecondsToUTCTime . fromRational . (% 1000000) . toInteger) units)
-        (query conn "SELECT ?" (Only values) :: IO [Only (Array Int LocalTime)]) >>= (@?= [Only expected])
+            values = sized (map Microseconds units) :: SizedArray 3 NativeTimestamp
+            expected = sized (map (utcToLocalTime utc . posixSecondsToUTCTime . fromRational . (% 1000000) . toInteger) units)
+        (query conn "SELECT ?" (Only values) :: IO [Only (SizedArray 3 LocalTime)]) >>= (@?= [Only expected])
     , testCase "arrays bind through ToDuckValue with an explicit connection" $ withConnection ":memory:" \conn -> do
-        let values = listArray (0, 2) [1, -2, 3]
-        (query conn "SELECT typeof(?), ?" (Scores values, Scores values) :: IO [(Text, Array Int Int64)]) >>= (@?= [("BIGINT[3]", values)])
+        let values = sized [1, -2, 3]
+        (query conn "SELECT typeof(?), ?" (Scores values, Scores values) :: IO [(Text, SizedArray 3 Int64)]) >>= (@?= [("BIGINT[3]", values)])
     , testCase "arrays of STRUCT, record, and ARRAY elements take the type of a present element" $ withConnection ":memory:" \conn -> do
         [Only struct] <- query_ conn "SELECT {'a': 1, 'b': 'x'}" :: IO [Only (StructValue FieldValue)]
-        let structs = listArray (0, 1) [struct, struct]
-        (query conn "SELECT typeof(?), ?" (structs, structs) :: IO [(Text, Array Int (StructValue FieldValue))])
+        let structs = sized [struct, struct]
+        (query conn "SELECT typeof(?), ?" (structs, structs) :: IO [(Text, SizedArray 2 (StructValue FieldValue))])
           >>= (@?= [("STRUCT(a INTEGER, b VARCHAR)[2]", structs)])
-        let pairs = listArray (0, 2) [Nothing, Just (Pair "x" 1), Just (Pair "y" 2)]
-        (query conn "SELECT typeof(?), ?" (pairs, pairs) :: IO [(Text, Array Int (Maybe Pair))])
+        let pairs = sized [Nothing, Just (Pair "x" 1), Just (Pair "y" 2)]
+        (query conn "SELECT typeof(?), ?" (pairs, pairs) :: IO [(Text, SizedArray 3 (Maybe Pair))])
           >>= (@?= [("STRUCT(pairName VARCHAR, pairValue BIGINT)[3]", pairs)])
-        let nested = listArray (0, 1) [listArray (0, 1) [1, 2], listArray (0, 1) [3, 4]] :: Array Int (Array Int Int64)
-        (query conn "SELECT typeof(?), ?" (nested, nested) :: IO [(Text, Array Int (Array Int Int64))]) >>= (@?= [("BIGINT[2][2]", nested)])
-    , testCase "generic records with ARRAY fields bind with the size of the value" $ withConnection ":memory:" \conn -> do
-        let first = Scored "x" (listArray (0, 2) [1, 2, 3])
-            second = Scored "y" (listArray (0, 2) [4, 5, 6])
+        let nested = sized [sized [1, 2], sized [3, 4]] :: SizedArray 2 (SizedArray 2 Int64)
+        (query conn "SELECT typeof(?), ?" (nested, nested) :: IO [(Text, SizedArray 2 (SizedArray 2 Int64))]) >>= (@?= [("BIGINT[2][2]", nested)])
+    , testCase "generic records with ARRAY fields bind with the size of the type" $ withConnection ":memory:" \conn -> do
+        let first = Scored "x" (sized [1, 2, 3])
+            second = Scored "y" (sized [4, 5, 6])
             rowType = "STRUCT(scoredName VARCHAR, scoredValues INTEGER[3])"
         (query conn "SELECT typeof(?), ?" (first, first) :: IO [(Text, Scored)]) >>= (@?= [(rowType, first)])
         _ <- execute_ conn "CREATE TABLE scored (s STRUCT(scoredName VARCHAR, scoredValues INTEGER[3]))"
         _ <- executeMany conn "INSERT INTO scored VALUES (?)" [Only first, Only second]
         (query_ conn "SELECT s FROM scored ORDER BY s.scoredName" :: IO [Only Scored]) >>= (@?= [Only first, Only second])
-        let records = listArray (0, 1) [first, second]
-        (query conn "SELECT typeof(?), ?" (records, records) :: IO [(Text, Array Int Scored)]) >>= (@?= [(rowType <> "[2]", records)])
-        result <- try (query conn "SELECT ?" (Only (Scored "z" (listArray (0, -1) []))))
-        case result of
-          Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("an ARRAY must have at least one element" `Text.isInfixOf` sqlErrorMessage)
-          Right (_ :: [Only Text]) -> assertFailure "expected the DuckDB empty ARRAY error"
-    , testCase "generic records with an ARRAY field that has no size raise the error of DuckDB" $ withConnection ":memory:" \conn -> do
-        let scores = listArray (0, 1) [1, 2] :: Array Int Int32
-            rejected :: (ToField a) => String -> a -> Assertion
-            rejected label value =
-              try (query conn "SELECT ?::VARCHAR" (Only value) :: IO [Only Text]) >>= \case
-                Left SQLError{sqlErrorMessage, sqlErrorType} -> do
-                  assertEqual label "Binder Error: ARRAY type size must be at least 1" sqlErrorMessage
-                  assertEqual label (Just ErrorQueryBinder) sqlErrorType
-                Right rows -> assertFailure (label <> ": expected the DuckDB ARRAY size error, got " <> show rows)
-        rejected "Maybe field with Nothing" (OptionalScores Nothing)
-        rejected "LIST field" (ListedScores [scores])
-        rejected "empty LIST field" (ListedScores [])
-        rejected "ARRAY field" (NestedScores (listArray (0, 0) [scores]))
-        rejected "MAP field" (MappedScores (Map.singleton "a" scores))
-        rejected "empty MAP field" (MappedScores Map.empty)
-        rejected "sum constructor with the ARRAY field" (SomeScores scores)
-        rejected "sum constructor without the ARRAY field" NoScores
+        let records = sized [first, second] :: SizedArray 2 Scored
+        (query conn "SELECT typeof(?), ?" (records, records) :: IO [(Text, SizedArray 2 Scored)]) >>= (@?= [(rowType <> "[2]", records)])
     , testCase "empty arrays of record elements raise the empty ARRAY error" $ withConnection ":memory:" \conn -> do
-        result <- try (query conn "SELECT ?" (Only (listArray (0, -1) [] :: Array Int Pair)))
+        result <- try (query conn "SELECT ?" (Only (sized [] :: SizedArray 0 Pair)))
         case result of
           Left SQLError{sqlErrorMessage, sqlErrorType} -> do
             assertBool (Text.unpack sqlErrorMessage) ("duckdb-simple: an empty ARRAY parameter is not possible" `Text.isInfixOf` sqlErrorMessage)
@@ -318,7 +273,7 @@ valueRegressionTests =
             forM_
               [([Nothing, Just first, Just second], ["NULL", firstSql, secondSql]), ([Just second, Nothing, Just first], [secondSql, "NULL", firstSql])]
               \(elements, sqls) -> do
-                let values = listArray (0 :: Int, 2) elements
+                let values = sized elements :: SizedArray 3 (Maybe (StructValue FieldValue))
                     literal = "array_value(" <> Text.intercalate ", " sqls <> ")"
                 (query conn (Query ("SELECT typeof(?), ?::VARCHAR, (" <> literal <> ")::VARCHAR")) (values, values) :: IO [(Text, Text, Text)]) >>= \case
                   [(actualType, text, literalText)] -> do
@@ -515,7 +470,7 @@ valueRegressionTests =
                 assertEqual label (Just ErrorQueryNotImplemented) sqlErrorType
                 assertBool (Text.unpack sqlErrorMessage) (part `Text.isInfixOf` sqlErrorMessage)
               Right rows -> assertFailure (label <> ": " <> show rows)
-    , testCase "a list or an Array of composite elements with different types follows the SQL list literal" $ withConnection ":memory:" \conn -> do
+    , testCase "a list or a FieldArray of composite elements with different types follows the SQL list literal" $ withConnection ":memory:" \conn -> do
         let elementOf :: Text -> IO (Maybe (StructValue FieldValue))
             elementOf "NULL" = pure Nothing
             elementOf sql = do
@@ -549,7 +504,7 @@ valueRegressionTests =
                 count = length elements
             sameAs elements ("[" <> literal <> "]") (elementType <> "[]")
             sameAs
-              (listArray (0, count - 1) elements :: Array Int (Maybe (StructValue FieldValue)))
+              (FieldArray (listArray (0, count - 1) (map (maybe FieldNull FieldStruct) elements)))
               ("array_value(" <> literal <> ")")
               (elementType <> "[" <> Text.pack (show count) <> "]")
         -- The rule can round, as in SQL.
@@ -558,8 +513,8 @@ valueRegressionTests =
         mismatch <- mapM elementOf ["{'a': 1}", "{'a': 'x'}"]
         duckdbError "list" mismatch ErrorQueryNotImplemented "Cannot combine types STRUCT(a INTEGER) and STRUCT(a VARCHAR)"
         duckdbError
-          "Array"
-          (listArray (0, 1) mismatch :: Array Int (Maybe (StructValue FieldValue)))
+          "SizedArray"
+          (sized mismatch :: SizedArray 2 (Maybe (StructValue FieldValue)))
           ErrorQueryNotImplemented
           "Cannot combine types"
         unions <-
@@ -569,7 +524,9 @@ valueRegressionTests =
         duckdbError "UNION list" (map fromOnly (concat unions)) ErrorTypeConversion "is not present in target union"
         duckdbError
           "ARRAY sizes"
-          [listArray (0, 1) [1, 2] :: Array Int Int32, listArray (0, 2) [1, 2, 3]]
+          ( FieldList
+              [FieldArray (listArray (0, 1) [FieldInt32 1, FieldInt32 2]), FieldArray (listArray (0, 2) [FieldInt32 1, FieldInt32 2, FieldInt32 3])]
+          )
           ErrorInputInvalid
           "Cannot cast array of size 2 to array of size 3"
         [Just first, Just second] <- mapM elementOf ["{'a': 1}", "{'b': 2}"]
@@ -749,8 +706,8 @@ valueRegressionTests =
           (query_ conn "SELECT v FROM many_values ORDER BY rowid" :: IO [Only Integer]) >>= (@?= map Only values)
     , testCase "an array of Integer values takes the type that its elements give" $ withConnection ":memory:" \conn ->
         -- See Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
-        forM_ [(listArray (0, 1) [5, 2 ^ (130 :: Int)], "BIGNUM[2]"), (listArray (0, 1) [5, 6], "HUGEINT[2]")] \(values :: Array Int Integer, dtype) ->
-          (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, Array Int Integer)]) >>= (@?= [(dtype, values)])
+        forM_ [(sized [5, 2 ^ (130 :: Int)], "BIGNUM[2]"), (sized [5, 6], "HUGEINT[2]")] \(values :: SizedArray 2 Integer, dtype) ->
+          (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, SizedArray 2 Integer)]) >>= (@?= [(dtype, values)])
     , testCase "an array of Integer values takes the element type of its target" $ withConnection ":memory:" \conn -> do
         let store :: (Show a, ToField a) => Text -> a -> Text -> Assertion
             store dtype value expected = do
@@ -758,24 +715,24 @@ valueRegressionTests =
               _ <- execute conn "INSERT INTO array_value VALUES (?)" (Only value)
               (query_ conn "SELECT v::VARCHAR FROM array_value" :: IO [Only Text])
                 >>= assertEqual (Text.unpack dtype <> " " <> show value) [Only expected]
-            pair :: Integer -> Integer -> Array Int Integer
-            pair first second = listArray (0, 1) [first, second]
+            pair :: Integer -> Integer -> SizedArray 2 Integer
+            pair first second = sized [first, second]
             huge = 2 ^ (128 :: Int) + 7 :: Integer
         forM_ ["BIGINT[2]", "UBIGINT[2]", "HUGEINT[2]", "UHUGEINT[2]", "DECIMAL(38,0)[2]", "BIGNUM[2]", "VARCHAR[2]"] \dtype ->
           store dtype (pair 5 6) "[5, 6]"
         forM_ ["BIGINT[2]", "HUGEINT[2]", "BIGNUM[2]"] \dtype ->
           store dtype (pair 5 (-6)) "[5, -6]"
-        store "UHUGEINT[2]" (listArray (0, 1) [5, 2 ^ (127 :: Int)] :: Array Int Natural) "[5, 170141183460469231731687303715884105728]"
+        store "UHUGEINT[2]" (sized [5, 2 ^ (127 :: Int)] :: SizedArray 2 Natural) "[5, 170141183460469231731687303715884105728]"
         forM_ ["BIGNUM[2]", "VARCHAR[2]"] \dtype ->
           store dtype (pair 5 huge) "[5, 340282366920938463463374607431768211463]"
-        store "BIGINT[2][2]" (listArray (0, 1) [pair 1 2, pair 3 (-4)] :: Array Int (Array Int Integer)) "[[1, 2], [3, -4]]"
+        store "BIGINT[2][2]" (sized [pair 1 2, pair 3 (-4)] :: SizedArray 2 (SizedArray 2 Integer)) "[[1, 2], [3, -4]]"
         store "BIGINT[]" (pair 5 6) "[5, 6]"
     , testCase "an array of Integer values with an element that its target cannot hold raises an error and stores no row" $ withConnection ":memory:" \conn -> do
         let insert :: Text -> Integer -> IO SQLError
             insert dtype second = do
               let label = Text.unpack dtype <> " [5, " <> show second <> "]"
               _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE rejected_array (v " <> dtype <> ")"))
-              result <- try (execute conn "INSERT INTO rejected_array VALUES (?)" (Only (listArray (0, 1) [5, second] :: Array Int Integer)))
+              result <- try (execute conn "INSERT INTO rejected_array VALUES (?)" (Only (sized [5, second] :: SizedArray 2 Integer)))
               (query_ conn "SELECT count(*) FROM rejected_array" :: IO [Only Int64]) >>= assertEqual label [Only 0]
               either pure (\_ -> assertFailure ("expected an error for " <> label)) result
             huge = 2 ^ (128 :: Int) + 7 :: Integer
@@ -887,9 +844,9 @@ valueRegressionTests =
         variantCast "[-5]" ([-5] :: [Integer]) "UBIGINT[]"
         variantCast "Map {a: -5}" (Map.fromList [("a", -5)] :: Map.Map Text Integer) "MAP(VARCHAR, UBIGINT)"
         variantCast "[[-5], []]" ([[-5], []] :: [[Integer]]) "UBIGINT[][]"
-    , testCase "a list and an Array with the same elements store the same LIST value" $ withConnection ":memory:" \conn -> do
+    , testCase "a list and a SizedArray with the same elements store the same LIST value" $ withConnection ":memory:" \conn -> do
         let ints = [1, 2, 3] :: [Int64]
-            arr = listArray (0, 2) ints :: Array Int Int64
+            arr = sized ints :: SizedArray 3 Int64
         (query conn "SELECT typeof(?), typeof(?)" (ints, arr) :: IO [(Text, Text)]) >>= (@?= [("BIGINT[]", "BIGINT[3]")])
         _ <- execute_ conn "CREATE TABLE same_value (i BIGINT, v BIGINT[])"
         _ <- execute conn "INSERT INTO same_value VALUES (0, ?), (1, ?)" (ints, arr)
@@ -902,21 +859,20 @@ valueRegressionTests =
                 >>= assertEqual label [("\"NULL\"[]", "[]", "\"NULL\"[]")]
         literal "STRUCT" ([] :: [StructValue FieldValue])
         literal "BIGINT[]" ([] :: [[Int64]])
-        -- An Array of records has no declaration, so an empty list of them,
-        -- and a list of NULL elements, get the type of the SQL literal. See
+        -- A StructValue has no declaration, so a list of NULL elements and an
+        -- empty MAP of them get the type of the SQL literal. See
         -- Note [Element types of a list] in "Database.DuckDB.Simple.ToField".
-        literal "Array of records" ([] :: [Array Int Pair])
-        (query conn "SELECT typeof(?)" (Only [Nothing :: Maybe (Array Int Pair)]) :: IO [Only Text]) >>= (@?= [Only "\"NULL\"[]"])
-        (query conn "SELECT typeof(?)" (Only (Map.empty :: Map.Map Text (Array Int Pair))) :: IO [Only Text])
+        (query conn "SELECT typeof(?)" (Only [Nothing :: Maybe (StructValue FieldValue)]) :: IO [Only Text]) >>= (@?= [Only "\"NULL\"[]"])
+        (query conn "SELECT typeof(?)" (Only (Map.empty :: Map.Map Text (StructValue FieldValue))) :: IO [Only Text])
           >>= (@?= [Only "MAP(VARCHAR, \"NULL\")"])
-        -- An Array of NULL STRUCT values gets the type of array_value(NULL).
-        let nullArray = listArray (0, 0) [Nothing] :: Array Int (Maybe (StructValue FieldValue))
+        -- A SizedArray of NULL STRUCT values gets the type of array_value(NULL).
+        let nullArray = sized [Nothing] :: SizedArray 1 (Maybe (StructValue FieldValue))
         (query conn "SELECT typeof(?), ?::VARCHAR" (nullArray, nullArray) :: IO [(Text, Text)]) >>= (@?= [("\"NULL\"[1]", "[NULL]")])
     , testCase "a list of NULL composite elements takes the element type of a typed column" $ withConnection ":memory:" \conn -> do
         let nulls = [Nothing, Nothing] :: [Maybe (StructValue FieldValue)]
         _ <- execute_ conn "CREATE TABLE null_list (v STRUCT(a INTEGER)[]); CREATE TABLE null_array (v STRUCT(a INTEGER)[2])"
         _ <- execute conn "INSERT INTO null_list VALUES (?)" (Only nulls)
-        _ <- execute conn "INSERT INTO null_array VALUES (?)" (Only (listArray (0, 1) nulls :: Array Int (Maybe (StructValue FieldValue))))
+        _ <- execute conn "INSERT INTO null_array VALUES (?)" (Only (sized nulls :: SizedArray 2 (Maybe (StructValue FieldValue))))
         (query_ conn "SELECT typeof(v), v::VARCHAR FROM null_list UNION ALL SELECT typeof(v), v::VARCHAR FROM null_array" :: IO [(Text, Text)])
           >>= (@?= [("STRUCT(a INTEGER)[]", "[NULL, NULL]"), ("STRUCT(a INTEGER)[2]", "[NULL, NULL]")])
         (query conn "SELECT typeof(?::STRUCT(a INTEGER)[])" (Only nulls) :: IO [Only Text]) >>= (@?= [Only "STRUCT(a INTEGER)[]"])
@@ -944,7 +900,7 @@ valueRegressionTests =
         (query conn "SELECT ?" (Only (Nothing :: Maybe IntervalValue)) :: IO [Only (Maybe IntervalValue)]) >>= (@?= [Only Nothing])
         (query conn "SELECT typeof(?), ?" ([value, negative], [value, negative]) :: IO [(Text, [IntervalValue])])
           >>= (@?= [("INTERVAL[]", [value, negative])])
-        let array = listArray (0, 1) [value, negative] :: Array Int IntervalValue
+        let array = sized [value, negative] :: SizedArray 2 IntervalValue
         (query conn "SELECT typeof(?), ?" (array, array) :: IO [(Text, [IntervalValue])]) >>= (@?= [("INTERVAL[2]", [value, negative])])
     , testCase "a TimeWithZone from a Data.Time zone reads back with that zone" $ withConnection ":memory:" \conn -> do
         let zone = hoursToTimeZone 2
@@ -997,7 +953,7 @@ valueRegressionTests =
         (query conn "SELECT ?" (Only (Nothing :: Maybe TimeWithZone)) :: IO [Only (Maybe TimeWithZone)]) >>= (@?= [Only Nothing])
         let times = [value, seconds, at 0 0 (-57599)]
         (query conn "SELECT typeof(?), ?" (times, times) :: IO [(Text, [TimeWithZone])]) >>= (@?= [("TIME WITH TIME ZONE[]", times)])
-        let array = listArray (0, 2) times :: Array Int TimeWithZone
+        let array = sized times :: SizedArray 3 TimeWithZone
         (query conn "SELECT typeof(?), ?" (array, array) :: IO [(Text, [TimeWithZone])]) >>= (@?= [("TIME WITH TIME ZONE[3]", times)])
         let nested = singleField (LogicalTypeScalar LogicalTypeIdTimeTz) (FieldTimeTZ seconds)
         (query conn "SELECT ?, (?).value::VARCHAR" (nested, nested) :: IO [(StructValue FieldValue, Text)])
@@ -1121,7 +1077,7 @@ valueRegressionTests =
           ]
           \(dtype, values, expected) -> do
             _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE bignum_array (v " <> dtype <> ")"))
-            _ <- execute conn "INSERT INTO bignum_array VALUES (?)" (Only (listArray (0, 1) values :: Array Int BigNum))
+            _ <- execute conn "INSERT INTO bignum_array VALUES (?)" (Only (sized values :: SizedArray 2 BigNum))
             (query_ conn "SELECT v::VARCHAR FROM bignum_array" :: IO [Only Text]) >>= assertEqual (Text.unpack dtype) [Only expected]
     , testCase "native timestamp extrema read back in all units, and bind back only in the range of DuckDB" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
         forM_
@@ -1373,7 +1329,7 @@ valueRegressionTests =
         [Only column] <- query_ conn "SELECT [1, 2, 3]::INTEGER[3]" :: IO [Only [Int32]]
         let holder list array map' = "SELECT {'listField': " <> list <> ", 'arrayField': " <> array <> ", 'mapField': " <> map' <> "}"
         (query_ conn (Query (holder "[1, 2, 3]::INTEGER[3]" "[4, 5]::INTEGER[2]" "MAP {'k': 6}")) :: IO [Only Holder])
-          >>= (@?= [Only (Holder column (listArray (0, 1) [4, 5]) (Map.singleton "k" 6))])
+          >>= (@?= [Only (Holder column (sized [4, 5]) (Map.singleton "k" 6))])
         -- The error of a value that a decoder does not read names its SQL type.
         let refused :: forall a. (FromField a, Show a) => Proxy a -> Text -> Text -> Assertion
             refused _ sql expected =
@@ -1386,8 +1342,8 @@ valueRegressionTests =
           "duckdb-simple: field listField: a value has type MAP(VARCHAR, INTEGER) but expected LIST or ARRAY"
         refused
           (Proxy @Holder)
-          (holder "[1]" "[4, 5]" "MAP {'k': 6}")
-          "duckdb-simple: field arrayField: a value has type INTEGER[] but expected ARRAY"
+          (holder "[1]" "[4, 5, 6]" "MAP {'k': 6}")
+          "duckdb-simple: field arrayField: a value has type INTEGER[] but expected SizedArray 2: the value has 3 elements"
         refused
           (Proxy @Holder)
           (holder "[1]" "[4, 5]::INTEGER[2]" "[6]")
@@ -1485,7 +1441,7 @@ valueRegressionTests =
                   :: IO [Only FieldValue]
               )
     , testCase "nested conversion failure leaves the connection usable" $ withConnection ":memory:" \conn -> do
-        let days = listArray (0, 1) [fromGregorian 2000 1 1, fromGregorian 10000000 1 1] :: Array Int Day
+        let days = sized [fromGregorian 2000 1 1, fromGregorian 10000000 1 1] :: SizedArray 2 Day
         assertOutsideTimeRange (query conn "SELECT ?" (Only days) :: IO [Only FieldValue])
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "generic NULL product and payload return Left" $ do
@@ -1956,7 +1912,7 @@ valueRegressionTests =
         -- then checks the range of each element.
         forM_ ["UTINYINT[2]", "USMALLINT[2]", "UINTEGER[2]", "UBIGINT[2]"] \dtype -> do
           _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE wide_integer (v " <> dtype <> ")"))
-          result <- try (execute conn "INSERT INTO wide_integer VALUES (?)" (Only (listArray (0, 1) [5, -6] :: Array Int Integer)))
+          result <- try (execute conn "INSERT INTO wide_integer VALUES (?)" (Only (sized [5, -6] :: SizedArray 2 Integer)))
           (query_ conn "SELECT count(*) FROM wide_integer" :: IO [Only Int64]) >>= assertEqual (Text.unpack dtype) [Only 0]
           case result of
             Left SQLError{sqlErrorMessage, sqlErrorType} -> do

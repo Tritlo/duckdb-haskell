@@ -13,10 +13,13 @@
 module SizedArrayTests (sizedArrayTests) where
 
 import Control.Exception (try)
+import Control.Monad (forM_)
+import Data.Array (listArray)
 import Data.Int (Int32, Int64, Int8)
 import Data.Maybe (fromJust)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple
+import Database.DuckDB.Simple.FromField (FieldValue (..))
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue)
 import GHC.Generics (Generic)
@@ -77,6 +80,21 @@ sizedArrayTests =
           (query conn "SELECT len(?)" (Only above) :: IO [Only Int64])
         assertInputErrorContaining "a SizedArray of size 100001 has no ARRAY type, because a DuckDB ARRAY has at most 100000 elements" $
           createFunction conn "sized_above" \(v :: SizedArray 100001 Int8) -> length v
+    , testCase "a list goes into an ARRAY column of its length and reads an ARRAY of each size" $ withConnection ":memory:" \conn -> do
+        _ <- execute_ conn "CREATE TABLE fixed (v BIGINT[3])"
+        _ <- execute conn "INSERT INTO fixed VALUES (?)" (Only [1, 2, 3 :: Int64])
+        query conn "SELECT count(*) FROM fixed WHERE v = ?" (Only [1, 2, 3 :: Int64]) >>= (@?= [Only (1 :: Int64)])
+        -- DuckDB casts a list of another length to the column with an error.
+        try (execute conn "INSERT INTO fixed VALUES (?)" (Only [1, 2 :: Int64])) >>= \case
+          Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+            sqlErrorType @?= Just ErrorTypeConversion
+            assertBool (Text.unpack sqlErrorMessage) ("Cannot cast list with length 2 to array with length 3" `Text.isInfixOf` sqlErrorMessage)
+          Right count -> assertFailure ("expected the cast error of DuckDB, got " <> show count)
+        query_ conn "SELECT [1, 2]::BIGINT[2], [1, 2, 3]::BIGINT[3]" >>= (@?= [([1, 2], [1, 2, 3]) :: ([Int64], [Int64])])
+    , testCase "a FieldArray binds an ARRAY of a size that the program gives at run time" $ withConnection ":memory:" \conn ->
+        forM_ [1, 4, 7] \count -> do
+          let value = FieldArray (listArray (0, count - 1) (map FieldInt64 [1 .. fromIntegral count]))
+          query conn "SELECT typeof(?), len(?)" (value, value) >>= (@?= [(Text.pack ("BIGINT[" <> show count <> "]"), count)])
     , testCase "a SizedArray field of a record declares and reads the ARRAY of its size" $ withConnection ":memory:" \conn -> do
         let row = Sized (fromJust (sizedArray @3 [1, 2, 3]))
         query conn "SELECT typeof(?), ?" (row, row) >>= (@?= [("STRUCT(sizedValues BIGINT[3])" :: Text.Text, row)])

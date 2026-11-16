@@ -10,7 +10,6 @@ module CopyTests (copyTests) where
 
 import Control.Exception (bracket, try)
 import Control.Monad (forM_, void)
-import Data.Array (listArray)
 import Data.IORef
 import Data.Int (Int64)
 import Data.List (sort)
@@ -341,7 +340,7 @@ testMultiFile = withDirectory \directory -> withConnection ":memory:" \connectio
   Copy.registerMultiFileFunction connection "managed_files" "managed_single" (Copy.MultiFileOptions (Just "managed fixture") (Just "mock"))
   query connection "SELECT value FROM managed_files(?) ORDER BY value" (Only (Text.pack (directory </> "*.mock")))
     >>= (@?= map Only ([7, 11] :: [Int64]))
-  let paths = listArray (0 :: Int, 1) [Text.pack first, Text.pack second]
+  let paths = [Text.pack first, Text.pack second]
   query connection "SELECT value, filename FROM managed_files(?::VARCHAR[], filename=true) ORDER BY value" (Only paths)
     >>= (@?= [(7 :: Int64, Text.pack first), (11, Text.pack second)])
   forM_ [("left", 3), ("right", 5 :: Int)] \(part, value) -> do

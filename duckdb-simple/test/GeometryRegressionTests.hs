@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- |
@@ -9,7 +10,7 @@ module GeometryRegressionTests (tests) where
 import Control.Concurrent (threadDelay)
 import Control.Exception (bracket, try)
 import Control.Monad (forM, forM_, when)
-import Data.Array (Array, elems, listArray)
+import Data.Array (elems, listArray)
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
 import qualified Data.Geometry.WKB as WKB
@@ -35,7 +36,7 @@ import System.Mem (performMajorGC)
 import System.Mem.Weak (deRefWeak)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (assertFailureIO, assertSqlErrorType)
+import TestUtils (assertFailureIO, assertSqlErrorType, sized)
 
 -- | Check native construction, metadata, nesting, and streaming.
 tests :: TestTree
@@ -128,8 +129,8 @@ tests =
     , testCase "decoded arrays preserve shapes and NULL elements without CRS" $
         withConnection ":memory:" \conn -> do
           let geometry = G.PointGeometry (G.PointXYM (G.XYM 1 2 3))
-              values = listArray (0, 2) [Nothing, Just geometry, Just (G.PointGeometry (G.EmptyPoint G.DimXYM))]
-          (query conn "SELECT ?, ST_CRS((?)[2])" (values, values) :: IO [(Array Int (Maybe G.Geometry), Maybe Text)])
+              values = sized [Nothing, Just geometry, Just (G.PointGeometry (G.EmptyPoint G.DimXYM))] :: SizedArray 3 (Maybe G.Geometry)
+          (query conn "SELECT ?, ST_CRS((?)[2])" (values, values) :: IO [(SizedArray 3 (Maybe G.Geometry), Maybe Text)])
             >>= (@?= [(values, Nothing)])
     , testCase "only raw geometry retains CRS metadata" $
         withConnection ":memory:" \conn -> do
@@ -302,9 +303,9 @@ tests =
     , testCase "binary import constructs arrays with a common CRS and NULL elements" $
         withConnection ":memory:" \conn -> do
           [Only geometry] <- query_ conn "SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
-          let values = listArray (0, 2) [Nothing, Just geometry, Nothing]
+          let values = sized [Nothing, Just geometry, Nothing] :: SizedArray 3 (Maybe RawGeometry)
           ( query conn "SELECT [NULL, system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?), NULL]::GEOMETRY('OGC:CRS84')[3]" (rawParameters geometry)
-              :: IO [Only (Array Int (Maybe RawGeometry))]
+              :: IO [Only (SizedArray 3 (Maybe RawGeometry))]
             )
             >>= (@?= [Only values])
     , testCase "nested STRUCT, LIST, ARRAY and MAP results bind again with their bytes and CRS" $
@@ -436,7 +437,7 @@ tests =
     , testCase "configured CRS survives nested parameter types and prepared rebinding" $ do
         let crs = "local' íslenska λ"
             value = nestedNullShapes crs
-            array = listArray (0 :: Int, 0) [value]
+            array = sized [value] :: SizedArray 1 (StructValue FieldValue)
         withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs, crs]} \conn -> do
           (query conn "SELECT ?" (Only value)) >>= (@?= [Only value])
           (queryNamed conn "SELECT $shape" ["shape" := value]) >>= (@?= [Only value])

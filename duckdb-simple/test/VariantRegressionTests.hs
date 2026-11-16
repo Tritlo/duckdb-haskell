@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE LambdaCase #-}
@@ -13,7 +14,7 @@ module VariantRegressionTests (tests) where
 
 import Control.Exception (bracket, try)
 import Control.Monad (forM, forM_, void, when)
-import Data.Array (Array, elems, listArray)
+import Data.Array (elems, listArray)
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
 import Data.Int (Int64)
@@ -35,7 +36,7 @@ import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (NativeTimestamp (..), assertFailureIO, nativeLocalTime)
+import TestUtils (NativeTimestamp (..), assertFailureIO, nativeLocalTime, sized)
 
 -- | A generic record checks the bridge to composite type metadata.
 newtype VariantRecord = VariantRecord {payload :: Variant}
@@ -66,7 +67,7 @@ tests =
         ( query
             conn
             "SELECT ?::VARIANT, ?::VARIANT, ?::VARIANT, ?::VARIANT"
-            (42 :: Int64, "two" :: Text, record, listArray (0, 1) [1, 2] :: Array Int Int64)
+            (42 :: Int64, "two" :: Text, record, sized [1, 2] :: SizedArray 2 Int64)
             :: IO [(Variant, Variant, Variant, Variant)]
           )
           >>= ( @?=
@@ -226,22 +227,21 @@ tests =
             )
             >>= (@?= [Only object])
     , testCase "ARRAY parameters and generic records contain VARIANT" $ withConnection ":memory:" \conn -> do
-        let array = listArray (0, 2) [Variant (FieldInt8 1), Variant (FieldText "two"), Variant FieldNull]
-        (query conn "SELECT ?" (Only array) :: IO [Only (Array Int Variant)]) >>= (@?= [Only array])
+        let array = sized [Variant (FieldInt8 1), Variant (FieldText "two"), Variant FieldNull] :: SizedArray 3 Variant
+        (query conn "SELECT ?" (Only array) :: IO [Only (SizedArray 3 Variant)]) >>= (@?= [Only array])
         let record = VariantRecord (Variant (variantObject [("x", FieldWord64 maxBound)]))
         (query conn "SELECT ?" (Only record) :: IO [Only VariantRecord]) >>= (@?= [Only record])
     , testCase "nullable ARRAY parameters preserve heterogeneous VARIANT values" $ withConnection ":memory:" \conn -> do
         let values =
-              listArray
-                (0, 3)
+              sized
                 [ Nothing
                 , Just (Variant (FieldInt64 42))
                 , Just (Variant (FieldText "two"))
                 , Just (Variant (variantObject [("xs", FieldList [FieldNull, FieldBool True])]))
                 ]
-        (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, Array Int (Maybe Variant))]) >>= (@?= [("VARIANT[4]", values)])
+        (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, SizedArray 4 (Maybe Variant))]) >>= (@?= [("VARIANT[4]", values)])
     , testCase "empty ARRAY parameters raise an error" $ withConnection ":memory:" \conn -> do
-        let values = listArray (0, -1) [] :: Array Int (Maybe Variant)
+        let values = sized [] :: SizedArray 0 (Maybe Variant)
         result <- try (query conn "SELECT typeof(?)" (Only values))
         case result of
           Left SQLError{sqlErrorMessage, sqlErrorType} -> do

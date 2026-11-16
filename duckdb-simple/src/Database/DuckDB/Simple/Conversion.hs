@@ -43,13 +43,20 @@ the final row cannot defer its field conversion until after runConversion.
 -}
 
 instance Functor Conversion where
-  fmap f action = action >>= pure . f
+  {-# INLINE fmap #-}
+  fmap f (Conversion action) = Conversion $ fmap mapResult action
+    where
+      mapResult (Left errors) = Left errors
+      mapResult (Right value) = strictRight (f value)
 
 instance Applicative Conversion where
-  pure value = Conversion (Right <$> evaluate value)
+  {-# INLINE pure #-}
+  pure value = Conversion (pure (strictRight value))
+  {-# INLINE (<*>) #-}
   (<*>) = ap
 
 instance Monad Conversion where
+  {-# INLINE (>>=) #-}
   Conversion action >>= next = Conversion $ do
     result <- action
     case result of
@@ -80,6 +87,7 @@ instance Fail.MonadFail Conversion where
 -- Force a successful value to weak head normal form. IO exceptions propagate
 -- to the caller.
 runConversion :: Conversion a -> IO (Ok a)
+{-# INLINE runConversion #-}
 runConversion (Conversion action) = do
   result <- action
   case result of
@@ -90,9 +98,13 @@ runConversion (Conversion action) = do
 -- A decoder in a registered callback must use another connection for nested
 -- SQL. Reads of the owned field type need no connection lock.
 liftConversion :: IO a -> Conversion a
-liftConversion action = Conversion $ do
-  value <- action
-  Right <$> evaluate value
+{-# INLINE liftConversion #-}
+liftConversion action = Conversion (strictRight <$> action)
+
+-- | Construct a success that forces its value when its result tag is read.
+strictRight :: a -> Either e a
+{-# INLINE strictRight #-}
+strictRight value = value `seq` Right value
 
 -- | Fail with a conversion error.
 conversionError :: (Exception e) => e -> Conversion a

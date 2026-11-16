@@ -124,9 +124,10 @@ sizedArrayTests =
         assertSqlErrorType ErrorQueryBinder $
           (query_ conn "SELECT []::BIGINT[0]" :: IO [Only Int64])
         runConversion
-          (duckFromTypedField (LogicalTypeList (LogicalTypeScalar LogicalTypeIdBigInt)) (FieldList []) :: Conversion (SizedArray 0 Int64)) >>= \case
-          Errors errors -> assertBool (show errors) ("a DuckDB ARRAY has at least one element" `Text.isInfixOf` Text.pack (show errors))
-          Ok _ -> assertFailure "expected the generic size error"
+          (duckFromTypedField (LogicalTypeList (LogicalTypeScalar LogicalTypeIdBigInt)) (FieldList []) :: Conversion (SizedArray 0 Int64))
+          >>= \case
+            Errors errors -> assertBool (show errors) ("a DuckDB ARRAY has at least one element" `Text.isInfixOf` Text.pack (show errors))
+            Ok _ -> assertFailure "expected the generic size error"
         (query_ conn "SELECT NULL::BIGINT[]" :: IO [Only (Maybe (SizedArray 0 Int64))]) >>= (@?= [Only Nothing])
         assertReusable conn
     , testCase "the largest ARRAY size binds and declares, and a larger size fails at the bind, declaration, and read" $ withConnection ":memory:" \conn -> do

@@ -68,6 +68,7 @@ import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
+import Database.DuckDB.Simple.TypeScope (TypeScope, withTypeScope)
 import Database.DuckDB.Simple.Typed (argumentName, checkArgumentType, conversionMessage, prepareArgumentReader, rowDeclarations)
 import Database.DuckDB.Simple.V2.Registration (withTypeDeclaration)
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
@@ -341,7 +342,7 @@ scalarFunctionHandler casts fn info context err = runCallback err (executeScalar
 -- | Run one call of a scalar function.
 executeScalarFunction
   :: forall f. (Function f) => Maybe DuckDBV2FactoryHandle -> f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()
-executeScalarFunction casts fn info context = withContextFactory context \contextFactory -> do
+executeScalarFunction casts fn info context = withTypeScope \scope -> withContextFactory context \contextFactory -> do
   let expected = length (argumentTypes (Proxy @f))
   columnCount <- allocaArray 4 $ \counts -> do
     checked (c_duckdb_v2_scalar_function_exec_get_arg_count info counts (advancePtr counts 1) (advancePtr counts 2) (advancePtr counts 3))
@@ -350,7 +351,7 @@ executeScalarFunction casts fn info context = withContextFactory context \contex
     throwInternalError (Text.pack ("function expected " <> show expected <> " arguments but received " <> show columnCount))
   rawRowCount <- output (c_duckdb_v2_scalar_function_exec_get_row_count info)
   let rowCount = fromIntegral rawRowCount :: Int
-  readers <- mapM (makeColumnReader (callbackReadFactory casts contextFactory) info) [0 .. expected - 1]
+  readers <- mapM (makeColumnReader scope (callbackReadFactory casts contextFactory) info) [0 .. expected - 1]
   rows <- forM [0 .. rowCount - 1] $ \row -> forM readers ($ row)
   results <- mapM (`applyFunction` fn) rows
   outVec <- output (c_duckdb_v2_scalar_function_exec_get_result info)
@@ -382,10 +383,10 @@ scalarFunctionInitHandler initState info _context err = runCallback err do
 
 -- | Prepare the reader of one argument. A GEOMETRY value reads with the
 -- factory, at each depth of the type.
-makeColumnReader :: ReadFactory -> DuckDBV2ScalarFunctionExecInfoHandle -> Int -> IO (Int -> IO Field)
-makeColumnReader factory info columnIndex =
+makeColumnReader :: TypeScope -> ReadFactory -> DuckDBV2ScalarFunctionExecInfoHandle -> Int -> IO (Int -> IO Field)
+makeColumnReader scope factory info columnIndex =
   output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex))
-    >>= prepareArgumentReader (Just factory) columnIndex
+    >>= prepareArgumentReader scope (Just factory) columnIndex
 
 -- | Write the results of one call to the result vector. Set the size, then
 -- flatten, then read the pointers. A row of a result that is not raw borrows

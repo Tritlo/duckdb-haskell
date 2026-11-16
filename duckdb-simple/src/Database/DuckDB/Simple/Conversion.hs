@@ -33,7 +33,9 @@ actions only after all branches fail. Thus a discarded error does not read
 metadata, such as an ENUM dictionary, just to name the SQL type.
 
 Field metadata uses Conversion too. Its native owner and successful-result
-cache belong to the metadata reader. A child field maps its type projection
+cache belong to its result or callback scope. Native type actions fail after
+that scope closes. See Note [Scoped field types] in
+"Database.DuckDB.Simple.TypeScope". A child field maps its type projection
 over the parent's conversion. No pure thunk performs IO or stores an IO
 exception.
 

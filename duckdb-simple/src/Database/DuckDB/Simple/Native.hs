@@ -314,7 +314,7 @@ keeps a frame for each element or row adds those retained frames to this work.
 Thus a loop whose steps make native calls keeps a constant stack. The rule
 applies to a loop over the rows of a chunk, over the chunks of a result, and
 over a list of native items. It applies also when only some steps make a native
-call, as in the row loop of collectStreamRows in
+call, as in the row loop of withStreamRows in
 "Database.DuckDB.Simple.Result".
 
 The code uses these forms:
@@ -333,7 +333,7 @@ The code uses these forms:
 
 - A loop that reads the elements from the last to the first, and puts each
   element in front of the list. The list then needs no reverse (the row loop of
-  collectStreamRows).
+  withStreamRows).
 
 These loops keep a frame for each element, and they stay as they are, because
 the list is short in practice or the operation is rare:

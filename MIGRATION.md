@@ -152,8 +152,8 @@ The SQL workflow stays the same. These changes can affect your code:
   of both branches when both fail.
 - A decoder for a registered function's arguments runs inside its callback.
   Do not run a query on that callback's connection from the decoder. Use
-  another connection. `fieldType` reads its owned logical type without taking
-  the connection lock.
+  another connection. `fieldType` reads its scoped logical type without
+  taking the connection lock.
 - `Field.fieldType` has the type `Conversion LogicalTypeRep`. Read it with
   `logical <- fieldType field` in a decoder. A positional construction or
   match of `Field` does not compile. A record construction must give
@@ -161,15 +161,24 @@ The SQL workflow stays the same. These changes can affect your code:
   `Field{fieldName = "n", fieldIndex = 0, fieldValue = FieldInt64 1, fieldType = pure (LogicalTypeScalar LogicalTypeIdBigInt)}`.
   Use `pure (LogicalTypeScalar LogicalTypeIdVariant)` when the stored value
   determines the type. `Field` has no `Eq` or `Show` instance.
-- Each result column owns a native logical type. Its `fieldType` action can
-  run after the statement or connection closes. The library caches successful
-  type conversions. Cancellation or another IO exception leaves the cache
-  available for a retry. Type conversion runs in explicit IO; it performs no
-  hidden IO in a pure value.
+- Native `fieldType` actions are valid only in their owning query result or
+  callback scope. Query parsers run within the scope. A cursor keeps its
+  metadata until exhaustion, reset, or statement closure. Callback metadata
+  expires when that callback invocation returns. An escaped action raises
+  `SQLError` with the message `duckdb-simple: field type scope is closed`,
+  including an action whose result was cached. Read `LogicalTypeRep` inside
+  the scope to retain a pure snapshot after closure.
+- The metadata cache stores successful reads only. Cancellation or another IO
+  exception permits a retry while the owning scope remains open. Scope
+  closure releases native types and clears the cache. Metadata has no C
+  finalizer shim. Existing statement and connection finalizers are unchanged.
+  Type conversion runs in explicit IO; it performs no hidden IO in a pure
+  value.
 - `returnError` defers diagnostic metadata until the final conversion fails.
   A successful `Alternative` branch discards the other branch's diagnostic
   without reading its type or ENUM dictionary. A completed `ResultError` is
-  pure; rendering it performs no native IO.
+  pure; rendering it performs no native IO. Query and callback decoders resolve
+  these diagnostics before their metadata scope closes.
 - Generic decoding also uses `Conversion a`. Update the `DuckValue` methods
   `duckFromField` and `duckFromTypedField`, plus calls to `typedFromField` and
   `genericFromFieldValue`, that used `Either String a`. Define

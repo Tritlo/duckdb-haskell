@@ -135,7 +135,7 @@ import Database.DuckDB.Simple.Function (
  )
 import Database.DuckDB.Simple.Internal
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.Result (collectRows, resetStatementStream)
+import Database.DuckDB.Simple.Result (resetStatementStream, withRows)
 import qualified Database.DuckDB.Simple.Result as Result
 import Database.DuckDB.Simple.ToField (
   DuckDBColumnType (..),
@@ -469,14 +469,14 @@ queryWith :: (ToRow q) => RowParser r -> Connection -> Query -> q -> IO [r]
 queryWith parser conn queryText params =
   withStatement conn queryText \stmt -> do
     bind stmt (toRow params)
-    collectRows stmt >>= convertRowsWith parser queryText
+    withRows stmt (convertRowsWith parser queryText)
 
 -- | Run a query that uses named parameters and decode all rows eagerly.
 queryNamed :: (FromRow r) => Connection -> Query -> [NamedParam] -> IO [r]
 queryNamed conn queryText params =
   withStatement conn queryText \stmt -> do
     bindNamed stmt params
-    collectRows stmt >>= convertRows queryText
+    withRows stmt (convertRows queryText)
 
 -- | Run a query without supplying parameters and decode all rows eagerly.
 query_ :: (FromRow r) => Connection -> Query -> IO [r]
@@ -488,7 +488,7 @@ queryWith_ parser conn queryText =
   withAdHocStatement
     conn
     queryText
-    (\parsed -> Result.collectParsedRows conn queryText parsed >>= convertRowsWith parser queryText)
+    (\parsed -> Result.withParsedRows conn queryText parsed (convertRowsWith parser queryText))
     (pure [])
 
 -- | Execute preceding statements before returning the final statement's result.

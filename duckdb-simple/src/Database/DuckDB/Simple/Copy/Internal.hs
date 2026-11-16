@@ -42,14 +42,13 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
 import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions, readCallbackState, targetCastFactory, transferCallbackState)
-import Database.DuckDB.Simple.FromField (Field (..))
+import Database.DuckDB.Simple.FromField (Field (..), FieldValue)
 import Database.DuckDB.Simple.Internal (Connection, withDatabaseHandle)
 import Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
   ReadFactory,
   VectorReader,
   callbackReadFactory,
-  ownedTypeRep,
   prepareGeometryReader,
   prepareVariantReader,
   prepareVectorReader,
@@ -57,6 +56,7 @@ import Database.DuckDB.Simple.Materialize (
   rejectRows,
  )
 import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.TypeScope (scopedTypeRep, withTypeScope)
 import Database.DuckDB.Simple.Typed (TypedRow (..))
 import Database.DuckDB.Simple.Typed.Table (writeRows)
 import Database.DuckDB.Simple.V2.Copy (
@@ -205,11 +205,16 @@ copyToSide casts readVariant bindFn initFn sinkFn finalizeFn =
           (destroy c_duckdb_v2_column_data_collection_destroy)
           (materializeCollection (callbackReadFactory casts factory) readVariant types)
       transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_batch_set_batch_data info)) rows
-    flush info _ = do
-      (state, _) <- readCopyBinding (c_duckdb_v2_copy_to_flush_get_bind_data info)
+    flush info _ = withTypeScope \scope -> do
+      (state, types) <- readCopyBinding (c_duckdb_v2_copy_to_flush_get_bind_data info)
       global <- readCallbackState (c_duckdb_v2_copy_to_flush_get_init_data info)
       rows <- readCallbackState (c_duckdb_v2_copy_to_flush_get_batch_data info)
-      sinkFn (CopySinkInfo state global) rows
+      -- Bind data owns the types through this callback. Copy them into the
+      -- flush scope. See Note [Scoped field types] in
+      -- "Database.DuckDB.Simple.TypeScope".
+      columnTypes <- mapM (scopedTypeRep scope . output . c_duckdb_v2_logical_type_copy) types
+      let fields = zipWith3 (\index logical value -> Field (Text.pack ("column" <> show index)) index value logical) [0 ..] columnTypes
+      sinkFn (CopySinkInfo state global) (map fields rows)
     finalize info _ = do
       (state, _) <- readCopyBinding (c_duckdb_v2_copy_to_finalize_get_bind_data info)
       global <- readCallbackState (c_duckdb_v2_copy_to_finalize_get_init_data info)
@@ -253,7 +258,7 @@ copyBindingDestructor = DuckDBV2OpaqueDestroyFn (castFunPtr copyBindingDestructo
 -- | Copy each scanned chunk before the scan invalidates its borrowed buffers.
 -- The factory makes the chunk and reads GEOMETRY.
 materializeCollection
-  :: ReadFactory -> VectorReader -> [DuckDBV2LogicalTypeHandle] -> DuckDBV2ColumnDataCollectionHandle -> IO [[Field]]
+  :: ReadFactory -> VectorReader -> [DuckDBV2LogicalTypeHandle] -> DuckDBV2ColumnDataCollectionHandle -> IO [[FieldValue]]
 materializeCollection readFactory readVariant types collection =
   withArray types \typePtr ->
     bracket
@@ -277,16 +282,14 @@ materializeCollection readFactory readVariant types collection =
                           loop (rows : groups)
                 in  loop []
 
--- | Copy a complete chunk before its collection scan advances.
-materializeChunkRows :: FallbackReaders -> DuckDBV2DataChunkHandle -> IO [[Field]]
+-- | Copy the values of a complete chunk before its collection scan advances.
+-- The flush callback adds the fields and their scoped type actions.
+materializeChunkRows :: FallbackReaders -> DuckDBV2DataChunkHandle -> IO [[FieldValue]]
 materializeChunkRows readers chunk = do
   columns <- output (c_duckdb_v2_data_chunk_get_vector_count chunk)
   columnReaders <- forM [0 .. fromIntegral columns - 1] \index -> do
     vector <- output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral (index :: Int)))
-    readValue <- prepareVectorReader readers vector
-    -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
-    columnType <- ownedTypeRep (output (c_duckdb_v2_vector_get_logical_type vector))
-    pure \row -> (\value -> Field (Text.pack ("column" <> show index)) index value columnType) <$> readValue row
+    prepareVectorReader readers vector
   rows <- output (c_duckdb_v2_data_chunk_get_size chunk)
   forM [0 .. fromIntegral rows - 1] \row -> mapM ($ row) columnReaders
 

@@ -39,6 +39,7 @@ import Database.DuckDB.Simple.Materialize (ReadFactory (..))
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..))
+import Database.DuckDB.Simple.TypeScope (withTypeScope)
 import Database.DuckDB.Simple.Typed (
   TypedRow (..),
   argumentName,
@@ -319,13 +320,14 @@ initializeStates Aggregate{aggregateInitial} info = do
 updateStates
   :: (FromRow args)
   => Maybe DuckDBV2FactoryHandle -> Text -> Aggregate state args result -> Int -> DuckDBV2AggregateFunctionUpdateInfoHandle -> IO ()
-updateStates casts name Aggregate{aggregateStep} columns info = do
+updateStates casts name Aggregate{aggregateStep} columns info = withTypeScope \scope -> do
   count <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_update_get_row_count info)
   states <- output (c_duckdb_v2_aggregate_function_update_get_states info)
   readers <-
     mapM
       ( \index ->
-          output (c_duckdb_v2_aggregate_function_update_get_arg info (fromIntegral index)) >>= prepareArgumentReader (InstanceFactory <$> casts) index
+          output (c_duckdb_v2_aggregate_function_update_get_arg info (fromIntegral index))
+            >>= prepareArgumentReader scope (InstanceFactory <$> casts) index
       )
       [0 .. columns - 1]
   forM_ [0 .. count - 1] \row -> do

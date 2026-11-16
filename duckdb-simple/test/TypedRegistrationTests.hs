@@ -58,6 +58,7 @@ import Database.DuckDB.Simple.LogicalRep (
   TupleValue,
   UnionValue,
  )
+import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import Database.DuckDB.Simple.Registration (
   FunctionParameter (..),
@@ -119,6 +120,8 @@ typedRegistrationTests =
     , testCase "table function and aggregate with record, list, map, and union types" testTableRecords
     , testCase "a record field of an alias type declares the alias" testAliasDeclaration
     , testCase "a scalar function argument gives its type to FromField" testArgumentType
+    , testCase "scalar callback metadata expires after success and failure" testArgumentTypeScope
+    , testCase "table argument metadata expires before its deferred scan action" testTableArgumentTypeScope
     , testCase "typed registration rejects a type with no declaration" testNoDeclaration
     , testCase "a newtype with a sized ARRAY type text declares an ARRAY in each position" testSizedArray
     , testCase "record field outside the range of its declared type" testRecordFieldRange
@@ -1346,6 +1349,58 @@ testArgumentType :: Assertion
 testArgumentType = withConnection ":memory:" \conn -> do
   createFunction conn "argument_type" \(ArgumentType text) -> text
   query_ conn "SELECT argument_type(1.5) FROM range(3000) t(i) LIMIT 1" >>= (@?= [Only ("LogicalTypeDecimal 4 1" :: Text)])
+
+-- | A scalar argument with its value and native metadata action.
+data ScopedArgument = ScopedArgument Double (Conversion LogicalTypeRep)
+
+instance DuckDBColumnType ScopedArgument where
+  duckdbColumnTypeFor _ = "DOUBLE"
+
+instance FromField ScopedArgument where
+  fromField entry = ScopedArgument <$> fromField entry <*> pure (fieldType entry)
+
+instance ToDuckValue ScopedArgument where
+  toDuckValue factory (ScopedArgument value _) = toDuckValue factory value
+
+-- | Pure snapshots survive a scalar callback; its native actions expire.
+testArgumentTypeScope :: Assertion
+testArgumentTypeScope = forM_ [False, True] \cached -> forM_ [False, True] \fails -> withConnection ":memory:" \conn -> do
+  captured <- newIORef Nothing
+  createFunction conn "argument_scope" \(ScopedArgument value logical) -> do
+    value @?= 1.5
+    snapshot <-
+      if cached
+        then
+          runConversion logical >>= \case
+            Ok rep -> pure (Just rep)
+            Errors errors -> assertFailure (show errors) >> pure Nothing
+        else pure Nothing
+    writeIORef captured (Just (logical, snapshot))
+    when fails (ioError (userError "scope callback failed"))
+    pure (7 :: Int64)
+  try (query_ conn "SELECT argument_scope(1.5)" :: IO [Only Int64]) >>= \case
+    Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) (fails && "scope callback failed" `Text.isInfixOf` sqlErrorMessage)
+    Right rows -> do
+      assertBool "the callback should have failed" (not fails)
+      rows @?= [Only 7]
+  performMajorGC
+  readIORef captured >>= \case
+    Nothing -> assertFailure "the scalar callback did not capture its argument type"
+    Just (logical, snapshot) -> do
+      snapshot @?= if cached then Just (LogicalTypeScalar LogicalTypeIdDouble) else Nothing
+      try (runConversion logical) >>= \case
+        Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: field type scope is closed"
+        Right _ -> assertFailure "scalar metadata survived its callback"
+
+-- | A deferred table scan cannot use native metadata from its bind callback.
+testTableArgumentTypeScope :: Assertion
+testTableArgumentTypeScope = withConnection ":memory:" \conn -> do
+  createTableFunction conn "table_argument_scope" ["value"] \(Only (ScopedArgument value logical)) -> do
+    try (runConversion logical) >>= \case
+      Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: field type scope is closed"
+      Right _ -> assertFailure "table metadata survived its bind callback"
+    pure [Only value]
+  query_ conn "SELECT value FROM table_argument_scope(1.5)" >>= (@?= [Only (1.5 :: Double)])
 
 -- | A record field of an alias type declares the alias in the STRUCT type of a
 -- table function column. A record parameter, a list of records, and a list of

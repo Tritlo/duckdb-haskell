@@ -25,9 +25,10 @@ import Database.DuckDB.Simple.Callback (attachOpaque, readCallbackState, targetC
 import Database.DuckDB.Simple.Conversion (runConversion)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
-import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory, materializeValue, ownedTypeRep, rejectRows)
+import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory, materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
+import Database.DuckDB.Simple.TypeScope (TypeScope, scopedTypeRep, withTypeScope)
 import Database.DuckDB.Simple.Typed (
   ColumnValue (..),
   TypedRow (..),
@@ -122,8 +123,8 @@ createTableFunctionOn target name columns function = do
       configure factory tableFunction = do
         withIdentifier name (checked . c_duckdb_v2_table_function_set_name tableFunction)
         output (c_duckdb_v2_table_function_get_signature tableFunction) >>= configureFunctionSignature factory signature
-      bind input result context = withContextFactory context \factory -> do
-        params <- readArguments name (length parameterTypes) (callbackReadFactory casts factory) input
+      bind input result context = withTypeScope \scope -> withContextFactory context \factory -> do
+        params <- readArguments scope name (length parameterTypes) (callbackReadFactory casts factory) input
         forM_ (zip columns columnTypes) \(column, dtype) ->
           withTypeDeclaration factory dtype \logical ->
             withIdentifier column \identifier -> checked (c_duckdb_v2_table_function_bind_add_result_column result identifier logical)
@@ -219,14 +220,14 @@ splitRows = go []
 -- | Read the constant arguments of one call and convert them with 'FromRow'.
 -- A NULL argument is @FieldNull@. An argument that does not convert raises an
 -- error that names the table function.
-readArguments :: (FromRow params) => Text -> Int -> ReadFactory -> DuckDBV2FunctionBindInfoHandle -> IO params
-readArguments name count factory input = do
+readArguments :: (FromRow params) => TypeScope -> Text -> Int -> ReadFactory -> DuckDBV2FunctionBindInfoHandle -> IO params
+readArguments scope name count factory input = do
   fields <- forM (take count [0 ..]) \index ->
     bracket (output (c_duckdb_v2_function_bind_get_arg_value input (fromIntegral index))) destroyValue \value ->
       -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
       Field (argumentName index) index
         <$> materializeValue unexpectedVariant factory value
-        <*> ownedTypeRep (output (c_duckdb_v2_value_get_logical_type value))
+        <*> scopedTypeRep scope (output (c_duckdb_v2_value_get_logical_type value))
   converted <- runConversion (parseRow fromRow fields)
   case converted of
     Ok params -> pure params

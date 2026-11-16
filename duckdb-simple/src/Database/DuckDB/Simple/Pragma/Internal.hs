@@ -22,12 +22,14 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (targetCastFactory)
+import Database.DuckDB.Simple.Conversion (runConversion)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal (Connection)
 import Database.DuckDB.Simple.Materialize (callbackReadFactory, materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
+import Database.DuckDB.Simple.TypeScope (TypeScope, scopedTypeRep, withTypeScope)
 import Database.DuckDB.Simple.Typed (checkArgumentType, variantArgumentReason)
 import qualified Database.DuckDB.Simple.V2.Pragma as V2
 import Database.DuckDB.Simple.V2.Registration (
@@ -88,20 +90,21 @@ registerPragmaFunctionOn target name parameters callback = do
       parameters
   casts <- targetCastFactory target
   V2.registerPragmaFunctionOn target name parameters case callback of
-    QueryPragma action -> V2.QueryPragma \info context -> pragmaArguments casts name info context >>= action
-    ExecPragma action -> V2.ExecPragma \info context -> pragmaArguments casts name info context >>= action
+    QueryPragma action -> V2.QueryPragma \info context -> withTypeScope \scope -> pragmaArguments scope casts name info context >>= action
+    ExecPragma action -> V2.ExecPragma \info context -> withTypeScope \scope -> pragmaArguments scope casts name info context >>= action
 
 -- | Copy the arguments of a pragma call and decode them as one row. The first
 -- argument is the name of the pragma for the error message.
 pragmaArguments
-  :: (FromRow args) => Maybe DuckDBV2FactoryHandle -> Text -> DuckDBV2FunctionBindInfoHandle -> DuckDBV2ContextHandle -> IO args
-pragmaArguments casts name info context = withContextFactory context \contextFactory -> do
+  :: (FromRow args) => TypeScope -> Maybe DuckDBV2FactoryHandle -> Text -> DuckDBV2FunctionBindInfoHandle -> DuckDBV2ContextHandle -> IO args
+pragmaArguments scope casts name info context = withContextFactory context \contextFactory -> do
   let factory = callbackReadFactory casts contextFactory
   count <- allocaArray 4 \counts -> do
     checked (c_duckdb_v2_function_bind_get_arg_count info counts (advancePtr counts 1) (advancePtr counts 2) (advancePtr counts 3))
     sum <$> peekArray 4 counts
   fields <- mapM (argumentField factory) (indices count)
-  case parseRow fromRow fields of
+  converted <- runConversion (parseRow fromRow fields)
+  case converted of
     Ok args -> pure args
     Errors failures -> do
       let message = sqlErrorMessage (rowErrorsToSqlError (Query name) failures)
@@ -114,10 +117,12 @@ pragmaArguments casts name info context = withContextFactory context \contextFac
   where
     argumentField factory index = do
       argument <- output (c_duckdb_v2_function_bind_get_arg_name info index) >>= readIdentifier
-      value <-
+      -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
+      (value, argumentType) <-
         bracket
           (output (c_duckdb_v2_function_bind_get_arg_value info index))
           destroyValue
-          (materializeValue (noVariant argument) factory)
-      pure (Field argument (fromIntegral index) value)
+          \native ->
+            (,) <$> materializeValue (noVariant argument) factory native <*> scopedTypeRep scope (output (c_duckdb_v2_value_get_logical_type native))
+      pure (Field argument (fromIntegral index) value argumentType)
     noVariant argument = rejectRows (throwInvalidArgument (Text.intercalate ": " [name, "parameter " <> argument, variantArgumentReason]))

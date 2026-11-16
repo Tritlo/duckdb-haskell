@@ -54,9 +54,11 @@ import Database.DuckDB.Simple.LogicalRep (
   TupleValue (..),
   UnionMemberType (..),
   UnionValue (..),
+  aliasBase,
+  logicalTypeSQL,
  )
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToBaseRep, logicalTypeToRep)
 import qualified Database.DuckDB.Simple.VariantCodec as VariantCodec
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
@@ -189,6 +191,7 @@ prepareVectorReader :: FallbackReaders -> DuckDBV2VectorHandle -> IO (Int -> IO 
 prepareVectorReader readers vector = do
   -- The cache of ENUM labels lives as long as this reader. See Note [ENUM labels].
   labels <- newIORef IntMap.empty
+  -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
   prepareVectorReaderWith readers (withVectorType vector logicalTypeToRep) (Just labels) vector
 
 -- | The labels of an ENUM type that readers read, by index. 'Nothing' means
@@ -270,7 +273,8 @@ prepareVectorReaderWith readers tree labels vector = do
   let ConstPtr dataPtr = getField @"data'" view
       ConstPtr validity = getField @"validity" view
       ConstPtr selection = getField @"sel" view
-  readValue <- prepareValueReader readers tree labels dtype vector dataPtr validity
+  -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
+  readValue <- prepareValueReader readers (aliasBase <$> tree) labels dtype vector dataPtr validity
   pure \row -> do
     when (row < 0 || fromIntegral row >= getField @"count" view) $
       throwInternalError (Text.pack "vector row index out of range")
@@ -326,8 +330,9 @@ prepareValueReader readers tree labels dtype vector dataPtr validity = case dtyp
   DuckDBV2LogicalTypeIdTuple -> whenValid FieldTuple <$> prepareTupleDecoder readers tree vector
   DuckDBV2LogicalTypeIdUnion -> whenValid FieldUnion <$> prepareUnionDecoder readers tree vector
   DuckDBV2LogicalTypeIdDecimal -> do
+    -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
     (width, scale) <-
-      withVectorType vector logicalTypeToRep >>= \case
+      withVectorType vector logicalTypeToBaseRep >>= \case
         LogicalTypeDecimal width scale -> pure (width, scale)
         _ -> throwInternalError (Text.pack "invalid DECIMAL type")
     pure (whenValid (FieldDecimal . DecimalValue width scale) (decimalStorage dataPtr width))
@@ -442,8 +447,9 @@ the same pair changes their result:
 -- Note [User casts and the casts of the library].
 prepareGeometryReader :: ReadFactory -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
 prepareGeometryReader readFactory vector = do
+  -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
   crs <-
-    withVectorType vector logicalTypeToRep >>= \case
+    withVectorType vector logicalTypeToBaseRep >>= \case
       LogicalTypeGeometry value -> pure value
       _ -> throwInternalError (Text.pack "invalid GEOMETRY type")
   size <- output (c_duckdb_v2_vector_get_size vector)
@@ -555,7 +561,7 @@ prepareStructDecoder readers tree vector = do
     tree >>= \case
       LogicalTypeStruct typeArray -> pure typeArray
       other ->
-        throwInternalError (Text.pack ("expected STRUCT logical type, but saw " <> show other))
+        throwInternalError (Text.pack "expected STRUCT logical type, but saw " <> logicalTypeSQL other)
   let typeList = elems structFields
       count = length typeList
       indexMap =
@@ -606,7 +612,7 @@ prepareUnionDecoder readers tree vector = do
     tree >>= \case
       LogicalTypeUnion members -> pure members
       other ->
-        throwInternalError (Text.pack ("expected UNION logical type, but saw " <> show other))
+        throwInternalError (Text.pack "expected UNION logical type, but saw " <> logicalTypeSQL other)
   let membersList = elems membersArray
       memberCount = length membersList
   -- Child 0 of a UNION vector is the tag, and member j is child j + 1. The tag

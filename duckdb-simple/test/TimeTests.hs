@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE LambdaCase #-}
@@ -12,7 +13,7 @@ module TimeTests (timeTests) where
 
 import Control.Exception (fromException, throwIO, try)
 import Control.Monad (forM_, void)
-import Data.Array (Array, listArray)
+import Data.Array (listArray)
 import Data.Int (Int64)
 import qualified Data.Map.Strict as Map
 import Data.Ratio ((%))
@@ -31,12 +32,13 @@ import Database.DuckDB.Simple.LogicalRep (
   UnionValue (..),
  )
 import Database.DuckDB.Simple.Ok (Ok (..))
+import qualified Database.DuckDB.Simple.Registration as R
 import Database.DuckDB.Simple.Time
 import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (assertInputError, assertRangeError)
+import TestUtils (assertInputError, assertRangeError, sized)
 
 -- | Record fields exercise the generic scalar and collection instances.
 data TemporalRecord = TemporalRecord
@@ -96,18 +98,28 @@ timeTests =
           assertConversionError (query_ conn "SELECT 'infinity'::TIMESTAMPTZ" :: IO [Only UTCTime])
           assertConversionError (query_ conn "SELECT 'infinity'::TIMESTAMP" :: IO [Only TimeOfDay])
           (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
-      , testCase "a conversion error gives the DuckDB names TIMESTAMPTZ and TIMETZ" $ withConnection ":memory:" $ \conn -> do
+      , testCase "a conversion error names a time zone type as DuckDB does" $ withConnection ":memory:" $ \conn -> do
           [(timestamp, time)] <- query_ conn "SELECT TIMESTAMPTZ '2000-01-02 03:04:05+00', TIMETZ '03:04:05+00'"
-          forM_ [(timestamp, "TIMESTAMPTZ"), (time, "TIMETZ")] $ \(value, name) ->
-            case fromField Field{fieldName = "value", fieldIndex = 0, fieldValue = value} :: Ok Int64 of
-              Errors errors -> map (fmap errSQLType . fromException) errors @?= [Just name]
-              Ok number -> assertFailure ("expected a conversion error, got " <> show number)
-          -- The message of a query has the same name.
-          forM_ [("SELECT TIMESTAMPTZ '2000-01-02 03:04:05+00'", " has type TIMESTAMPTZ "), ("SELECT TIMETZ '03:04:05+00'", " has type TIMETZ ")] $ \(sql, expected) -> do
-            result <- try (query_ conn sql :: IO [Only Int64])
-            case result of
-              Left SQLError{sqlErrorMessage = message} -> assertBool (Text.unpack message) (expected `Text.isInfixOf` message)
-              Right rows -> assertFailure ("expected a conversion error, got " <> show rows)
+          -- A Field of the type VARIANT names the type of its value with the
+          -- text of DuckDB.
+          forM_ [(timestamp, "TIMESTAMP WITH TIME ZONE"), (time, "TIME WITH TIME ZONE")] $ \(value, name) ->
+            runConversion
+              ( fromField Field{fieldName = "value", fieldIndex = 0, fieldValue = value, fieldType = pure (LogicalTypeScalar LogicalTypeIdVariant)}
+                  :: Conversion Int64
+              )
+              >>= \case
+                Errors errors -> map (fmap errSQLType . fromException) errors @?= [Just name]
+                Ok number -> assertFailure ("expected a conversion error, got " <> show number)
+          -- The message of a query names the column type with the text of DuckDB.
+          forM_
+            [ ("SELECT TIMESTAMPTZ '2000-01-02 03:04:05+00'", " has type TIMESTAMP WITH TIME ZONE ")
+            , ("SELECT TIMETZ '03:04:05+00'", " has type TIME WITH TIME ZONE ")
+            ]
+            $ \(sql, expected) -> do
+              result <- try (query_ conn sql :: IO [Only Int64])
+              case result of
+                Left SQLError{sqlErrorMessage = message} -> assertBool (Text.unpack message) (expected `Text.isInfixOf` message)
+                Right rows -> assertFailure ("expected a conversion error, got " <> show rows)
       , testCase "custom FromField receives native infinity" $ withConnection ":memory:" $ \conn ->
           ( query_ conn "SELECT value FROM (VALUES ('-infinity'::DATE), (DATE '2000-01-02'), ('infinity'::DATE)) t(value) ORDER BY value"
               :: IO [Only InfinitySign]
@@ -122,7 +134,7 @@ timeTests =
               (\acc (Only value) -> pure (value : acc))
           reverse values @?= [NegInfinity, Finite day, PosInfinity]
       , testCase "date arrays preserve infinities" $ withConnection ":memory:" $ \conn -> do
-          let values = listArray (0 :: Int, 2) [NegInfinity, Finite day, PosInfinity]
+          let values = sized [NegInfinity, Finite day, PosInfinity] :: SizedArray 3 (Unbounded Day)
           query conn "SELECT ?" (Only values) >>= (@?= [Only values])
       , testCase "generic records retain finite values infinities and NULL" $ withConnection ":memory:" $ \conn -> do
           let values = TemporalRecord NegInfinity (Finite local) PosInfinity Nothing [PosInfinity, Finite day, NegInfinity]
@@ -188,14 +200,14 @@ nanosecondTimeTests =
   , testCase "nanosecond UTC arrays retain NULLs and reject empty arrays" $ withConnection ":memory:" $ \conn -> do
       let precise = posixSecondsToUTCTime 0.123456789
           negative = posixSecondsToUTCTime (-0.000000001)
-          values = listArray (0 :: Int, 2) [Just precise, Nothing, Just negative]
-          empty = listArray (0, -1) [] :: Array Int (Maybe UTCTime)
-          nulls = listArray (0, 1) [Nothing, Nothing] :: Array Int (Maybe UTCTime)
+          values = sized [Just precise, Nothing, Just negative] :: SizedArray 3 (Maybe UTCTime)
+          empty = sized [] :: SizedArray 0 (Maybe UTCTime)
+          nulls = sized [Nothing, Nothing] :: SizedArray 2 (Maybe UTCTime)
       (query conn "SELECT ?::TIMESTAMPTZ_NS[]" (Only values) :: IO [Only [Maybe UTCTime]]) >>= (@?= [Only [Just precise, Nothing, Just negative]])
       assertEmptyArrayUnavailable (query conn "SELECT ?::TIMESTAMPTZ_NS[]" (Only empty) :: IO [Only [Maybe UTCTime]])
       (query conn "SELECT ?::TIMESTAMPTZ_NS[]" (Only nulls) :: IO [Only [Maybe UTCTime]]) >>= (@?= [Only [Nothing, Nothing]])
       (query conn "SELECT ?::TIMESTAMPTZ_NS" (Only (Nothing :: Maybe UTCTime)) :: IO [Only (Maybe UTCTime)]) >>= (@?= [Only Nothing])
-      let nested = listArray (0 :: Int, 1) [values, values]
+      let nested = sized [values, values] :: SizedArray 2 (SizedArray 3 (Maybe UTCTime))
       (query conn "SELECT ?::TIMESTAMPTZ_NS[][]" (Only nested) :: IO [Only [[Maybe UTCTime]]])
         >>= (@?= [Only (replicate 2 [Just precise, Nothing, Just negative])])
   , testCase "nanosecond targets preserve matching STRUCT MAP and UNION leaves" $ withConnection ":memory:" $ \conn -> do
@@ -343,7 +355,7 @@ nanosecondTimeTests =
             StructValue (listArray (0, 0) [StructField "v" value]) (listArray (0, 0) [StructField "v" logical]) (Map.singleton "v" 0)
       stored "TIMESTAMP_NS[]" [precise, coarse] >>= (@?= [Only "['2026-01-02 03:04:05.123456999', '2026-01-02 03:04:05.123456']"])
       stored "TIMESTAMP[]" [precise, coarse] >>= (@?= [Only "['2026-01-02 03:04:05.123456', '2026-01-02 03:04:05.123456']"])
-      stored "TIMESTAMP_NS[2]" (listArray (0, 1) [precise, coarse] :: Array Int LocalTime)
+      stored "TIMESTAMP_NS[2]" (sized [precise, coarse] :: SizedArray 2 LocalTime)
         >>= (@?= [Only "['2026-01-02 03:04:05.123456999', '2026-01-02 03:04:05.123456']"])
       stored "TIME_NS[]" [time] >>= (@?= [Only "['03:04:05.123456999']"])
       stored "TIME[]" [time] >>= (@?= [Only "['03:04:05.123456']"])
@@ -355,6 +367,23 @@ nanosecondTimeTests =
       stored "STRUCT(v TIMESTAMP)" localStruct >>= (@?= [Only "{'v': '2026-01-02 03:04:05.123456'}"])
       stored "STRUCT(v TIME_NS)" timeStruct >>= (@?= [Only "{'v': '03:04:05.123456999'}"])
       stored "STRUCT(v TIME)" timeStruct >>= (@?= [Only "{'v': '03:04:05.123456'}"])
+      let timestamp = LogicalTypeScalar LogicalTypeIdTimestamp
+          list = LogicalTypeList timestamp
+          record = LogicalTypeStruct (listArray (0, 0) [StructField "v" timestamp])
+          listValue = FieldList [FieldTimestamp (Finite precise)]
+          recordValue = FieldStruct localStruct
+      forM_
+        [ ("time_list", list, listValue, "STRUCT(v TIMESTAMP_NS[])", "{'v': ['2026-01-02 03:04:05.123456999']}")
+        , ("time_record", record, recordValue, "STRUCT(v STRUCT(v TIMESTAMP_NS))", "{'v': {'v': '2026-01-02 03:04:05.123456999'}}")
+        ]
+        $ \(name, base, value, target, expected) -> do
+          R.registerCustomType conn name (R.StructuredType base)
+          let aliased = struct value (LogicalTypeAlias name base)
+          (query conn "SELECT typeof((?).v)" (Only aliased) :: IO [Only Text.Text]) >>= (@?= [Only name])
+          stored target aliased >>= (@?= [Only expected])
+      let nested = struct (FieldList [recordValue]) (LogicalTypeList (LogicalTypeAlias "time_record" record))
+      stored "STRUCT(v STRUCT(v TIMESTAMP_NS)[])" nested
+        >>= (@?= [Only "{'v': [{'v': '2026-01-02 03:04:05.123456999'}]}"])
   , testCase "a FieldMap gives its key target to its keys and its value target to its values" $ withConnection ":memory:" $ \conn -> do
       _ <- execute_ conn "CREATE TABLE stored (v MAP(VARCHAR, TIME_NS))"
       _ <-
@@ -431,7 +460,7 @@ nanosecondTimeTests =
       -- For an element, the library checks the range before the constructor of
       -- the list, the array, or the map casts the element.
       encoderError "list" (insert "TIMESTAMP_NS[]" [precise, early])
-      encoderError "Array" (insert "TIMESTAMP_NS[2]" (listArray (0, 1) [precise, early] :: Array Int LocalTime))
+      encoderError "SizedArray" (insert "TIMESTAMP_NS[2]" (sized [precise, early] :: SizedArray 2 LocalTime))
       encoderError "Map key" (insert "MAP(TIMESTAMP_NS, VARCHAR)" (Map.fromList [(moment 2300 1 1 0 0 0, "a" :: Text.Text)]))
       encoderError "Map value" (insert "MAP(VARCHAR, TIMESTAMP_NS)" (Map.fromList [("a" :: Text.Text, precise), ("b", early)]))
       encoderError "list of UTCTime with no digits" (insert "TIMESTAMPTZ_NS[]" [localTimeToUTC utc (moment 1600 1 2 3 4 5)])
@@ -572,9 +601,9 @@ nanosecondTimeTests =
         ErrorTypeConversion
         "TIMESTAMP value out of finite range"
       rejects
-        "Array element"
+        "SizedArray element"
         "TIMESTAMPTZ_NS[1]"
-        (listArray (0, 0) [late] :: Array Int UTCTime)
+        (sized [late] :: SizedArray 1 UTCTime)
         ErrorTypeConversion
         "TIMESTAMP value out of finite range"
       rejects
@@ -603,7 +632,7 @@ nanosecondTimeTests =
       let precise = LocalTime (fromGregorian 2026 1 2) (TimeOfDay 3 4 5.123456789)
       (query conn "SELECT (?::MAP(VARCHAR, VARIANT))::VARCHAR" (Only (Map.singleton ("a" :: Text.Text) precise)) :: IO [Only Text.Text])
         >>= (@?= [Only "{a=2026-01-02 03:04:05.123456}"])
-      (query conn "SELECT (?::VARIANT[1])::VARCHAR" (Only (listArray (0, 0) [precise] :: Array Int LocalTime)) :: IO [Only Text.Text])
+      (query conn "SELECT (?::VARIANT[1])::VARCHAR" (Only (sized [precise] :: SizedArray 1 LocalTime)) :: IO [Only Text.Text])
         >>= (@?= [Only "[2026-01-02 03:04:05.123456]"])
   , testCase "nanosecond UTC targets reject finite overflow and sentinel collisions" $ withConnection ":memory:" $ \conn -> do
       forM_
@@ -738,7 +767,7 @@ nanosecondTimeTests =
           rejected bound (label "list of Maybe Day") "DATE[]" [Nothing, Just day]
           rejected bound (label "Map key of Day") "MAP(DATE, VARCHAR)" (Map.fromList [(day, "v" :: Text.Text)])
           rejected bound (label "Map of Day") "MAP(VARCHAR, DATE)" (Map.fromList [("k" :: Text.Text, day)])
-          rejected bound (label "Array of LocalTime") "TIMESTAMP[1]" (listArray (0, 0) [time] :: Array Int LocalTime)
+          rejected bound (label "SizedArray of LocalTime") "TIMESTAMP[1]" (sized [time] :: SizedArray 1 LocalTime)
           rejected bound (label "Map key of LocalTime") "MAP(TIMESTAMP, VARCHAR)" (Map.fromList [(time, "v" :: Text.Text)])
           rejected bound (label "Map of LocalTime") "MAP(VARCHAR, TIMESTAMP)" (Map.fromList [("k" :: Text.Text, time)])
           rejected bound (label "LocalTime for a VARIANT") "VARIANT" time
@@ -801,7 +830,7 @@ nanosecondTimeTests =
           rejected (label "FieldStruct leaf") expected "STRUCT(a TIME)" leaf
           rejected (label "Variant payload") expected "VARIANT" (Variant (FieldTime time))
           rejected (label "Variant list payload") expected "VARIANT" (Variant (FieldList [FieldTime time]))
-          rejected (label "Array of TimeOfDay") expected "TIME[1]" (listArray (0, 0) [time] :: Array Int TimeOfDay)
+          rejected (label "SizedArray of TimeOfDay") expected "TIME[1]" (sized [time] :: SizedArray 1 TimeOfDay)
           rejected
             (label "FieldTuple leaf")
             expected

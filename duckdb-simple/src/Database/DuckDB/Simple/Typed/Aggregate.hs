@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -29,6 +30,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
 import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions, targetCastFactory)
+import Database.DuckDB.Simple.Conversion (runConversion)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (FieldNull))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
 import Database.DuckDB.Simple.Function.Internal (FunctionResult (..), ScalarValue, prepareResultWriter)
@@ -37,6 +39,7 @@ import Database.DuckDB.Simple.Materialize (ReadFactory (..))
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..))
+import Database.DuckDB.Simple.TypeScope (withTypeScope)
 import Database.DuckDB.Simple.Typed (
   TypedRow (..),
   argumentName,
@@ -317,21 +320,23 @@ initializeStates Aggregate{aggregateInitial} info = do
 updateStates
   :: (FromRow args)
   => Maybe DuckDBV2FactoryHandle -> Text -> Aggregate state args result -> Int -> DuckDBV2AggregateFunctionUpdateInfoHandle -> IO ()
-updateStates casts name Aggregate{aggregateStep} columns info = do
+updateStates casts name Aggregate{aggregateStep} columns info = withTypeScope \scope -> do
   count <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_update_get_row_count info)
   states <- output (c_duckdb_v2_aggregate_function_update_get_states info)
   readers <-
     mapM
       ( \index ->
-          output (c_duckdb_v2_aggregate_function_update_get_arg info (fromIntegral index)) >>= prepareArgumentReader (InstanceFactory <$> casts) index
+          output (c_duckdb_v2_aggregate_function_update_get_arg info (fromIntegral index))
+            >>= prepareArgumentReader scope (InstanceFactory <$> casts) index
       )
       [0 .. columns - 1]
   forM_ [0 .. count - 1] \row -> do
     fields <- mapM ($ row) readers
     unless (any ((== FieldNull) . fieldValue) fields) do
-      arguments <- case parseRow fromRow fields of
-        Ok arguments -> pure arguments
-        Errors failures -> throwIO (userError ("duckdb-simple: " <> Text.unpack name <> ": " <> conversionMessage failures))
+      arguments <-
+        runConversion (parseRow fromRow fields) >>= \case
+          Ok arguments -> pure arguments
+          Errors failures -> throwIO (userError ("duckdb-simple: " <> Text.unpack name <> ": " <> conversionMessage failures))
       cell <- peekElemOff states row >>= stateCell
       readIORef cell >>= (`aggregateStep` arguments) >>= evaluate >>= writeIORef cell
 

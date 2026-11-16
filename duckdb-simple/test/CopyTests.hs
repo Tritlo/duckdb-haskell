@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -10,7 +11,6 @@ module CopyTests (copyTests) where
 
 import Control.Exception (bracket, try)
 import Control.Monad (forM_, void)
-import Data.Array (listArray)
 import Data.IORef
 import Data.Int (Int64)
 import Data.List (sort)
@@ -21,6 +21,8 @@ import Database.DuckDB.Simple hiding (bind)
 import qualified Database.DuckDB.Simple.Catalog as Catalog
 import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), LogicalTypeRep (..))
+import Database.DuckDB.Simple.LogicalRep (withoutAliases)
+import Database.DuckDB.Simple.Ok (Ok (..))
 import qualified Database.DuckDB.Simple.V2.Copy as V2Copy
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import Database.DuckDB.Simple.Variant (variantObject)
@@ -29,6 +31,7 @@ import Foreign.Ptr (nullPtr)
 import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.FilePath ((</>))
 import System.IO (hClose, openTempFile)
+import System.Mem (performMajorGC)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
 import TestUtils (writeIntegers)
@@ -45,6 +48,7 @@ copyTests =
     , testCase "callback exceptions become SQL errors and permit reuse" testCopyFailure
     , testCase "multi-file wrappers support lists globs filename and hive columns" testMultiFile
     , testCase "COPY TO and table descriptions report the logical type id of each column type" testColumnTypeIds
+    , testCase "COPY TO snapshots survive but native metadata expires after the callback" testCopyFieldTypes
     ]
 
 -- | Run every COPY TO callback and check the reported file statistics.
@@ -139,6 +143,39 @@ testPartitionedCopy = withDirectory \directory -> withConnection ":memory:" \con
   length paths @?= 2
   assertBool "partition paths" (all (Text.isInfixOf "part=" . Text.pack) paths)
 
+-- | COPY TO keeps pure type snapshots and expires escaped native actions.
+testCopyFieldTypes :: Assertion
+testCopyFieldTypes = withDirectory \directory -> withConnection ":memory:" \connection -> do
+  received <- newIORef ([] :: [Field])
+  snapshots <- newIORef ([] :: [LogicalTypeRep])
+  Copy.registerCopyToFunction
+    connection
+    "field_types"
+    (const (pure ()))
+    (\info -> writeFile (Copy.copyInitFilePath info) "")
+    ( \_ rows -> do
+        forM_ rows \fields -> case fields of
+          [decimal, json, _] -> do
+            runConversion (traverse fieldType [decimal, json]) >>= \case
+              Ok types -> atomicModifyIORef' snapshots (\previous -> (previous <> types, ()))
+              Errors errors -> assertFailure (show errors)
+          _ -> assertFailure "expected three COPY TO columns"
+        atomicModifyIORef' received (\previous -> (previous <> concat rows, ()))
+    )
+    (const (pure ()))
+  void
+    ( execute
+        connection
+        "COPY (SELECT 1.5::DECIMAL(4,1) AS d, '{}'::JSON AS j, 7::BIGINT AS unused) TO ? (FORMAT field_types)"
+        (Only (Text.pack (directory </> "types")))
+    )
+  performMajorGC
+  readIORef snapshots >>= (@?= [LogicalTypeDecimal 4 1, LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)])
+  readIORef received >>= mapM_ \entry ->
+    try (runConversion (fieldType entry)) >>= \case
+      Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: field type scope is closed"
+      Right _ -> assertFailure "COPY TO metadata survived its callback"
+
 -- | COPY registrations share the instance and copy nested VARIANT payloads.
 testVariantCopy :: Assertion
 testVariantCopy = withDirectory \directory -> withEnvironment \environment -> withInstance environment [] \instance' -> do
@@ -162,7 +199,9 @@ testVariantCopy = withDirectory \directory -> withEnvironment \environment -> wi
 
 -- | Create a column of each type that DuckDB permits. Check the id that the
 -- COPY TO bind info reports for each column. Check the id in the table
--- description of each column that has a scalar type.
+-- description of each column that has a scalar type. Check that no column type
+-- in the table description has an alias, so the name of each id in
+-- logicalTypeIdName is the name that DuckDB gives.
 testColumnTypeIds :: Assertion
 testColumnTypeIds = withDirectory \directory -> withConnection ":memory:" \connection -> do
   reported <- newIORef []
@@ -185,6 +224,8 @@ testColumnTypeIds = withDirectory \directory -> withConnection ":memory:" \conne
         Catalog.tableDescriptionColumns description
     ]
     @?= [(name, ident) | (name, (_, ident)) <- named, ident `notElem` nested]
+  let types = map Catalog.columnDescriptionType (Catalog.tableDescriptionColumns description)
+  map withoutAliases types @?= types
   where
     -- DuckDB uses these ids for an unset type, an unresolved parameter, and a
     -- function parameter of any type. SQL cannot declare a column of these types.
@@ -312,7 +353,7 @@ testMultiFile = withDirectory \directory -> withConnection ":memory:" \connectio
   Copy.registerMultiFileFunction connection "managed_files" "managed_single" (Copy.MultiFileOptions (Just "managed fixture") (Just "mock"))
   query connection "SELECT value FROM managed_files(?) ORDER BY value" (Only (Text.pack (directory </> "*.mock")))
     >>= (@?= map Only ([7, 11] :: [Int64]))
-  let paths = listArray (0 :: Int, 1) [Text.pack first, Text.pack second]
+  let paths = [Text.pack first, Text.pack second]
   query connection "SELECT value, filename FROM managed_files(?::VARCHAR[], filename=true) ORDER BY value" (Only paths)
     >>= (@?= [(7 :: Int64, Text.pack first), (11, Text.pack second)])
   forM_ [("left", 3), ("right", 5 :: Int)] \(part, value) -> do

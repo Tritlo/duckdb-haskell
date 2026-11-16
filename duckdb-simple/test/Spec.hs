@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
@@ -21,7 +22,7 @@ import Control.Exception (ErrorCall, Exception, SomeException, bracket, displayE
 import Control.Monad (forM_, replicateM_, void, when)
 import CopyTests (copyTests)
 import CoreRegressionTests (coreRegressionTests)
-import Data.Array (Array, elems, listArray)
+import Data.Array (elems, listArray)
 import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
@@ -71,6 +72,7 @@ import Database.DuckDB.Simple.Generic (
  )
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (
+  LogicalTypeRep (..),
   StructField (..),
   StructValue (..),
   UnionMemberType (..),
@@ -86,6 +88,7 @@ import qualified GeometryRegressionTests
 import Numeric.Natural (Natural)
 import Properties (roundTripTests)
 import RegistrationTests (registrationTests)
+import SizedArrayTests (sizedArrayTests)
 import qualified SqlFeatureTests
 import StreamingTests (nativeStreamingTests)
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
@@ -93,6 +96,7 @@ import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, Timeout (..), adjustOption, defaultMain, mkTimeout, testGroup)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
+import TestUtils (sized)
 import TimeTests (timeTests)
 import TypedRegistrationTests (typedRegistrationTests)
 import UserCastTests (geometryArgumentTests, userCastTests)
@@ -214,7 +218,7 @@ instance FromRow WithRemaining where
   fromRow = do
     firstVal <- field
     remaining <- numFieldsRemaining
-    replicateM_ remaining (fieldWith (const (Ok ())))
+    replicateM_ remaining (fieldWith (const (pure ())))
     pure (WithRemaining firstVal remaining)
 
 newtype YesNo = YesNo Bool
@@ -226,26 +230,21 @@ instance FromRow YesNo where
       parseYes = YesNo True <$ fieldWith (match (Text.pack "yes"))
       parseNo = YesNo False <$ fieldWith (match (Text.pack "no"))
 
-      match expected fld@Field{} =
-        case fromField fld :: Ok Text.Text of
-          Errors err -> Errors err
-          Ok txt ->
-            let normalized = Text.toLower txt
-            in  if normalized == expected
-                  then Ok ()
-                  else returnError ConversionFailed fld "failed to match exact string"
+      match expected fld@Field{} = do
+        txt <- fromField fld
+        if Text.toLower txt == expected
+          then pure ()
+          else returnError ConversionFailed fld "failed to match exact string"
 
 newtype NonEmptyText = NonEmptyText Text.Text
   deriving (Eq, Show)
 
 nonEmptyTextParser :: FieldParser NonEmptyText
-nonEmptyTextParser f@Field{} =
-  case fromField f of
-    Errors err -> Errors err
-    Ok txt
-      | Text.null txt ->
-          returnError ConversionFailed f "NonEmptyText requires a non-empty string"
-      | otherwise -> Ok (NonEmptyText txt)
+nonEmptyTextParser f@Field{} = do
+  txt <- fromField f
+  if Text.null txt
+    then returnError ConversionFailed f "NonEmptyText requires a non-empty string"
+    else pure (NonEmptyText txt)
 
 instance FromField NonEmptyText where
   fromField = nonEmptyTextParser
@@ -279,6 +278,7 @@ tests =
     , userCastTests
     , geometryArgumentTests
     , valueRegressionTests
+    , sizedArrayTests
     , timeTests
     , SqlFeatureTests.tests
     , withConnectionTests
@@ -380,7 +380,7 @@ v20Tests =
 
 fieldInt :: [Field] -> IO Int
 fieldInt [fld] =
-  case fromField fld of
+  runConversion (fromField fld) >>= \case
     Errors err -> assertFailure (show err) >> pure 0
     Ok value -> pure value
 fieldInt fields = assertFailure ("expected one field, got " <> show (length fields)) >> pure 0
@@ -903,11 +903,11 @@ typeTests =
         withConnection ":memory:" \conn -> do
           _ <- execute_ conn "CREATE TABLE arrays (vals INTEGER[3])"
           let inputs =
-                [ listArray (0, 2) [1, 2, 3]
-                , listArray (0, 2) [4, 5, 6]
+                [ sized [1, 2, 3]
+                , sized [4, 5, 6]
                 ]
           _ <- executeMany conn "INSERT INTO arrays VALUES (?)" (Only <$> inputs)
-          rows <- query_ conn "SELECT vals FROM arrays ORDER BY rowid" :: IO [Only (Array Int Int)]
+          rows <- query_ conn "SELECT vals FROM arrays ORDER BY rowid" :: IO [Only (SizedArray 3 Int)]
           let expected =
                 fmap Only inputs
           assertEqual "array round-trip" expected rows
@@ -936,8 +936,9 @@ typeTests =
                 { fieldName = "big"
                 , fieldIndex = 0
                 , fieldValue = FieldBigNum (BigNum original)
+                , fieldType = pure (LogicalTypeScalar LogicalTypeIdBigNum)
                 }
-        case (fromField bigField :: Ok Integer) of
+        runConversion (fromField bigField :: Conversion Integer) >>= \case
           Ok result -> assertEqual "FieldBigNum Integer" original result
           Errors err -> assertFailure ("unexpected parse failure: " <> show err)
     , testCase "FromField Natural rejects negative FieldBigNum" $ do
@@ -947,8 +948,9 @@ typeTests =
                 { fieldName = "big"
                 , fieldIndex = 0
                 , fieldValue = FieldBigNum bigValue
+                , fieldType = pure (LogicalTypeScalar LogicalTypeIdBigNum)
                 }
-        case (fromField bigField :: Ok Natural) of
+        runConversion (fromField bigField :: Conversion Natural) >>= \case
           Errors _ -> pure ()
           Ok result -> assertFailure ("expected failure, got " <> show result)
     , testCase "BigNum conversions round-trip Integer" $ do
@@ -1079,15 +1081,15 @@ typeTests =
               _ <- executeMany conn "INSERT INTO generic_struct VALUES (?)" (map Only structs)
               rows <- query_ conn "SELECT payload FROM generic_struct ORDER BY payload.grId" :: IO [Only (StructValue FieldValue)]
               let unwrap (Only s) = s
-                  roundTripped = traverse (genericFromFieldValue . FieldStruct . unwrap) rows
-              roundTripped @?= Right records
+              roundTripped <- runConversion (traverse (genericFromFieldValue . FieldStruct . unwrap) rows)
+              roundTripped @?= Ok records
     , testCase "generic struct encode/decode" $ do
         let rec = GenericRecord 42 (Text.pack "duck")
         case genericToStructValue rec of
           Just structVal -> do
             map structFieldName (elems (structValueFields structVal)) @?= [Text.pack "grId", Text.pack "grName"]
             map structFieldValue (elems (structValueFields structVal)) @?= [FieldInt64 42, FieldText (Text.pack "duck")]
-            genericFromFieldValue (FieldStruct structVal) @?= Right rec
+            runConversion (genericFromFieldValue (FieldStruct structVal)) >>= (@?= Ok rec)
           Nothing -> assertFailure "expected struct encoding"
     , testCase "generic union encode/decode" $ do
         let sumVal = SumBool True
@@ -1099,7 +1101,7 @@ typeTests =
                   , Text.pack "SumPair"
                   ]
             unionValueLabel uv @?= Text.pack "SumBool"
-            genericFromFieldValue (FieldUnion uv) @?= Right sumVal
+            runConversion (genericFromFieldValue (FieldUnion uv)) >>= (@?= Ok sumVal)
           other -> assertFailure ("expected FieldUnion, got " <> show other)
     , testCase "generic union complex constructor" $ do
         let sumVal = SumPair 7 (Text.pack "duck")
@@ -1112,7 +1114,7 @@ typeTests =
                 map structFieldValue (elems structValueFields)
                   @?= [FieldInt64 7, FieldText (Text.pack "duck")]
               other -> assertFailure ("expected struct payload, got " <> show other)
-            genericFromFieldValue (FieldUnion uv) @?= Right sumVal
+            runConversion (genericFromFieldValue (FieldUnion uv)) >>= (@?= Ok sumVal)
           other -> assertFailure ("expected FieldUnion, got " <> show other)
     , testCase "deriving via generic struct round-trip" $
         withConnection ":memory:" \conn -> do
@@ -1132,7 +1134,7 @@ typeTests =
         case genericToFieldValue EnumRed of
           FieldUnion uv -> do
             unionValuePayload uv @?= FieldStruct (StructValue (listArray (0, -1) []) (listArray (0, -1) []) Map.empty)
-            genericFromFieldValue (FieldUnion uv) @?= Right EnumRed
+            runConversion (genericFromFieldValue (FieldUnion uv)) >>= (@?= Ok EnumRed)
           other -> assertFailure ("expected FieldUnion, got " <> show other)
     , -- Edge case tests
       testCase "struct with multiple basic fields" $ do
@@ -1140,20 +1142,20 @@ typeTests =
         let twoField = TwoFieldStruct 42 (Text.pack "text")
         case genericToFieldValue twoField of
           FieldStruct sv -> do
-            genericFromFieldValue (FieldStruct sv) @?= Right twoField
+            runConversion (genericFromFieldValue (FieldStruct sv)) >>= (@?= Ok twoField)
           other -> assertFailure ("expected FieldStruct for TwoFieldStruct, got " <> show other)
     , testCase "large sum type with many constructors" $ do
         let constructors = [LargeC1 1, LargeC2 2, LargeC3 3, LargeC4 4, LargeC5 5]
         forM_ constructors $ \val -> do
           case genericToFieldValue val of
             FieldUnion uv -> do
-              genericFromFieldValue (FieldUnion uv) @?= Right val
+              runConversion (genericFromFieldValue (FieldUnion uv)) >>= (@?= Ok val)
             other -> assertFailure ("expected FieldUnion, got " <> show other)
     , testCase "empty struct encodes as a STRUCT without fields" $ do
         case genericToFieldValue EmptyStruct of
           FieldStruct structVal -> do
             elems (structValueFields structVal) @?= []
-            genericFromFieldValue (FieldStruct structVal) @?= Right EmptyStruct
+            runConversion (genericFromFieldValue (FieldStruct structVal)) >>= (@?= Ok EmptyStruct)
           other -> assertFailure ("expected a STRUCT without fields for empty struct, got " <> show other)
     , testCase "empty struct binds as a STRUCT without fields" $
         withConnection ":memory:" \conn -> do
@@ -1180,11 +1182,11 @@ typeTests =
     , testCase "the NULL of version 0.3 for a type without fields decodes but does not equal a new parameter" $
         withConnection ":memory:" \conn -> do
           -- Version 0.3 wrote NULL in place of the STRUCT without fields.
-          genericFromFieldValue FieldNull @?= Right EmptyStruct
+          runConversion (genericFromFieldValue FieldNull) >>= (@?= Ok EmptyStruct)
           case genericToFieldValue Uncounted of
             FieldUnion uv -> do
               let oldValue = uv{unionValuePayload = FieldNull}
-              genericFromFieldValue (FieldUnion oldValue) @?= Right Uncounted
+              runConversion (genericFromFieldValue (FieldUnion oldValue)) >>= (@?= Ok Uncounted)
               _ <- execute_ conn "CREATE TABLE old_tallies (v UNION(Counted STRUCT(field1 BIGINT), Uncounted STRUCT))"
               _ <- execute conn "INSERT INTO old_tallies VALUES (?)" (Only oldValue)
               (query_ conn "SELECT v FROM old_tallies" :: IO [Only Tally]) >>= (@?= [Only Uncounted])
@@ -1215,28 +1217,28 @@ typeTests =
             withNothing = OptionalFields Nothing Nothing
         case (genericToFieldValue withJust, genericToFieldValue withNothing) of
           (FieldStruct sv1, FieldStruct sv2) -> do
-            genericFromFieldValue (FieldStruct sv1) @?= Right withJust
-            genericFromFieldValue (FieldStruct sv2) @?= Right withNothing
+            runConversion (genericFromFieldValue (FieldStruct sv1)) >>= (@?= Ok withJust)
+            runConversion (genericFromFieldValue (FieldStruct sv2)) >>= (@?= Ok withNothing)
           (other1, other2) -> assertFailure ("expected FieldStruct, got " <> show (other1, other2))
     , -- Error case tests
       testCase "decode wrong field type fails" $ do
         let wrongType = FieldInt32 42 -- Trying to decode as GenericRecord
-        case genericFromFieldValue wrongType :: Either String GenericRecord of
-          Left err -> assertBool "error mentions STRUCT" (Text.pack "STRUCT" `Text.isInfixOf` Text.pack err)
-          Right _ -> assertFailure "expected decode error for wrong type"
+        runConversion (genericFromFieldValue wrongType :: Conversion GenericRecord) >>= \case
+          Errors err -> assertBool "error mentions STRUCT" (Text.pack "STRUCT" `Text.isInfixOf` Text.pack (show err))
+          Ok _ -> assertFailure "expected decode error for wrong type"
     , testCase "decode union as struct fails" $ do
         case genericToFieldValue (SumInt 42) of
           FieldUnion uv -> do
-            case genericFromFieldValue (FieldUnion uv) :: Either String GenericRecord of
-              Left err -> assertBool "error mentions product type" (Text.pack "product type" `Text.isInfixOf` Text.pack err)
-              Right _ -> assertFailure "expected decode error"
+            runConversion (genericFromFieldValue (FieldUnion uv) :: Conversion GenericRecord) >>= \case
+              Errors err -> assertBool "error mentions product type" (Text.pack "product type" `Text.isInfixOf` Text.pack (show err))
+              Ok _ -> assertFailure "expected decode error"
           other -> assertFailure ("expected FieldUnion, got " <> show other)
     , testCase "decode struct as union fails" $ do
         case genericToFieldValue (GenericRecord 1 (Text.pack "test")) of
           FieldStruct sv -> do
-            case genericFromFieldValue (FieldStruct sv) :: Either String GenericSum of
-              Left err -> assertBool "error mentions sum type" (Text.pack "sum type" `Text.isInfixOf` Text.pack err)
-              Right _ -> assertFailure "expected decode error"
+            runConversion (genericFromFieldValue (FieldStruct sv) :: Conversion GenericSum) >>= \case
+              Errors err -> assertBool "error mentions sum type" (Text.pack "sum type" `Text.isInfixOf` Text.pack (show err))
+              Ok _ -> assertFailure "expected decode error"
           other -> assertFailure ("expected FieldStruct, got " <> show other)
     , testCase "decode struct with wrong field count fails" $
         withConnection ":memory:" \conn -> do
@@ -1244,9 +1246,9 @@ typeTests =
           _ <- execute_ conn "CREATE TABLE three_field (s STRUCT(a INT, b TEXT, c INT))"
           [(Only threeField)] <- query_ conn "SELECT {'a': 1, 'b': 'test', 'c': 99}" :: IO [Only (StructValue FieldValue)]
           -- Try to decode it as GenericRecord which only has 2 fields
-          case genericFromFieldValue (FieldStruct threeField) :: Either String GenericRecord of
-            Left err -> assertBool "error mentions extra fields" (Text.pack "extra" `Text.isInfixOf` Text.pack err)
-            Right _ -> assertFailure "expected decode error for extra fields"
+          runConversion (genericFromFieldValue (FieldStruct threeField) :: Conversion GenericRecord) >>= \case
+            Errors err -> assertBool "error mentions extra fields" (Text.pack "extra" `Text.isInfixOf` Text.pack (show err))
+            Ok _ -> assertFailure "expected decode error for extra fields"
     , testCase "decode union with wrong tag fails" $
         withConnection ":memory:" \conn -> do
           -- Get a real union from the database
@@ -1254,10 +1256,12 @@ typeTests =
             query_ conn "SELECT CAST(union_value(x := 42) AS UNION(x INT, y VARCHAR))" :: IO [Only (UnionValue FieldValue)]
           -- Manually create a modified version with an out-of-range tag
           let wrongTag = unionVal{unionValueIndex = 99, unionValueLabel = Text.pack "Invalid"}
-          case genericFromFieldValue (FieldUnion wrongTag) :: Either String GenericSum of
-            Left err ->
-              assertBool "error mentions tag or index" (Text.pack "tag" `Text.isInfixOf` Text.pack err || Text.pack "99" `Text.isInfixOf` Text.pack err)
-            Right _ -> assertFailure "expected decode error for wrong tag"
+          runConversion (genericFromFieldValue (FieldUnion wrongTag) :: Conversion GenericSum) >>= \case
+            Errors err ->
+              assertBool
+                "error mentions tag or index"
+                (Text.pack "tag" `Text.isInfixOf` Text.pack (show err) || Text.pack "99" `Text.isInfixOf` Text.pack (show err))
+            Ok _ -> assertFailure "expected decode error for wrong tag"
     ]
   where
     -- 7 ^ 2900 has 1,018 magnitude bytes. A value of at most 9 magnitude bytes

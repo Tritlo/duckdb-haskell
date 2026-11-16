@@ -80,7 +80,8 @@ library
     duckdb_haskell_extension.h
     duckdb_v2.h
 
-  c-sources: generated/abi-checks-v2.c
+  c-sources:
+    generated/abi-checks-v2.c
 
   if flag(extension)
     if os(linux) || os(osx)

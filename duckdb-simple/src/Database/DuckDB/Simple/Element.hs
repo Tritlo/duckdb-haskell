@@ -2,6 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
 -- |
@@ -22,7 +23,7 @@ module Database.DuckDB.Simple.Element (
   withVectorType,
 ) where
 
-import Control.Exception (bracket, fromException, throwIO, try)
+import Control.Exception (bracket, throwIO, try)
 import Data.Bits (clearBit, shiftL, shiftR, testBit, xor, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.Coerce (coerce)
@@ -40,16 +41,13 @@ import Data.Word (Word64, Word8)
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
   BitString (..),
-  Field (..),
   FieldValue (..),
   IntervalValue (..),
-  ResultError (..),
   TimeWithZone (..),
-  returnError,
+  fieldTypeName,
  )
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
@@ -295,21 +293,20 @@ decodeBigNum bytes = BS.useAsCStringLen bytes \(raw, len) -> alloca \lengthSlot 
 bigEndianInteger :: Ptr Word8 -> DuckDBIdx -> IO Integer
 bigEndianInteger (Ptr addr) count = case fromIntegral count of W# size -> integerFromAddr size addr 1#
 
--- | The SQL type name of a decoded value, as each read error gives it. An error
--- text names this type, not the value, because a value can be large. The error
--- of 'returnError' holds that name.
+-- | The SQL type name of a decoded value. Errors name the type because a
+-- value can be large.
 valueTypeName :: FieldValue -> Text
-valueTypeName value = case returnError Incompatible (Field Text.empty 0 value) Text.empty :: Ok () of
-  Errors (err : _) | Just result <- fromException err -> errSQLType result
-  _ -> Text.pack "an unknown type"
+valueTypeName = fieldTypeName (LogicalTypeScalar LogicalTypeIdVariant)
 
 -- | Test whether a type is or contains a type that the predicate accepts. The
 -- test visits the element type of a LIST and an ARRAY, the key type and the
--- value type of a MAP, the field types of a STRUCT and a TUPLE, and the member
--- types of a UNION.
+-- value type of a MAP, the field types of a STRUCT and a TUPLE, the member
+-- types of a UNION, and the base type of an alias. See Note [Type aliases] in
+-- "Database.DuckDB.Simple.LogicalRep".
 containsType :: (LogicalTypeRep -> Bool) -> LogicalTypeRep -> Bool
 containsType accepts rep =
   accepts rep || case rep of
+    LogicalTypeAlias _ base -> containsType accepts base
     LogicalTypeList child -> containsType accepts child
     LogicalTypeArray child _ -> containsType accepts child
     LogicalTypeMap key value -> containsType accepts key || containsType accepts value

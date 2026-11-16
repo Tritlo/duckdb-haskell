@@ -108,11 +108,13 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.Simple.CallbackMark (hasCallbackMark)
+import Database.DuckDB.Simple.Conversion (Conversion)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
-import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.Native hiding (arraySizeReason, maxArraySize)
 import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, defaultGeometryCRS, destroyTypeCache)
-import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
+import Database.DuckDB.Simple.TypeScope (TypeScope, closeTypeScope)
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToBaseRep)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (CString)
 import Foreign.C.Types (CChar)
@@ -399,8 +401,8 @@ cleanupStatementStreamRef.
 
 The cursor owns each native chunk that it holds. fetchChunk writes a new chunk
 to the cursor before it reads the metadata of the chunk or makes the readers.
-Thus a release of the cursor also releases the chunk. finalizeStream releases
-the current chunk, the pending chunks, and the result, in that order.
+Thus a release of the cursor also releases the chunk. finalizeStream closes the metadata scope, then releases
+the current chunk, the pending chunks, and the result.
 -}
 
 -- | Cursor state. Exhaustion persists until the caller resets the statement.
@@ -411,6 +413,7 @@ data StatementStreamState = StatementStreamIdle | StatementStreamExhausted | Sta
 -- Note [Statement cursor].
 data StatementStream = StatementStream
   { statementStreamResult :: DuckDBV2ResultHandle
+  , statementStreamTypes :: TypeScope
   , statementStreamColumns :: [StatementStreamColumn]
   , statementStreamPendingChunks :: [DuckDBV2DataChunkHandle]
   , statementStreamChunk :: Maybe StatementStreamChunk
@@ -423,6 +426,10 @@ data ResultMode = MaterializedResult | StreamingResult deriving (Eq, Show)
 data StatementStreamColumn = StatementStreamColumn
   { statementStreamColumnIndex :: Int
   , statementStreamColumnName :: Text
+  , statementStreamColumnType :: Conversion LogicalTypeRep
+  -- ^ The scoped type of the column, converted on demand through
+  -- 'Database.DuckDB.Simple.FromField.fieldType'.
+  -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
   , statementStreamColumnTree :: IORef (Maybe LogicalTypeRep)
   -- ^ The type tree of the column, converted from the vector of the first chunk
   -- that needs it. Each execution makes new columns, so the tree lives for one
@@ -903,7 +910,7 @@ These functions use a result window:
 
 - executeStatement in "Database.DuckDB.Simple".
 
-- startStatementStream and collectParsedRows in "Database.DuckDB.Simple.Result".
+- startStatementStream and withParsedRows in "Database.DuckDB.Simple.Result".
 
 - foldArrowWith in "Database.DuckDB.Simple.Arrow.Internal", for a materialized
   result.
@@ -1126,13 +1133,14 @@ cleanupStatementStreamRef ref = mask_ do
     StatementStreamActive stream -> finalizeStream stream
     _ -> pure ()
 
--- | Release the native state of a stream in this order: the current chunk, the
--- pending chunks, and the result. Each release runs also when an earlier
--- release raises an error.
+-- | Close metadata access, then release the current chunk, pending chunks,
+-- and result. Each release runs even if an earlier release raises an error.
 finalizeStream :: StatementStream -> IO ()
-finalizeStream StatementStream{statementStreamResult, statementStreamChunk, statementStreamPendingChunks} =
-  maybe (pure ()) finalizeChunk statementStreamChunk
-    `finally` (releaseItems destroyDataChunk statementStreamPendingChunks `finally` destroy c_duckdb_v2_result_destroy statementStreamResult)
+finalizeStream StatementStream{statementStreamTypes, statementStreamResult, statementStreamChunk, statementStreamPendingChunks} =
+  closeTypeScope statementStreamTypes
+    `finally` ( maybe (pure ()) finalizeChunk statementStreamChunk
+                  `finally` (releaseItems destroyDataChunk statementStreamPendingChunks `finally` destroy c_duckdb_v2_result_destroy statementStreamResult)
+              )
 
 -- | Release the native chunk of a stream chunk.
 finalizeChunk :: StatementStreamChunk -> IO ()
@@ -1186,7 +1194,7 @@ when the statement closes.
   DuckDB again. Only a binding that reads the type of its parameter has this
   cost: a TimeOfDay, a LocalTime, or a UTCTime (or an Unbounded form) with
   digits below a microsecond (see Note [Nanosecond parameters] in
-  "Database.DuckDB.Simple.ToField"), an Array, a list, a Map, a manual STRUCT,
+  "Database.DuckDB.Simple.ToField"), a SizedArray, a list, a Map, a manual STRUCT,
   TUPLE, or UNION value, a FieldList, a FieldArray, or a FieldMap value, and an
   Integer or a Natural outside the HUGEINT range
   (see Note [Integer parameters] in "Database.DuckDB.Simple.ToField").
@@ -1248,9 +1256,11 @@ preparedParameterType stmt idx = do
       alloca \name -> do
         dtype <- output (c_duckdb_v2_schema_get_field schema (idx - 1) name)
         ident <- output (c_duckdb_v2_logical_type_get_id dtype)
+        -- The binding uses the base type. See Note [Type aliases] in
+        -- "Database.DuckDB.Simple.LogicalRep".
         if ident == DuckDBV2LogicalTypeIdUnknown || ident == DuckDBV2LogicalTypeIdSQLNull
           then pure Nothing
-          else Just <$> logicalTypeToRep dtype
+          else Just <$> logicalTypeToBaseRep dtype
 
 -- | Column type names and the logical types that they denote. When a type has
 -- more than one name, 'duckDBTypeToName' gives the first name.

@@ -50,7 +50,11 @@ is idempotent. `open` and `withConnection` continue to create private parents.
   options. The update function of a custom option gets the new value as a
   `FieldValue`. `V2.Config` registers custom options with native builders.
 - `Catalog.describeTable` copies resolved names, column types, default flags,
-  generated-column flags, and catalog read-only status.
+  generated-column flags, and catalog read-only status. A column type keeps the
+  alias of DuckDB at each depth as a `LogicalTypeAlias`, for example JSON and
+  the name of a type from `registerCustomType`. A column of a type from
+  `CREATE TYPE name AS base` has the base type, and an ENUM from `CREATE TYPE`
+  has no name.
 - `Tokenizer.tokenize` returns token kinds, UTF-8 byte offsets, token bytes, and
   the native indication of an unterminated final token.
 - `Function` registers scalar, cast, aggregate, and table functions with
@@ -125,6 +129,8 @@ main =
   preparing positional or named parameters.
 - `Database.DuckDB.Simple.FromField` / `FromRow`: typeclasses for decoding
   query results, with generic deriving support for product types.
+- `Database.DuckDB.Simple.Conversion`: explicit IO and conversion errors for
+  custom decoders. `runConversion` returns `IO (Ok a)`.
 - `Database.DuckDB.Simple.Generic`: automatic encoding/decoding of Haskell
   ADTs as DuckDB STRUCTs and UNIONs via GHC generics and the `ViaDuckDB`
   deriving-via helper.
@@ -162,19 +168,19 @@ BIGNUM value, or raises an error, depending on its size and target type:
 note 1 of [Types](#types) gives the rule.
 
 In DuckDB 2.0.0 the casts from BIGNUM to the integer types have defects: some
-fail, and some store a wrong value with no error
-([issue 41](https://github.com/Tritlo/duckdb-haskell/issues/41)). An `Array`
-or a list of `Integer` or `Natural` values takes the element type of its target
-when that type is an integer type or DECIMAL, so DuckDB checks each element. A
-`BigNum` value, and an `Array` or a list of `BigNum` values, still have these
-defects for an integer target. For each other target, and for a parameter with
-no known type, an `Array`, a list, or a `Map` of `Integer` or `Natural` values
-takes the type that its elements give, as a scalar `Integer` and a SQL list
-literal of the HUGEINT and BIGNUM values do: `[1, 2^64]` binds as `HUGEINT[]`,
-and `[1, 2^200]` as `BIGNUM[]`. An empty list and a list of only NULL elements
-get the type `"NULL"[]`, as `[]` and `[NULL]` in SQL, because an `Integer` has
-no fixed SQL type. The rule follows the column type name BIGNUM, so an all-NULL
-list of `BigNum` values with no target also gets `"NULL"[]`.
+fail, and some store a wrong value with no error ([issue
+41](https://github.com/Tritlo/duckdb-haskell/issues/41)). A `SizedArray` or a
+list of `Integer` or `Natural` values takes the element type of its target when
+that type is an integer type or DECIMAL, so DuckDB checks each element. A
+`BigNum` value, and a `SizedArray` or a list of `BigNum` values, still have
+these defects for an integer target. For each other target, and for a parameter
+with no known type, a `SizedArray`, a list, or a `Map` of `Integer` or `Natural`
+values takes the type that its elements give, as a scalar `Integer` and a SQL
+list literal of the HUGEINT and BIGNUM values do: `[1, 2^64]` binds as
+`HUGEINT[]`, and `[1, 2^200]` as `BIGNUM[]`. An empty list and a list of only
+NULL elements get the type `"NULL"[]`, as `[]` and `[NULL]` in SQL, because an
+`Integer` has no fixed SQL type. The rule follows the column type name BIGNUM,
+so an all-NULL list of `BigNum` values with no target also gets `"NULL"[]`.
 
 An `IntervalValue` binds as an INTERVAL, and DuckDB keeps its months, days, and
 microseconds. DuckDB compares intervals with 30 days for each month, so
@@ -187,7 +193,7 @@ dropped. DuckDB stores an offset from -15:59:59 to +15:59:59, that is from
 with digits below one microsecond loses these digits, as in SQL text. A
 `DecimalValue` binds as a DECIMAL with its own width and scale. DuckDB casts it
 to the type of its target: a smaller scale rounds half away from zero, and a
-value that the target cannot hold raises an error. An `Array`, a list, or a
+value that the target cannot hold raises an error. A `SizedArray`, a list, or a
 typed row (a row type with `TypedRow`) of `DecimalValue` does not compile: note
 14 of [Types](#types).
 
@@ -266,6 +272,85 @@ for `Int64`. It also reads other SQL types when it can return the value of
 DuckDB's cast. The "Reads" column and notes 3 to 5 of [Types](#types) list
 these types.
 
+Decoders return `Conversion a`. This follows the `postgresql-simple` style:
+a conversion can run IO and report conversion errors. This library's
+`runConversion` takes no connection argument. The query and callback APIs run
+conversions for you. The decoder types are:
+
+```haskell
+type FieldParser a = Field -> Conversion a
+
+fromField :: FromField a => Field -> Conversion a
+parseRow :: RowParser a -> [Field] -> Conversion a
+runConversion :: Conversion a -> IO (Ok a)
+```
+
+For example, `runConversion (fromField field :: Conversion Int64)` returns
+`Ok value` or `Errors errors` in IO. Import the runner from
+`Database.DuckDB.Simple.Conversion` and the result constructors from
+`Database.DuckDB.Simple.Ok`. Use `liftConversion` to run IO inside a custom
+decoder. IO exceptions, including cancellation, propagate to the caller.
+Sequential and applicative conversions stop at the first conversion failure.
+`Alternative` tries the second branch if the first fails. If both fail, it
+combines their diagnostics.
+
+A decoder for a registered function's arguments runs inside its callback.
+Do not run another query on that callback's connection from the decoder. Use
+another connection. See [User-defined functions](#user-defined-functions)
+for the connection rules.
+`fieldType` reads its scoped logical type without taking the connection lock.
+
+`fieldType :: Field -> Conversion LogicalTypeRep` reads the SQL type of a
+column, or of an element, key, or value in a LIST, ARRAY, or MAP. It preserves
+aliases such as JSON. A query result or callback owns the native metadata.
+The library converts a column's type to `LogicalTypeRep` when a decoder
+requests `fieldType` and caches a successful result within that scope. This
+metadata action does no tree traversal or ENUM dictionary copy until requested.
+Structured value readers can also build type trees to decode their values.
+If cancellation interrupts a metadata read while the scope remains open,
+another call can retry it. The cache does not store exceptions.
+
+Native metadata is available while a query parser runs. A cursor retains its
+metadata until exhaustion, reset, or statement closure. Callback metadata is
+available during that callback invocation. An escaped native `fieldType`
+action raises `SQLError` with the message
+`duckdb-simple: field type scope is closed`, including when its result was
+cached before closure. Read a pure
+`LogicalTypeRep` snapshot inside the scope if you need the type later.
+Snapshots remain usable after the statement, connection, instance, and
+environment close.
+
+Metadata scopes release their native types when they close. They use no
+metadata finalizers. Existing statement and connection finalizers are
+unchanged. `Field` has no `Eq` or `Show` instance. A value in a VARIANT has the
+type VARIANT, and so does a `Field` made from a `FieldValue` alone. In those
+cases, the stored value determines the type. `logicalTypeSQL` gives the SQL
+type text, for example DECIMAL(18,3). A custom decoder can check the type:
+
+```haskell
+newtype Cents = Cents DecimalValue
+
+instance FromField Cents where
+  fromField field = do
+    logical <- fieldType field
+    case logical of
+      LogicalTypeDecimal _ 2 -> Cents <$> fromField field
+      _ -> returnError Incompatible field "expected a DECIMAL with the scale 2"
+```
+
+A field of a `ViaDuckDB` record reads with its type when its `DuckValue`
+instance sets `duckFromTypedField = typedFromField`. The library's instances
+do this. Generic decoders have these types:
+
+```haskell
+duckFromField :: DuckValue a => FieldValue -> Conversion a
+duckFromTypedField :: DuckValue a => LogicalTypeRep -> FieldValue -> Conversion a
+typedFromField :: FromField a => LogicalTypeRep -> FieldValue -> Conversion a
+genericFromFieldValue :: (Generic a, GFromField (Rep a)) => FieldValue -> Conversion a
+```
+
+Encoding and logical type declarations remain pure.
+
 ## Types
 
 Each row gives a Haskell type and these facts:
@@ -304,7 +389,7 @@ Each row gives a Haskell type and these facts:
 | `TimeWithZone` | TIMETZ | | TIMETZ | argument, result |
 | `IntervalValue` | INTERVAL | | INTERVAL | argument, result |
 | `[a]` | LIST | | LIST, ARRAY | argument, result |
-| `Array Int a` | ARRAY (8) | none (8) | ARRAY | none (8) |
+| `SizedArray n a` | ARRAY of size `n` (8) | | ARRAY, LIST (8) | argument, result |
 | `Map k v` | MAP | | MAP | argument, result |
 | `StructValue FieldValue` | STRUCT (9) | none | STRUCT | none |
 | `TupleValue FieldValue` | TUPLE (9) | none | TUPLE | none |
@@ -327,7 +412,7 @@ Notes:
    parameter, it raises an `SQLError` of the type `ErrorTypeConversion`. Bind a
    `BigNum` to bind a BIGNUM value in each case. [Querying Data](#querying-data)
    gives the defects of the casts from BIGNUM in DuckDB 2.0.0, and the rule for
-   a list, an `Array`, or a `Map` of `Integer` values.
+   a list, a `SizedArray`, or a `Map` of `Integer` values.
 2. The value 0 reads as `False`, and each other value reads as `True`.
 3. "Each integer type" is TINYINT to UHUGEINT. A value that the Haskell type
    cannot hold raises a library conversion error: an `SQLError` with no type.
@@ -385,24 +470,38 @@ Notes:
    23:59:60.5, and a field outside its own range, for example 61 minutes, raise
    an `SQLError` of the type `ErrorTypeConversion`. [Infinite dates and
    timestamps](#infinite-dates-and-timestamps) gives the full rule.
-8. An `Array` binds as an ARRAY with the size of the value. An empty `Array`
-   raises an `SQLError` of the type `ErrorInputInvalid`, because a DuckDB ARRAY
-   has at least one element; bind an empty list for an empty LIST. A DuckDB
-   ARRAY type has a size, and the Haskell type has none, so a typed registration
-   has no declaration for an `Array`. An `Array` argument or result of
-   `createFunction` or `createAggregate`, and an `Array` parameter or column of
-   `createTableFunction`, raise an `SQLError` of the type `ErrorInputInvalid` at
-   registration, also inside a `Maybe`, a list, or a `Map`. Use a list for a
-   LIST. For an ARRAY, use a newtype of the `Array` with its own column type
-   name (`duckdbColumnTypeFor`) that gives the size, for example `BIGINT[3]`.
-   DuckDB then rejects an ARRAY of another size when it binds the call. It casts
-   a LIST of the same length to the ARRAY with no error, by its own implicit
-   cast, and a LIST of another length raises an `SQLError` when the statement
-   runs.
+8. A DuckDB ARRAY type has a size, for example `BIGINT[3]`. A `SizedArray n a`
+   is the Haskell type of that ARRAY: an `Array Int a` of exactly `n` values,
+   with the bounds `(0, n - 1)`. `sizedArray` makes one from an `Array` with
+   any bounds and gives `Nothing` for an `Array` of another count. The value
+   has the elements in their order, and `sizedArrayToArray` gives its `Array`.
+   `sizedArrayFromList` makes one from a list, and `toList` gives the values.
+   A `SizedArray`
+   binds as an ARRAY of size `n`, and a typed registration declares that type
+   in each position, also as a field of a record through `ViaDuckDB`. It reads
+   an ARRAY and a LIST of `n` elements, as the cast of DuckDB to the ARRAY
+   does. A query that reads a value of another length raises an `SQLError`.
+   Its message names the column type, the `SizedArray` type, and the length.
+   In a typed registration, DuckDB rejects an ARRAY of another size when it
+   binds the call. It casts a LIST of the same length to the ARRAY with no
+   error, by its own implicit cast, and a LIST of another length raises an
+   `SQLError` when the statement runs. Use one type for each need:
+   - An ARRAY of a fixed size: a `SizedArray n a`.
+   - An ARRAY of a size that varies: a list. A list reads an ARRAY of each
+     size, and DuckDB casts a bound list to an ARRAY column of the same
+     length.
+   - An ARRAY value that the program builds at run time: a `FieldArray`.
+
+   A DuckDB ARRAY has 1 to 100000 elements. A `SizedArray` or a `FieldArray`
+   parameter with no element or with more than 100000 elements raises an
+   `SQLError` of the type `ErrorInputInvalid`, and a typed registration raises
+   the same error for a `SizedArray` of such a size. Bind an empty list for an
+   empty LIST.
 9. A STRUCT, TUPLE, or UNION parameter binds with the types of its own fields
-   or members. These values have no static field types, so a typed
-   registration with such a type raises an error. Use a record with
-   `ViaDuckDB`.
+   or members. These types keep an alias, so a value that a query reads from a
+   `STRUCT(k JSON)` column binds as `STRUCT(k JSON)`. These values have no
+   static field types, so a typed registration with such a type raises an
+   error. Use a record with `ViaDuckDB`.
 10. A record binds as a STRUCT, and a sum type binds as a UNION. A typed
     registration declares the STRUCT or UNION type of a record or a sum type
     that derives `DuckDBColumnType` and `ToDuckValue` via `ViaDuckDB`, also in a
@@ -415,10 +514,12 @@ Notes:
     non-negative integer literal to a UHUGEINT argument, but no signed column or
     typed value without an explicit cast. `sum()` over a UHUGEINT column gives a
     DOUBLE value, and so do UHUGEINT + INTEGER and HUGEINT + UHUGEINT for
-    columns and typed values. A record with an `Array` field raises an error at
-    registration, because the record type does not give the size of the
-    ARRAY. Use a list field, or a field of a newtype of the `Array` with a
-    `DuckValue` instance that gives the size (see note 8). See
+    columns and typed values. A `SizedArray` field declares the ARRAY of its
+    size (see note 8). A `duckLogicalType`
+    that gives a `LogicalTypeAlias`, for example
+    `LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)`, declares
+    that alias type in a typed registration and in a parameter, and a value of
+    the field reads as its base type. See
     [Generic Encoding with ViaDuckDB](#generic-encoding-with-viaduckdb).
 11. Each constructor binds as its SQL type, with these exceptions:
     - A `FieldEnum` binds its label as a VARCHAR.
@@ -446,16 +547,18 @@ Notes:
     refuses an ENUM, an ARRAY, a MAP, a TUPLE, a UNION, another STRUCT, and a
     GEOMETRY with a CRS, with the error of an incompatible column, because the
     cast of DuckDB to VARIANT changes these values. Write `c::VARIANT` in SQL to
-    read such a column. One difference stays, because the reader does not know
-    the type of a column: a JSON column reads as its text, as a VARCHAR column
-    does, where `c::VARIANT` gives the parsed value.
+    read such a column. It also refuses a type that is or contains JSON, at
+    each depth, because DuckDB casts JSON to VARIANT by parsing the text: the
+    error says `DuckDB casts JSON to VARIANT by parsing the text; write
+    c::VARIANT`, and `c::VARIANT` gives the parsed value.
 14. `DecimalValue` and `RawGeometry` have no `DuckDBColumnType` and no
-    `ToDuckValue` instance, so an `Array`, a list, or a typed row of either does
-    not compile: GHC reports `No instance for 'DuckDBColumnType DecimalValue'`
-    (or `RawGeometry`), or the same for `ToDuckValue` in a typed row. One column
-    type cannot give the width and scale of each `DecimalValue`. A declared
-    GEOMETRY type has no CRS, so it would remove the CRS of each `RawGeometry`.
-    A composite parameter holds a `RawGeometry` as a `FieldGeometry`.
+    `ToDuckValue` instance, so a `SizedArray`, a list, or a typed row of either
+    does not compile: GHC reports
+    `No instance for 'DuckDBColumnType DecimalValue'` (or `RawGeometry`), or the
+    same for `ToDuckValue` in a typed row. One column type cannot give the width
+    and scale of each `DecimalValue`. A declared GEOMETRY type has no CRS, so it
+    would remove the CRS of each `RawGeometry`. A composite parameter holds a
+    `RawGeometry` as a `FieldGeometry`.
 
 A value of a VARIANT column reads as its stored value, so the row of the stored
 type applies. A value in a LIST, ARRAY, MAP, STRUCT, or UNION reads with the
@@ -551,10 +654,14 @@ fails:
 - The error of an incompatible column, for a SQL type that the instance does
   not read: `duckdb-simple: column NAME has type TYPE but expected HASKELLTYPE`.
   The message can end with `: ` and a detail, for example `: expected NULL`
-  for `Null`. TYPE is the name of the SQL type without its parameters, for
-  example DECIMAL for a DECIMAL(18,2) and ENUM for each ENUM type. Each
-  timestamp type gives TIMESTAMP, TIMESTAMPTZ_NS gives TIMESTAMPTZ, and TIME_NS
-  gives TIME. For a VARIANT column, TYPE is the type of the stored value.
+  for `Null`. TYPE is the type of the column in the text of DuckDB, as
+  `typeof` gives it, for example DECIMAL(18,2), TIMESTAMP_NS, TIMESTAMP WITH
+  TIME ZONE, ENUM('a', 'b'), INTEGER[], or JSON. `logicalTypeSQL` gives that
+  text. For a VARIANT column, TYPE is the type of the stored value in the same
+  text, for example DOUBLE or TIMESTAMP WITH TIME ZONE. A value that does not
+  hold its full type, for example a LIST or a STRUCT in a VARIANT, gives the
+  name of its kind: LIST or STRUCT. The library reads the diagnostic type
+  only when the conversion's failure is selected.
   HASKELLTYPE is the type of the instance that reads, for example `Text` for
   `String`.
 - `duckdb-simple: column NAME is NULL but expected HASKELLTYPE` for NULL in a
@@ -569,6 +676,10 @@ fails:
 The library creates a `ResultError` for each failure and puts its text in the
 `SQLError`. It does not raise the `ResultError`. A custom `FromField` instance
 reports a failure with `returnError` and a constructor of `ResultError`.
+`returnError` defers its metadata read until the final conversion fails. If an
+`Alternative` branch succeeds, the library discards the other branch's error
+without reading its diagnostic metadata. A completed `ResultError` contains
+pure data. Its rendering and comparison perform no native IO.
 `query` and `query_` raise the error and give no rows. A fold raises it at the
 row that fails. A row type with more or fewer fields than the result has
 columns raises an `SQLError` with the text `column index N out of bounds`.
@@ -741,13 +852,16 @@ Non-record constructors use positional field names (`field1`, `field2`, etc.).
 The library supports fixed-length DuckDB arrays and variable-length lists:
 
 ```haskell
-import Data.Array (Array, listArray)
+{-# LANGUAGE DataKinds #-}
 
-storeArray :: Connection -> IO [Array Int Int]
+import Control.Monad (forM_)
+import Data.Array (listArray)
+
+storeArray :: Connection -> IO [SizedArray 3 Int]
 storeArray conn = do
   _ <- execute_ conn "CREATE TABLE arrays (vals INTEGER[3])"
-  let arr = listArray (0, 2) [1, 2, 3] :: Array Int Int
-  _ <- execute conn "INSERT INTO arrays VALUES (?)" (Only arr)
+  forM_ (sizedArray (listArray (0, 2) [1, 2, 3]) :: Maybe (SizedArray 3 Int)) \arr ->
+    execute conn "INSERT INTO arrays VALUES (?)" (Only arr)
   fmap fromOnly <$> query_ conn "SELECT vals FROM arrays"
 
 storeList :: Connection -> IO [[Int]]
@@ -760,9 +874,10 @@ storeList conn = do
 
 A Haskell list binds as a LIST parameter and reads a LIST result. Put a list
 parameter in `Only`, because a list as a row is a row of parameters. A
-`String` stays one VARCHAR parameter. An `Array` binds as an ARRAY with the
-size of the value. DuckDB casts a LIST or an ARRAY to the type of a LIST
-column. It casts a LIST to an ARRAY column only when the lengths are equal.
+`String` stays one VARCHAR parameter. A `SizedArray` binds as an ARRAY of its
+size (note 8 of [Types](#types)). DuckDB casts a LIST or an ARRAY to the type
+of a LIST column. It casts a LIST to an ARRAY column only when the lengths are
+equal.
 
 A list or an array parameter with scalar elements takes its element type from
 the column type name (`duckdbColumnTypeFor`) of the element. Some elements take
@@ -829,7 +944,7 @@ form, keeps its digits below a microsecond for a nanosecond parameter:
 `SELECT ?::TIMESTAMP_NS`, or a column with that type. A `VARIANT` parameter
 also gets the nanosecond value, when the value fits the range of the nanosecond
 type, because a VARIANT holds `TIME_NS`, `TIMESTAMP_NS`, and `TIMESTAMPTZ_NS`
-values. This applies only to a scalar value: a list, an `Array`, or a `Map` of
+values. This applies only to a scalar value: a list, a `SizedArray`, or a `Map` of
 time values for a `VARIANT` parameter binds microsecond elements, and so does
 an element of a `VARIANT[]` list or a value of a MAP with `VARIANT` values,
 because one list has one element type for all its elements. Each other
@@ -847,9 +962,9 @@ Use separate parameters when one expression requires microseconds and another
 requires nanoseconds.
 
 A date or a timestamp outside the range of DuckDB raises an `SQLError` of the
-type `ErrorTypeConversion` when it binds, also as an element of a list, an
-`Array`, or a `Map`, inside a STRUCT, a TUPLE, or a UNION, and in a VARIANT. For
-a `Day`, that range is the range of DATE, from -5877641-06-25 to 5881580-07-10.
+type `ErrorTypeConversion` when it binds, also as an element of a list, a
+`SizedArray`, or a `Map`, inside a STRUCT, a TUPLE, or a UNION, and in a VARIANT.
+For a `Day`, that range is the range of DATE, from -5877641-06-25 to 5881580-07-10.
 For a `LocalTime` or a `UTCTime` (in UTC), it is the range of TIMESTAMP,
 TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS, from -290308-12-22 00:00:00 to
 294247-01-10 04:00:54.775806. The dates are in the notation of `Data.Time`. A
@@ -861,8 +976,8 @@ whether the library or DuckDB raises the error:
 - A parameter: the error of the library for a value outside the range of DuckDB,
   and the Conversion Error of DuckDB for each other such value, for example in
   the year 2300.
-- An element of a list, an `Array`, or a `Map`: the error of the library. For a
-  value in the range of DuckDB, its text is "TIMESTAMP value out of finite
+- An element of a list, a `SizedArray`, or a `Map`: the error of the library.
+  For a value in the range of DuckDB, its text is "TIMESTAMP value out of finite
   range".
 - A field of a STRUCT, an element of a TUPLE, or a member of a UNION: the error
   of the library, "TIMESTAMP value out of finite range", also for a value
@@ -1150,8 +1265,8 @@ Time and timestamp payloads bind as microsecond types, or as nanosecond types
 when they have sub-microsecond digits and fit the nanosecond range. So a
 `TIMESTAMP_S` result binds back as a `TIMESTAMP` when its value fits. Each
 element of a list payload and each field of an object payload follow the same
-rule, so one list payload can hold both types. A Haskell list, an `Array`, or a
-`Map` of time values for a `VARIANT` parameter is not a payload: it binds
+rule, so one list payload can hold both types. A Haskell list, a `SizedArray`,
+or a `Map` of time values for a `VARIANT` parameter is not a payload: it binds
 microsecond elements (see [Infinite dates and
 timestamps](#infinite-dates-and-timestamps)). A value outside the range of
 DuckDB raises an `SQLError` of the type `ErrorTypeConversion`. Lists, arrays,
@@ -1165,7 +1280,7 @@ DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
 value and cast it in SQL, as in `?::VARIANT`.
 
 A `Variant` result reads only a value that a VARIANT can hold: note 13 of
-[Types](#types) gives the shapes, and the one difference for a JSON column.
+[Types](#types) gives the shapes, and the refusal of a JSON type.
 
 The library uses a separate helper connection for VARIANT decoder metadata.
 It caches the parsed VARIANT metadata statement and the types for VARIANT
@@ -1211,10 +1326,9 @@ A `RawGeometry` parameter binds as a `GEOMETRY` value with the same WKB bytes
 and its own CRS. DuckDB then casts it to the type of the parameter, as it casts
 a `GEOMETRY` value in SQL text. A value without a CRS takes the CRS of the
 target. A target without a CRS removes the CRS of the value, with no error. A
-target with another CRS raises `SQLError`. Use `Maybe RawGeometry` for SQL
-NULL. An `Array`, a list, and a typed row cannot hold a `RawGeometry` (note 14
-of [Types](#types)). A composite parameter holds it as `FieldGeometry` (see
-below):
+target with another CRS raises `SQLError`. Use `Maybe RawGeometry` for SQL NULL.
+A `SizedArray`, a list, and a typed row cannot hold a `RawGeometry` (note 14 of
+[Types](#types)). A composite parameter holds it as `FieldGeometry` (see below):
 
 ```haskell
 import Database.DuckDB.Simple.Geometry
@@ -1537,7 +1651,7 @@ tableExample conn = do
 
 The type of a column, a parameter, or an aggregate argument comes from
 `duckdbTypeDeclaration`: notes 8, 9, and 10 of [Types](#types) give the rule
-for an `Array`, records, sum types, and `StructValue`, `TupleValue`, and
+for a `SizedArray`, records, sum types, and `StructValue`, `TupleValue`, and
 `UnionValue`. An aggregate argument has the VARIANT and GEOMETRY rules of
 [User-Defined Functions](#user-defined-functions).
 

@@ -372,8 +372,10 @@ makes a Field supplies a conversion:
 - A synthetic field made from a FieldValue alone. Its conversion returns VARIANT.
 
 VARIANT means that the stored value determines its type. An element of a
-VARIANT column also has type VARIANT. A conversion that does not demand
-fieldType does not convert the type tree or copy an ENUM dictionary.
+VARIANT column also has type VARIANT. The fieldType action converts no type
+tree or ENUM dictionary until requested. Structured value readers can also
+build type trees. See Note [Type trees] in
+"Database.DuckDB.Simple.Materialize".
 
 The scope caches successful type reads. An interrupted read can retry while
 the scope remains open. Closure releases native types and clears the cache.

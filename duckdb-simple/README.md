@@ -304,10 +304,11 @@ for the connection rules.
 column, or of an element, key, or value in a LIST, ARRAY, or MAP. It preserves
 aliases such as JSON. A query result or callback owns the native metadata.
 The library converts a column's type to `LogicalTypeRep` when a decoder
-requests `fieldType` and caches a successful result within that scope. It
-does not convert an unused type or copy its ENUM dictionary. If cancellation
-interrupts a read while the scope remains open, another call can retry it.
-The cache does not store exceptions.
+requests `fieldType` and caches a successful result within that scope. This
+metadata action does no tree traversal or ENUM dictionary copy until requested.
+Structured value readers can also build type trees to decode their values.
+If cancellation interrupts a metadata read while the scope remains open,
+another call can retry it. The cache does not store exceptions.
 
 Native metadata is available while a query parser runs. A cursor retains its
 metadata until exhaustion, reset, or statement closure. Callback metadata is

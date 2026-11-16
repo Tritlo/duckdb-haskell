@@ -355,8 +355,9 @@ laterFetchQuery :: Query
 laterFetchQuery = "SELECT CASE WHEN i >= 500000 AND i % 100000 = 0 THEN own_statement(i) ELSE i END FROM range(1000000) t(i)"
 
 -- | Run an outer call in its own thread, and wait for it at most the test
--- bound. When that bound ends, throw to each callback thread in the list. Then
--- the outer call returns, and the case fails and does not hang.
+-- bound. If the bound expires, send an exception to each callback thread.
+-- Cleanup can still wait for exception delivery or a native call. Use an
+-- external process timeout to limit the complete test run.
 boundedOuterCall :: Int -> IORef [ThreadId] -> IO () -> IO (Either SomeException ())
 boundedOuterCall micros threads action = do
   (_, done) <- startCaller action

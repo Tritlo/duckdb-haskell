@@ -249,8 +249,8 @@ extensionRegressionTests =
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "a scalar callback failure gives an SQL error of the type ErrorInputInvalid" $
         withConnection ":memory:" \conn -> do
-          -- The library gives DuckDB the code DuckDBV2ErrorApi for each
-          -- callback failure. DuckDB 2.0.0 reports that code as an invalid input.
+          -- An untyped callback failure gets the code DuckDBV2ErrorApi.
+          -- DuckDB 2.0.0 reports that code as an invalid input.
           createFunction conn "throw_typed_scalar" (throwIO (userError "typed callback failure") :: IO Int64)
           outcome <- try (query_ conn "SELECT throw_typed_scalar()" :: IO [Only Int64])
           case outcome of

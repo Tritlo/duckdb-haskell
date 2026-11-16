@@ -237,9 +237,8 @@ open path = openWithConfig path []
 openWithConfig :: FilePath -> [(Text, Text)] -> IO Connection
 openWithConfig path settings = openWithOptions path defaultConnectionOptions{connectionConfig = settings}
 
--- | Check the fields of t'ConnectionOptions' and give the record with the
--- checked fields. The fields are lazy, so an error in a field occurs here and
--- not in a later use. Each open calls this before it creates a native handle.
+-- | Check the option bounds before an open creates a native handle.
+-- Return the record with the checked values.
 checkConnectionOptions :: ConnectionOptions -> IO ConnectionOptions
 checkConnectionOptions options@ConnectionOptions{connectionCallbackLockWait, connectionAggregateStripes, connectionArrowBatchSize} = do
   callbackLockWait <- checkCallbackLockWait connectionCallbackLockWait
@@ -253,8 +252,7 @@ checkConnectionOptions options@ConnectionOptions{connectionCallbackLockWait, con
       }
 
 -- | Evaluate the bound of 'connectionCallbackLockWait' and reject a negative
--- bound. The fields of t'ConnectionOptions' are lazy, so an error in the field
--- occurs here and not in a later wait.
+-- bound before an open creates a native handle.
 checkCallbackLockWait :: Maybe Int -> IO (Maybe Int)
 checkCallbackLockWait bound = case bound of
   Just micros

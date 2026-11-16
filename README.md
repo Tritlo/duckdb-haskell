@@ -157,7 +157,7 @@ The project and Docker use GHC 9.14.1 by default.
 Use `cabal build all --with-compiler=ghc-VERSION` to select another compiler.
 
 CI uses the pinned DuckDB 2.0.0 release archives on Linux and macOS ARM64.
-Two jobs use the automatic download. Docker builds and tests both packages
+Three jobs use the automatic download. Docker builds and tests both packages
 with the same release. Nix builds the pinned source and tests both packages.
 The tests check the loaded native version. With GHC 9.14.1, CI also installs
 `duckdb-ffi` and runs a separate program with normal and dynamic Haskell linking.

@@ -1,5 +1,8 @@
 # Changelog
 
+See [MIGRATION.md](https://github.com/Tritlo/duckdb-haskell/blob/main/MIGRATION.md)
+for the upgrade instructions.
+
 ## 2.0.0.0
 
 - Target DuckDB 2.0. The retained API supports DuckDB 2.0.x releases. Use the

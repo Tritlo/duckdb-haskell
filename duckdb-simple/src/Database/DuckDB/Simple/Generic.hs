@@ -360,12 +360,12 @@ unexpectedValue expected value = Left (displayException (Incompatible (valueType
 -- traversal when generating metadata (@genericLogicalType@) and when producing
 -- concrete values (@genericToFieldValue@).
 data Encoded
-  = EncodedStruct (StructValue FieldValue) (Array Int (StructField LogicalTypeRep))
+  = EncodedStruct (StructValue FieldValue)
   | EncodedUnion (UnionValue FieldValue)
 
 encodedValue :: Encoded -> FieldValue
 encodedValue = \case
-  EncodedStruct sv _ -> FieldStruct sv
+  EncodedStruct sv -> FieldStruct sv
   EncodedUnion uv -> FieldUnion uv
 
 -- | Convert a Haskell value (using its generic representation) into a DuckDB @FieldValue@.
@@ -384,7 +384,7 @@ genericFromFieldValue fv = to <$> gFromField fv
 genericToStructValue :: forall a. (Generic a, GToField (Rep a)) => a -> Maybe (StructValue FieldValue)
 genericToStructValue value =
   case gToField (from value) of
-    EncodedStruct sv _ -> Just sv
+    EncodedStruct sv -> Just sv
     _ -> Nothing
 
 -- | Extract a UNION-shaped generic encoding directly when one is produced.
@@ -460,7 +460,6 @@ instance (GStruct f) => GToField' 'False (M1 D meta (M1 C c f)) where
             , structValueTypes = typeArray
             , structValueIndex = indexMap
             }
-          typeArray
     where
       progIndices = [0 :: Int ..]
   gLogicalType' _ _ =
@@ -758,7 +757,7 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
 instance (Generic a, GToField (Rep a)) => ToField (ViaDuckDB a) where
   toField (ViaDuckDB x) = case gToField (from x) of
     EncodedUnion unionVal -> toField unionVal
-    EncodedStruct structVal _ -> toField structVal
+    EncodedStruct structVal -> toField structVal
 
 -- | Test whether a type is or contains an ARRAY type of the size 0. The
 -- 'DuckValue' instance of 'Array' declares that size.
@@ -773,7 +772,7 @@ hasUnsizedArray = containsType \case
 instance (Generic a, GToField (Rep a)) => ToDuckValue (ViaDuckDB a) where
   toDuckValue factory (ViaDuckDB x) = case gToField (from x) of
     EncodedUnion unionVal -> toDuckValue factory unionVal
-    EncodedStruct structVal _ -> toDuckValue factory structVal
+    EncodedStruct structVal -> toDuckValue factory structVal
 
 -- | Deriving-via @FromField@ instance. It reads a STRUCT for a product type and
 -- a UNION for a sum type. Errors are rewrapped using the existing

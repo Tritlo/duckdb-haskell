@@ -30,7 +30,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import Data.Time.Calendar (Day, addDays, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), utc, utcToLocalTime)
+import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), hoursToTimeZone, utc, utcToLocalTime)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI.V2 (
@@ -51,6 +51,8 @@ import Database.DuckDB.Simple.FromField (
   TimeWithZone (..),
   bsFromBool,
   returnError,
+  timeWithZone,
+  timeWithZoneZone,
  )
 import Database.DuckDB.Simple.Generic (DuckValue (..), ViaDuckDB (..), genericFromFieldValue, genericToStructValue, typedFromField)
 import Database.DuckDB.Simple.Internal (destroyValue, withConnectionFactory, withConnectionHandle)
@@ -944,6 +946,17 @@ valueRegressionTests =
           >>= (@?= [("INTERVAL[]", [value, negative])])
         let array = listArray (0, 1) [value, negative] :: Array Int IntervalValue
         (query conn "SELECT typeof(?), ?" (array, array) :: IO [(Text, [IntervalValue])]) >>= (@?= [("INTERVAL[2]", [value, negative])])
+    , testCase "a TimeWithZone from a Data.Time zone reads back with that zone" $ withConnection ":memory:" \conn -> do
+        let zone = hoursToTimeZone 2
+            value = timeWithZone (TimeOfDay 12 34 0) zone
+        timeWithZoneOffsetSeconds value @?= 7200
+        [Only stored] <- query conn "SELECT ?" (Only value)
+        stored @?= value
+        timeWithZoneZone stored @?= zone
+        -- A TimeZone holds whole minutes, so the seconds of an offset go.
+        [Only withSeconds] <- query_ conn "SELECT '12:00:00+01:00:30'::TIMETZ"
+        timeWithZoneOffsetSeconds withSeconds @?= 3630
+        timeWithZoneZone withSeconds @?= hoursToTimeZone 1
     , testCase "a TimeWithZone binds as a TIMETZ with its time and offset in seconds" $ withConnection ":memory:" \conn -> do
         let at hours minutes offset = TimeWithZone (TimeOfDay hours minutes 0) offset
             value = at 12 34 19800

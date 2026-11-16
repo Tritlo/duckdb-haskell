@@ -184,10 +184,10 @@ A value in an Array, a list, a Map, a STRUCT, a TUPLE, or a UNION parameter
 follows the type of its leaf in the target: timestampTypeForTarget gives a
 nanosecond type to a TIME, TIMESTAMP, or TIMESTAMPTZ leaf of a nanosecond
 target leaf. These parameters read the parameter type for each value. A
-VARIANT leaf does not give a nanosecond type: elementBindingTarget gives an
-element of a VARIANT list or map no target, and timestampTypeForTarget has no
-VARIANT case. A list, an Array, or a Map for a VARIANT parameter has no element
-type in the target (collectionChildType and mapPartTypes give Nothing), so its
+VARIANT leaf does not give a nanosecond type: bindElement gives an element of
+a VARIANT list or map no target, and timestampTypeForTarget has no VARIANT
+case. A list, an Array, or a Map for a VARIANT parameter has no element type
+in the target (collectionChildType and mapPartTypes give Nothing), so its
 time elements also get the microsecond value. One LIST has one element type
 for all its elements. For a Haskell list, an Array, or a Map of TimeOfDay,
 LocalTime, or UTCTime values, withElementType declares the microsecond type of
@@ -294,12 +294,15 @@ fitsNanoseconds (FieldTimestamp (Finite time)) = inFiniteRange (minBound :: Int6
 fitsNanoseconds (FieldTimestampTZ (Finite instant)) = fitsNanoseconds (FieldTimestamp (Finite (utcToLocalTime utc instant)))
 fitsNanoseconds _ = True
 
--- | Give the target of an element of a LIST, an ARRAY, or a MAP. A VARIANT
--- element type gives no target, so an element binds as for a parameter with
--- no known type. See Note [Nanosecond parameters].
-elementBindingTarget :: Maybe LogicalTypeRep -> Maybe LogicalTypeRep
-elementBindingTarget (Just (LogicalTypeScalar LogicalTypeIdVariant)) = Nothing
-elementBindingTarget target = target
+-- | Bind an element of a LIST, an ARRAY, or a MAP for its element type in the
+-- target. A VARIANT element type gives no target, so the element binds as for
+-- a parameter with no known type. See Note [Nanosecond parameters].
+bindElement :: (ToField a) => ValueBuilder -> Maybe LogicalTypeRep -> a -> IO DuckDBV2ValueHandle
+bindElement builder target value = fieldBindingValue (toField value) builder (pure elementTarget)
+  where
+    elementTarget = case target of
+      Just (LogicalTypeScalar LogicalTypeIdVariant) -> Nothing
+      _ -> target
 
 -- | Test whether a t'LocalTime' for a TIMESTAMP_NS parameter, or a t'UTCTime'
 -- for a TIMESTAMPTZ_NS parameter on its instant in UTC, is outside the range of
@@ -857,7 +860,7 @@ instance (DuckDBColumnType a, ToField a) => ToField (Array Int a) where
       \builder readTarget -> do
         target <- readTarget
         let childTarget = collectionChildType target
-        arrayDuckValue builder childTarget (\value -> fieldBindingValue (toField value) builder (pure (elementBindingTarget childTarget))) arr
+        arrayDuckValue builder childTarget (bindElement builder childTarget) arr
 
 -- | Bind a list as a LIST value with the element rules of an 'Array'. An empty
 -- list binds as an empty LIST of the element type. When the element type has
@@ -872,7 +875,7 @@ instance {-# OVERLAPPABLE #-} (DuckDBColumnType a, ToField a) => ToField [a] whe
       \builder readTarget -> do
         target <- readTarget
         let childTarget = collectionChildType target
-        listDuckValue builder childTarget (\value -> fieldBindingValue (toField value) builder (pure (elementBindingTarget childTarget))) values
+        listDuckValue builder childTarget (bindElement builder childTarget) values
 
 -- | Bind a map as a MAP value. The pairs go in ascending key order. The keys
 -- and the values have the element rules of a list, so an empty map binds as an
@@ -889,8 +892,8 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToField k, ToField v) => ToFie
           (withElementType (Proxy @k) builder keyTarget)
           (withElementType (Proxy @v) builder valueTarget)
           builder
-          (\key -> fieldBindingValue (toField key) builder (pure (elementBindingTarget keyTarget)))
-          (\value -> fieldBindingValue (toField value) builder (pure (elementBindingTarget valueTarget)))
+          (bindElement builder keyTarget)
+          (bindElement builder valueTarget)
           (Map.toAscList pairs)
 
 -- | Bind a dynamic value, for example one that a query read as a t'FieldValue'.
@@ -985,8 +988,7 @@ fieldValueSequence
 fieldValueSequence name create items =
   targetValueBinding ("<" <> Text.unpack name <> " length=" <> show (length items) <> ">") \builder readTarget -> do
     childTarget <- collectionChildType <$> readTarget
-    let element item = fieldBindingValue (toField item) builder (pure (elementBindingTarget childTarget))
-    sequenceDuckValue (withValueType builder childTarget) create builder element items
+    sequenceDuckValue (withValueType builder childTarget) create builder (bindElement builder childTarget) items
 
 -- | Bind the pairs of a 'FieldMap' in their order, with the key type and the
 -- value type that they give. See Note [Element types of a list].
@@ -994,8 +996,13 @@ fieldValueMap :: [(FieldValue, FieldValue)] -> FieldBinding
 fieldValueMap pairs =
   targetValueBinding ("<FieldMap size=" <> show (length pairs) <> ">") \builder readTarget -> do
     (keyTarget, valueTarget) <- mapPartTypes <$> readTarget
-    let part target item = fieldBindingValue (toField item) builder (pure (elementBindingTarget target))
-    mapDuckValue (withValueType builder keyTarget) (withValueType builder valueTarget) builder (part keyTarget) (part valueTarget) pairs
+    mapDuckValue
+      (withValueType builder keyTarget)
+      (withValueType builder valueTarget)
+      builder
+      (bindElement builder keyTarget)
+      (bindElement builder valueTarget)
+      pairs
 
 instance (ToField a) => ToField (Maybe a) where
   toField Nothing = nullBinding "Nothing"
@@ -1922,7 +1929,9 @@ variantPayloadType value = case value of
   FieldTimestamp (Finite LocalTime{localTimeOfDay})
     | hasSubMicroseconds localTimeOfDay && fitsNanoseconds value -> scalar LogicalTypeIdTimestampNs
   FieldTimestamp{} -> scalar LogicalTypeIdTimestamp
-  FieldTimestampTZ instant -> scalar (variantUtcTimestampType instant)
+  FieldTimestampTZ (Finite instant)
+    | hasSubMicroseconds (localTimeOfDay (utcToLocalTime utc instant)) && fitsNanoseconds value -> scalar LogicalTypeIdTimestampTzNs
+  FieldTimestampTZ{} -> scalar LogicalTypeIdTimestampTz
   FieldTimeTZ{} -> scalar LogicalTypeIdTimeTz
   FieldInterval{} -> scalar LogicalTypeIdInterval
   FieldBigNum{} -> scalar LogicalTypeIdBigNum
@@ -1948,14 +1957,6 @@ variantPayloadType value = case value of
   where
     variant = LogicalTypeScalar LogicalTypeIdVariant
     scalar dtype = pure (LogicalTypeScalar dtype, value)
-
--- | Choose nanosecond storage for a precise UTC VARIANT payload that fits the
--- range of TIMESTAMPTZ_NS. See Note [Nanosecond parameters].
-variantUtcTimestampType :: UTCTimestamp -> LogicalTypeId
-variantUtcTimestampType (Finite instant)
-  | hasSubMicroseconds (localTimeOfDay (utcToLocalTime utc instant)) && fitsNanoseconds (FieldTimestampTZ (Finite instant)) =
-      LogicalTypeIdTimestampTzNs
-variantUtcTimestampType _ = LogicalTypeIdTimestampTz
 
 instance ToDuckValue Null where
   toDuckValue factory _ = nullDuckValue factory

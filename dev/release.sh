@@ -60,18 +60,16 @@ for name in "${packages[@]}"; do
   cabal sdist "$name"
 done
 
-# All archives exist at this point. Confirm before the first upload.
+# All archives exist at this point. Stop here for a rehearsal without an upload.
 echo ""
-read -r -p "Upload built archives to Hackage? [y/N] " upload || exit 0
-case "$upload" in
-  y|Y) ;;
-  *) echo "Upload cancelled."; exit 0 ;;
-esac
+read -p "Username: " username
+read -sp "Password: " password
+echo ""
 
 for name in "${packages[@]}"; do
   echo ""
   echo "=== Uploading $name ==="
-  cabal upload $publish_flag dist-newstyle/sdist/"$name"-[0-9]*.tar.gz
-  cabal upload $publish_flag -d dist-newstyle/"$name"-[0-9]*-docs.tar.gz
+  cabal upload $publish_flag -u "$username" -p "$password" dist-newstyle/sdist/"$name"-[0-9]*.tar.gz
+  cabal upload $publish_flag -d -u "$username" -p "$password" dist-newstyle/"$name"-[0-9]*-docs.tar.gz
   echo "=== Done: $name ==="
 done

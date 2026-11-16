@@ -405,8 +405,8 @@ instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
 unexpectedValue :: String -> FieldValue -> Either String a
 unexpectedValue expected value = Left (displayException (Incompatible (valueTypeName value) Text.empty (Text.pack expected) Text.empty))
 
--- | The error of a decoder that does not read a value of a place with a SQL
--- type. It names the type as 'returnError' does.
+-- | The error of a decoder that cannot read a value with the given SQL type.
+-- It names the type as 'returnError' does.
 unexpectedTypedValue :: LogicalTypeRep -> String -> FieldValue -> Either String a
 unexpectedTypedValue logical expected value = Left (displayException (Incompatible (fieldTypeName logical value) Text.empty (Text.pack expected) Text.empty))
 

@@ -423,9 +423,9 @@ The SQL workflow stays the same. These changes can affect your code:
   that is or contains VARIANT or GEOMETRY was a compile error. A VARIANT
   argument is now an `SQLError` at registration, and a GEOMETRY argument
   reads. An `Array` argument or result is an `SQLError` at registration,
-  because its ARRAY type has no size. Use a list, or a newtype of the `Array`
-  with its own column type name that gives the size, for example `BIGINT[3]`.
-  DuckDB casts a LIST of the same length to that ARRAY with no error.
+  because its ARRAY type has no size. Use a list, or a `SizedArray n a`, which
+  declares the ARRAY of size `n`. DuckDB casts a LIST of the same length to
+  that ARRAY with no error.
 - A result of `createFunction` has the SQL type of its Haskell type. In
   version 0.3, an `Int16`, `Int32`, `Word16`, or `Word32` result was BIGINT,
   and a `Float` result was DOUBLE. Now they are SMALLINT, INTEGER, USMALLINT,

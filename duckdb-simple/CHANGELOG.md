@@ -76,9 +76,16 @@
   declaration, and the registration raises an error for them. An `Array` has
   no declaration, because its ARRAY type has no size, so a registration
   refuses an `Array` argument, result, parameter, or column, also inside a
-  `Maybe`, a list, or a `Map`. A newtype of the `Array` with its own column
-  type name, for example `BIGINT[3]`, declares that ARRAY. DuckDB casts a LIST
-  of the same length to it with no error.
+  `Maybe`, a list, or a `Map`. A `SizedArray n a` declares the ARRAY of size `n`.
+  DuckDB casts a LIST of the same length to it with no error.
+- `SizedArray n a` is new: a list of exactly `n` values, made with `sizedArray` and read
+  with `sizedArrayToList`. It binds as an ARRAY of size `n`, a typed registration
+  declares that type, also for a field of a record through `ViaDuckDB`, and it
+  reads an ARRAY and a LIST of `n` elements. A value of another length raises
+  `Incompatible`. `Array` stays for an ARRAY of each size.
+- An ARRAY parameter with more than 100000 elements, the largest ARRAY of
+  DuckDB, raises an `SQLError` of the type `ErrorInputInvalid`, as an empty
+  ARRAY parameter does.
   `Database.DuckDB.Simple.LogicalRep` exports `TypeDeclaration`.
 - An argument of `createFunction` can have each type with `FromField` and
   `DuckDBColumnType`, for example a record through `ViaDuckDB`, a list, a `Map`,

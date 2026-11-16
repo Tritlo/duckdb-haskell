@@ -332,6 +332,7 @@ Each row gives a Haskell type and these facts:
 | `IntervalValue` | INTERVAL | | INTERVAL | argument, result |
 | `[a]` | LIST | | LIST, ARRAY | argument, result |
 | `Array Int a` | ARRAY (8) | none (8) | ARRAY | none (8) |
+| `SizedArray n a` | ARRAY of size `n` (8) | | ARRAY, LIST (8) | argument, result |
 | `Map k v` | MAP | | MAP | argument, result |
 | `StructValue FieldValue` | STRUCT (9) | none | STRUCT | none |
 | `TupleValue FieldValue` | TUPLE (9) | none | TUPLE | none |
@@ -412,20 +413,29 @@ Notes:
    23:59:60.5, and a field outside its own range, for example 61 minutes, raise
    an `SQLError` of the type `ErrorTypeConversion`. [Infinite dates and
    timestamps](#infinite-dates-and-timestamps) gives the full rule.
-8. An `Array` binds as an ARRAY with the size of the value. An empty `Array`
-   raises an `SQLError` of the type `ErrorInputInvalid`, because a DuckDB ARRAY
-   has at least one element; bind an empty list for an empty LIST. A DuckDB
-   ARRAY type has a size, and the Haskell type has none, so a typed registration
+8. A DuckDB ARRAY type has a size, for example `BIGINT[3]`. A `SizedArray n a` is the
+   Haskell type of that ARRAY: it holds exactly `n` values. `sizedArray` makes one
+   from a list and gives `Nothing` for a list of another length, and
+   `sizedArrayToList` gives the values. A `SizedArray` binds as an ARRAY of size `n`, and a
+   typed registration declares that type in each position, also as a field of
+   a record through `ViaDuckDB`. It reads an ARRAY and a LIST of `n` elements,
+   as the cast of DuckDB to the ARRAY does, and a value of another length
+   raises a `ResultError` that names the column type, the `SizedArray` type, and the
+   length. In a typed registration, DuckDB rejects an ARRAY of another size
+   when it binds the call. It casts a LIST of the same length to the ARRAY
+   with no error, by its own implicit cast, and a LIST of another length
+   raises an `SQLError` when the statement runs. An `Array` is for an ARRAY of
+   each size: it binds as an ARRAY with the size of the value, and it reads an
+   ARRAY of each size. Its Haskell type has no size, so a typed registration
    has no declaration for an `Array`. An `Array` argument or result of
    `createFunction` or `createAggregate`, and an `Array` parameter or column of
    `createTableFunction`, raise an `SQLError` of the type `ErrorInputInvalid` at
-   registration, also inside a `Maybe`, a list, or a `Map`. Use a list for a
-   LIST. For an ARRAY, use a newtype of the `Array` with its own column type
-   name (`duckdbColumnTypeFor`) that gives the size, for example `BIGINT[3]`.
-   DuckDB then rejects an ARRAY of another size when it binds the call. It casts
-   a LIST of the same length to the ARRAY with no error, by its own implicit
-   cast, and a LIST of another length raises an `SQLError` when the statement
-   runs.
+   registration, also inside a `Maybe`, a list, or a `Map`. Use a `SizedArray` for an
+   ARRAY there, and a list for a LIST. A DuckDB ARRAY has 1 to 100000
+   elements. An `Array`, a `SizedArray`, or a `FieldArray` parameter with no element
+   or with more than 100000 elements raises an `SQLError` of the type
+   `ErrorInputInvalid`, and a typed registration raises the same error for a
+   `SizedArray` of such a size. Bind an empty list for an empty LIST.
 9. A STRUCT, TUPLE, or UNION parameter binds with the types of its own fields
    or members. These types keep an alias, so a value that a query reads from a
    `STRUCT(k JSON)` column binds as `STRUCT(k JSON)`. These values have no
@@ -445,8 +455,7 @@ Notes:
     DOUBLE value, and so do UHUGEINT + INTEGER and HUGEINT + UHUGEINT for
     columns and typed values. A record with an `Array` field raises an error at
     registration, because the record type does not give the size of the
-    ARRAY. Use a list field, or a field of a newtype of the `Array` with a
-    `DuckValue` instance that gives the size (see note 8). A `duckLogicalType`
+    ARRAY. Use a `SizedArray` field, or a list field (see note 8). A `duckLogicalType`
     that gives a `LogicalTypeAlias`, for example
     `LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)`, declares
     that alias type in a typed registration and in a parameter, and a value of
@@ -1570,8 +1579,8 @@ tableExample conn = do
 
 The type of a column, a parameter, or an aggregate argument comes from
 `duckdbTypeDeclaration`: notes 8, 9, and 10 of [Types](#types) give the rule
-for an `Array`, records, sum types, and `StructValue`, `TupleValue`, and
-`UnionValue`. An aggregate argument has the VARIANT and GEOMETRY rules of
+for an `Array` and a `SizedArray`, records, sum types, and `StructValue`,
+`TupleValue`, and `UnionValue`. An aggregate argument has the VARIANT and GEOMETRY rules of
 [User-Defined Functions](#user-defined-functions).
 
 Each typed registration rejects an argument type that its argument reader cannot

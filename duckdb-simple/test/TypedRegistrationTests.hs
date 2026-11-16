@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -19,7 +20,7 @@ import Data.Array (Array, elems, listArray)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (fromJust, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
@@ -1260,14 +1261,8 @@ newtype Triple = Triple (Array Int Int64)
 instance DuckDBColumnType Triple where
   duckdbColumnTypeFor _ = "BIGINT[3]"
 
--- | A record field gives its size through the DuckValue instance.
-instance DuckValue Triple where
-  duckToField (Triple values) = duckToField values
-  duckFromField = fmap Triple . duckFromField
-  duckLogicalType _ = LogicalTypeArray (LogicalTypeScalar LogicalTypeIdBigInt) 3
-
 -- | A record with a field of a sized ARRAY type.
-newtype Boxed = Boxed {boxed :: Triple}
+newtype Boxed = Boxed {boxed :: SizedArray 3 Int64}
   deriving stock (Generic)
   deriving (DuckDBColumnType, ToDuckValue, FromField) via (ViaDuckDB Boxed)
 
@@ -1437,18 +1432,19 @@ testNoDeclaration = withConnection ":memory:" \conn -> do
     (createTableFunction conn "typed_priced" ["p"] \() -> pure ([] :: [Only (Map.Map Price Peak)]))
   query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'typed\\_%' ESCAPE '\\'" >>= (@?= [Only (0 :: Int64)])
 
--- | Use a newtype with a sized ARRAY type text in each position. DuckDB
--- rejects an ARRAY of another size when it binds the call, casts a LIST of
--- the same length to the ARRAY, and rejects a LIST of another length when the
--- statement runs. See Note [Type declarations] in
+-- | Use a SizedArray of size 3 in each position, and a newtype with a sized ARRAY type
+-- text as an argument. DuckDB rejects an ARRAY of another size when it binds
+-- the call, casts a LIST of the same length to the ARRAY, and rejects a LIST
+-- of another length when the statement runs. See Note [Sized arrays] in
 -- "Database.DuckDB.Simple.ToField".
 testSizedArray :: Assertion
 testSizedArray = withConnection ":memory:" \conn -> do
-  let total (Triple values) = sum (elems values)
-      triple x = Triple (listArray (0, 2) [x, x, x])
+  let total = sum :: SizedArray 3 Int64 -> Int64
+      triple x = fromJust (sizedArray @3 [x, x, x :: Int64])
   createFunction conn "sized_argument" total
-  createFunction conn "sized_maybe" (maybe (-1) total :: Maybe Triple -> Int64)
-  createFunction conn "sized_list" (sum . map total :: [Triple] -> Int64)
+  createFunction conn "sized_newtype" \(Triple values) -> sum (elems values)
+  createFunction conn "sized_maybe" (maybe (-1) total :: Maybe (SizedArray 3 Int64) -> Int64)
+  createFunction conn "sized_list" (sum . map total :: [SizedArray 3 Int64] -> Int64)
   createFunction conn "sized_record" \(Boxed values) -> total values
   createAggregate
     conn
@@ -1466,6 +1462,7 @@ testSizedArray = withConnection ":memory:" \conn -> do
   let positions :: [(String, Text -> Text, ErrorType)]
       positions =
         [ ("scalar argument", \v -> "SELECT sized_argument(" <> v <> ")", ErrorTypeConversion)
+        , ("newtype argument", \v -> "SELECT sized_newtype(" <> v <> ")", ErrorTypeConversion)
         , ("Maybe argument", \v -> "SELECT sized_maybe(" <> v <> ")", ErrorTypeConversion)
         , ("list argument", \v -> "SELECT sized_list([" <> v <> "])", ErrorTypeConversion)
         , ("record field", \v -> "SELECT sized_record({'boxed': " <> v <> "})", ErrorTypeConversion)
@@ -1491,7 +1488,9 @@ testSizedArray = withConnection ":memory:" \conn -> do
           (Left (err :: SQLError), Right _) -> assertFailure (name <> ": " <> show err)
   forM_ positions \(position, sql, lengthError) -> forM_ (values lengthError) \(label, value, expected) ->
     check (position <> ", " <> label) (query_ conn (Query (sql value))) expected
-  -- A bound Array binds as an ARRAY of its own size.
+  -- A bound SizedArray binds as an ARRAY of its size, and a bound Array as an ARRAY of
+  -- its own size.
+  check "bound SizedArray of 3" (query conn "SELECT sized_argument(?)" (Only (triple 1))) (Right 3)
   check "bound Array of 3" (query conn "SELECT sized_argument(?)" (Only (listArray (0, 2) [1, 2, 3] :: Array Int Int64))) (Right 6)
   check
     "bound Array of 4"
@@ -1502,7 +1501,8 @@ testSizedArray = withConnection ":memory:" \conn -> do
   createTableFunction conn "sized_rows" ["t"] \(Only (x :: Int64)) -> pure [Only (triple x)]
   query_ conn "SELECT typeof(sized_result(1)), sized_result(1)::VARCHAR" >>= (@?= [("BIGINT[3]" :: Text, "[1, 1, 1]" :: Text)])
   query_ conn "SELECT typeof(t), t::VARCHAR FROM sized_rows(2)" >>= (@?= [("BIGINT[3]" :: Text, "[2, 2, 2]" :: Text)])
-  -- A result of another size raises the cast error of DuckDB when the function runs.
+  -- A result of another size raises the cast error of DuckDB when the function
+  -- runs. A SizedArray has no value of another size, but a hand-written newtype has.
   createFunction conn "sized_wrong_result" \(x :: Int64) -> Triple (listArray (0, 3) [x, x, x, x])
   check
     "result of 4"

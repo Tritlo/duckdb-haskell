@@ -1,5 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -15,9 +17,17 @@ import Data.Int (Int32, Int64, Int8)
 import Data.Maybe (fromJust)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple
+import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
+import Database.DuckDB.Simple.ToField (ToDuckValue)
+import GHC.Generics (Generic)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 import TestUtils (assertInputErrorContaining)
+
+-- | A record with a field of a sized ARRAY type.
+newtype Sized = Sized {sizedValues :: SizedArray 3 Int64}
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToField, ToDuckValue, FromField) via (ViaDuckDB Sized)
 
 -- | The cases of 'SizedArray' as a parameter, a column, and a function argument.
 sizedArrayTests :: TestTree
@@ -67,4 +77,15 @@ sizedArrayTests =
           (query conn "SELECT len(?)" (Only above) :: IO [Only Int64])
         assertInputErrorContaining "a SizedArray of size 100001 has no ARRAY type, because a DuckDB ARRAY has at most 100000 elements" $
           createFunction conn "sized_above" \(v :: SizedArray 100001 Int8) -> length v
+    , testCase "a SizedArray field of a record declares and reads the ARRAY of its size" $ withConnection ":memory:" \conn -> do
+        let row = Sized (fromJust (sizedArray @3 [1, 2, 3]))
+        query conn "SELECT typeof(?), ?" (row, row) >>= (@?= [("STRUCT(sizedValues BIGINT[3])" :: Text.Text, row)])
+        createFunction conn "sized_field" \(Sized sized) -> sum sized
+        query conn "SELECT typeof(sized_field(?)), sized_field(?)" (row, row) >>= (@?= [("BIGINT" :: Text.Text, 6 :: Int64)])
+        try (query_ conn "SELECT {'sizedValues': [1, 2]::BIGINT[2]}" :: IO [Only Sized]) >>= \case
+          Left SQLError{sqlErrorMessage} ->
+            assertBool
+              (Text.unpack sqlErrorMessage)
+              ("has type BIGINT[2] but expected SizedArray 3: the value has 2 elements" `Text.isInfixOf` sqlErrorMessage)
+          Right rows -> assertFailure ("expected the size error, got " <> show rows)
     ]

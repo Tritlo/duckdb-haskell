@@ -868,9 +868,13 @@ instance (DuckDBColumnType a, ToField a) => ToField (Array Int a) where
 -- | Bind a 'SizedArray' as an ARRAY of size @n@, with the element rules of an
 -- 'Array'. See Note [Sized arrays].
 instance (DuckDBColumnType a, ToField a) => ToField (SizedArray n a) where
-  toField values = toField (listArray (0, length list - 1) list :: Array Int a)
-    where
-      list = sizedArrayToList values
+  toField = toField . sizedArrayAsArray
+
+-- | The values of a 'SizedArray' as an 'Array' from index 0.
+sizedArrayAsArray :: SizedArray n a -> Array Int a
+sizedArrayAsArray values = listArray (0, length list - 1) list
+  where
+    list = sizedArrayToList values
 
 -- | Bind a list as a LIST value with the element rules of an 'Array'. An empty
 -- list binds as an empty LIST of the element type. When the element type has
@@ -1196,6 +1200,8 @@ its own length, reads an ARRAY of each length, and has no declaration.
   input check: the declaration of a SizedArray of another size gives Left, and the
   bind of an Array, a SizedArray, or a FieldArray of another size raises an
   SQLError of the type ErrorInputInvalid (arraySizeError).
+- Fields. A SizedArray field of a generic record declares the ARRAY of size n
+  through its DuckValue instance, and reads as a SizedArray does.
 -}
 
 -- | Declare an ARRAY of a size with the declaration of its element type. See
@@ -2182,6 +2188,11 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToDuckValue k, ToDuckValue v) 
       . Map.toAscList
     where
       builder = plainBuilder factory
+
+-- | Construct an ARRAY of size @n@ through the supplied factory, as for an
+-- 'Array'. See Note [Sized arrays].
+instance (KnownNat n, DuckDBColumnType a, ToDuckValue a) => ToDuckValue (SizedArray n a) where
+  toDuckValue factory = toDuckValue factory . sizedArrayAsArray
 
 -- | Construct a LIST through the supplied factory with the element type of @a@.
 -- 'String' keeps its own instance. A structured declaration of @a@ is the

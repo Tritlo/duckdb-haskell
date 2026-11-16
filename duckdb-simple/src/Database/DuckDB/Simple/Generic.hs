@@ -120,9 +120,12 @@ import Database.DuckDB.Simple.FromField (
   FromField (..),
   IntervalValue (..),
   ResultError (..),
+  SizedArray,
   TimeWithZone (..),
   fieldTypeName,
   returnError,
+  sizedArray,
+  sizedArrayToList,
  )
 import Database.DuckDB.Simple.Internal (duckDBTypeToName)
 import Database.DuckDB.Simple.LogicalRep (
@@ -141,6 +144,7 @@ import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..), ToField (..))
 import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Generics
+import GHC.TypeLits (KnownNat, natVal)
 import Numeric.Natural (Natural)
 
 --------------------------------------------------------------------------------
@@ -377,6 +381,33 @@ instance (DuckValue a) => DuckValue (Array Int a) where
     let (low, high) = (0, length decoded - 1)
     pure (listArray (low, high) decoded)
   duckFromTypedField logical other = unexpectedTypedValue logical "ARRAY" other
+
+-- | A 'SizedArray' field is an ARRAY of size @n@. It reads an ARRAY and a LIST of
+-- @n@ elements, as the 'FromField' instance does. See Note [Sized arrays] in
+-- "Database.DuckDB.Simple.ToField".
+instance (KnownNat n, DuckValue a) => DuckValue (SizedArray n a) where
+  duckToField values = duckToField (listArray (0, length list - 1) list)
+    where
+      list = sizedArrayToList values
+  duckLogicalType _ = LogicalTypeArray (duckLogicalType (Proxy @a)) (fromInteger (natVal (Proxy @n)))
+  duckFromField = duckFromTypedField (LogicalTypeScalar LogicalTypeIdVariant)
+  duckFromTypedField logical value = case value of
+    FieldArray arr -> sized (elems arr)
+    FieldList entries -> sized entries
+    other -> unexpectedTypedValue logical "ARRAY" other
+    where
+      size = natVal (Proxy @n)
+      sized entries = do
+        decoded <- traverse (duckFromTypedField (listElementType logical)) entries
+        maybe (Left (sizeError (length decoded))) Right (sizedArray decoded)
+      sizeError count =
+        displayException
+          ( Incompatible
+              (fieldTypeName logical value)
+              Text.empty
+              (Text.pack ("SizedArray " <> show size))
+              (Text.pack ("the value has " <> show count <> " elements"))
+          )
 
 -- | Map values encode as DuckDB MAP.
 instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where

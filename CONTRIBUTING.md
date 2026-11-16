@@ -74,7 +74,7 @@ For benchmarks, build both versions with the same compiler and DuckDB library.
 For example:
 
 ```sh
-cabal bench duckdb-simple-bench --benchmark-options='fold 100000'
+cabal bench duckdb-simple-bench --benchmark-options='fold 100000 +RTS -N1 -T -RTS'
 ```
 
 Nix CI builds DuckDB from the pinned source. It builds and tests both packages

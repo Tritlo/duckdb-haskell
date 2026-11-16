@@ -301,8 +301,10 @@ sizedArray values
 -- | Make a t'SizedArray' from a list. The result is 'Nothing' when the list
 -- does not have exactly @n@ values. The count is checked before the 'Array'
 -- is built, and the check reads at most @n + 1@ elements.
+-- A size above @maxBound :: Int@ gives 'Nothing' without reading the list.
 sizedArrayFromList :: forall n a. (KnownNat n) => [a] -> Maybe (SizedArray n a)
 sizedArrayFromList values
+  | size > toInteger (maxBound :: Int) = Nothing
   | hasSize size values = Just (SizedArray (listArray (0, fromInteger size - 1) values))
   | otherwise = Nothing
   where

@@ -82,7 +82,7 @@ sizedArrayTests =
         -- Size 0 has the bounds (0, -1). A size above the range of Int gives
         -- Nothing, and no size wraps into the count of the values.
         bounds (sizedArrayToArray (fromJust (sizedArrayFromList @0 ([] :: [Int64])))) @?= (0, -1)
-        sizedArrayFromList @9223372036854775808 [1, 2, 3 :: Int64] @?= Nothing
+        sizedArrayFromList @9223372036854775808 (error "the list spine must not be read" :: [Int64]) @?= Nothing
         sizedArrayFromList @18446744073709551619 [1, 2, 3 :: Int64] @?= Nothing
         sizedArray @18446744073709551619 (listArray (0, 2) [1, 2, 3 :: Int64]) @?= Nothing
         query conn "SELECT typeof(?), ?" (values, values) >>= (@?= [("BIGINT[3]" :: Text.Text, values)])

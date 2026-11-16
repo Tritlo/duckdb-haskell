@@ -180,10 +180,10 @@ fetchChunk ref conn queryText stream = withQueryError queryText $ mask \restore 
           pure nextStream{statementStreamChunk = Just (StatementStreamChunk chunk rowCount 0 readers)}
 
 -- | Prepare readers that borrow the vectors in an owned chunk. A reader takes
--- each layout parameter from the type of its own vector, and each description
--- from the type tree of the column. The tree is converted from the vector of
--- the first chunk that needs it, and it lives for one execution. The readers
--- do not use the result schema. See Note [Type trees] in
+-- each layout parameter from its vector type and each description from the
+-- column's type tree. The reader builds the tree on its first use, from the
+-- current vector type. The tree lives for one execution. The readers do not
+-- use the result schema. See Note [Type trees] in
 -- "Database.DuckDB.Simple.Materialize".
 prepareChunkReaders :: Connection -> DuckDBV2DataChunkHandle -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
 prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> do
@@ -244,7 +244,7 @@ collectStreamRows conn query acquire = withQueryError query $
                   | row < 0 = pure decoded
                   | otherwise = buildMaterializedRow (statementStreamColumns owned) readers row >>= \fields -> readFrom (row - 1) (fields : decoded)
             (: done) <$> readFrom (rowCount - 1) []
-      -- The fold gives the chunks from the last to the first.
+      -- The fold prepends each decoded chunk. Reverse that list after the fold.
       rows <- foldM readChunk [] (statementStreamPendingChunks owned)
       pure (concat (reverse rows))
   where

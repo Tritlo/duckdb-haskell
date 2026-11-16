@@ -70,7 +70,7 @@ module Database.DuckDB.Simple.Native (
 ) where
 
 import Control.Applicative ((<|>))
-import Control.Exception (Exception (..), SomeException (..), bracket, finally, mask_, onException, throwIO, try)
+import Control.Exception (Exception (..), SomeException (..), bracket, evaluate, finally, mask_, onException, throwIO, try)
 import Control.Monad (foldM, forM_, mfilter, unless, when, (<$!>))
 import qualified Data.ByteString as BS
 import Data.Char (isAsciiUpper, toLower)
@@ -132,7 +132,7 @@ instance Exception SQLError
 -- result value that does not convert to its Haskell type.
 --
 -- A failed check of the state of the library, or of a vector, a type, or a
--- value that DuckDB gave, raises an 'SQLError' of the type
+-- value that DuckDB gave, raises an t'SQLError' of the type
 -- 'ErrorRuntimeInternal'. Such an error is a defect of the library or of
 -- DuckDB, not an error of the input. Report it. Inside a callback, the
 -- statement that runs the callback fails with 'ErrorInputInvalid', because a
@@ -308,9 +308,7 @@ destroyLogicalType = destroy c_duckdb_v2_logical_type_destroy
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Each c_duckdb_v2 binding is a safe foreign call. At a safe call, the GHC
 runtime (threadPaused) reads the frames of the current stack chunk. A loop that
-keeps a frame for each element thus makes each native call slower as the list
-grows. A loop that keeps a frame for each row makes each native call slower as
-the number of rows grows.
+keeps a frame for each element or row adds those retained frames to this work.
 
 Thus a loop whose steps make native calls keeps a constant stack. The rule
 applies to a loop over the rows of a chunk, over the chunks of a result, and
@@ -323,9 +321,14 @@ The code uses these forms:
 - forM_ for a loop that gives no result (writeRows in
   "Database.DuckDB.Simple.Typed.Table").
 
-- foldM with an accumulator. A fold that builds a list puts each element in
-  front of the list, and then reverses the list (acquireItems). A fold can also
-  keep one value, as the first error in releaseItems.
+- foldM with an accumulator. A fold can keep one value, as the first error in
+  releaseItems. The LIST, ARRAY, and MAP readers in
+  "Database.DuckDB.Simple.Materialize" prepend each element and then reverse
+  the list. They read elements in order, so the first failing read stays first.
+
+- A tail-recursive loop with an accumulator. acquireItems puts each item in
+  front of the list, and then reverses the list. Its exception handler covers
+  one step, including the evaluation of the next list constructor.
 
 - A loop that reads the elements from the last to the first, and puts each
   element in front of the list. The list then needs no reverse (the row loop of
@@ -334,9 +337,8 @@ The code uses these forms:
 These loops keep a frame for each element, and they stay as they are, because
 the list is short in practice or the operation is rare:
 
-- The element loops of a LIST, ARRAY, or MAP value in
-  "Database.DuckDB.Simple.Materialize", and the row loop of materializeChunkRows
-  in "Database.DuckDB.Simple.Copy.Internal". Only a BIGNUM element, the first
+- The row loop of materializeChunkRows in
+  "Database.DuckDB.Simple.Copy.Internal". Only a BIGNUM element, the first
   row of a UNION member, and a rejectRows reader make a native call for each
   row there.
 
@@ -351,11 +353,24 @@ the list is short in practice or the operation is rare:
 -}
 
 -- | Run the acquire actions in list order under 'mask_', and give the items in
--- list order. If an acquire action raises an error, release the items that the
--- earlier actions gave, from the last to the first, and raise that error. The
--- fold keeps a constant stack. See Note [Constant stack at safe calls].
+-- list order. If evaluation of the input list or an acquire action fails,
+-- release the items that the earlier actions gave, from the last to the first,
+-- and raise that error. The loop keeps a constant stack. See
+-- Note [Constant stack at safe calls].
 acquireItems :: (a -> IO ()) -> [IO a] -> IO [a]
-acquireItems release = mask_ . fmap reverse . foldM (\owned acquire -> (: owned) <$> acquire `onException` releaseItems release owned) []
+acquireItems release = mask_ . go []
+  where
+    go owned remaining = do
+      next <- flip onException (releaseItems release owned) $ do
+        actions <- evaluate remaining
+        case actions of
+          [] -> pure Nothing
+          acquire : rest -> do
+            item <- acquire
+            pure (Just (item, rest))
+      case next of
+        Nothing -> pure (reverse owned)
+        Just (item, rest) -> go (item : owned) rest
 
 -- | Release each item in list order, also when a release raises an error.
 -- Raise the first error after the last release. The fold keeps a constant stack.
@@ -504,7 +519,7 @@ quoteIdentifier :: Text -> Text
 quoteIdentifier identifier = "\"" <> Text.replace "\"" "\"\"" identifier <> "\""
 
 -- | Raise the error of an input check: an argument of a library function, or a
--- parameter value, that the library rejects. The error is an 'SQLError' of the
+-- parameter value, that the library rejects. The error is an t'SQLError' of the
 -- type 'ErrorInputInvalid' with no query. The checks of arguments use this
 -- function, and so do the checks of a parameter value of the wrong shape or
 -- type, for example a UNION tag that is not a member, a leaf of another type
@@ -517,7 +532,7 @@ throwInvalidArgument :: Text -> IO a
 throwInvalidArgument message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorInputInvalid) Nothing Nothing)
 
 -- | Raise the error of an input check for a value that its SQL type cannot
--- hold. The error is an 'SQLError' of the type 'ErrorTypeConversion' with no
+-- hold. The error is an t'SQLError' of the type 'ErrorTypeConversion' with no
 -- query, as the "Conversion Error" of DuckDB for the same value in SQL, for
 -- example for @300::TINYINT@, @'25:00:00'::TIME@, or @\'x\'::ENUM(\'a\', \'b\')@.
 -- These checks use this function: an integer outside its parameter type or
@@ -530,7 +545,7 @@ throwConversionError :: Text -> IO a
 throwConversionError message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorTypeConversion) Nothing Nothing)
 
 -- | Raise the error of a check of the state of the library, or of a vector, a
--- type, or a value that DuckDB gave: an 'SQLError' of the type
+-- type, or a value that DuckDB gave: an t'SQLError' of the type
 -- 'ErrorRuntimeInternal' with no query. Such an error means a defect of the
 -- library or of DuckDB, not a defect of an input. See
 -- Note [Internal errors in callbacks].
@@ -559,8 +574,8 @@ slot of a callback, because DuckDB 2.0.0 then invalidates the database, and
 each later statement raises "FATAL Error: ... database has been invalidated".
 This holds for a callback at execution time, for example a scalar function, a
 table function, a cast, or COPY FROM; at bind time, for example in a
-replacement scan or a query pragma, the database stays usable. The rule holds
-for each callback, so that it errs on the safe side.
+replacement scan or a query pragma, the database stays usable. The rule
+applies at bind time too.
 -}
 
 -- | Borrow a factory while its connection remains alive. Do not destroy it.
@@ -610,7 +625,7 @@ settingScopeToNative = \case
   SettingScopeGlobal -> DuckDBV2SettingScopeGlobal
   SettingScopeSession -> DuckDBV2SettingScopeSession
 
--- | Convert a native setting scope. An unknown value raises 'SQLError'.
+-- | Convert a native setting scope. An unknown value raises t'SQLError'.
 settingScopeFromNative :: DuckDBV2SettingScope -> IO SettingScope
 settingScopeFromNative = \case
   DuckDBV2SettingScopeDefault -> pure SettingScopeDefault
@@ -638,7 +653,7 @@ logLevelToNative = \case
   LogLevelError -> DuckDBV2LogLevelError
   LogLevelFatal -> DuckDBV2LogLevelFatal
 
--- | Convert a native log level. An unknown value raises 'SQLError'.
+-- | Convert a native log level. An unknown value raises t'SQLError'.
 logLevelFromNative :: DuckDBV2LogLevel -> IO LogLevel
 logLevelFromNative = \case
   DuckDBV2LogLevelTrace -> pure LogLevelTrace
@@ -656,7 +671,7 @@ data LogScope
   | LogScopeThread
   deriving (Eq, Ord, Show, Read, Enum, Bounded)
 
--- | Convert a native log scope. An unknown value raises 'SQLError'.
+-- | Convert a native log scope. An unknown value raises t'SQLError'.
 logScopeFromNative :: DuckDBV2LogScope -> IO LogScope
 logScopeFromNative = \case
   DuckDBV2LogScopeDatabase -> pure LogScopeDatabase
@@ -677,7 +692,7 @@ data TokenType
   | TokenTypeEndOfInput
   deriving (Eq, Ord, Show, Read, Enum, Bounded)
 
--- | Convert a native token type. An unknown value raises 'SQLError'.
+-- | Convert a native token type. An unknown value raises t'SQLError'.
 tokenTypeFromNative :: DuckDBV2TokenType -> IO TokenType
 tokenTypeFromNative = \case
   DuckDBV2TokenTypeInvalid -> pure TokenTypeInvalid
@@ -800,7 +815,7 @@ logicalTypeIdToNative = \case
   LogicalTypeIdVariant -> DuckDBV2LogicalTypeIdVariant
   LogicalTypeIdTuple -> DuckDBV2LogicalTypeIdTuple
 
--- | Convert a native logical type id. An unknown value raises 'SQLError'.
+-- | Convert a native logical type id. An unknown value raises t'SQLError'.
 logicalTypeIdFromNative :: DuckDBV2LogicalTypeId -> IO LogicalTypeId
 logicalTypeIdFromNative = \case
   DuckDBV2LogicalTypeIdInvalid -> pure LogicalTypeIdInvalid
@@ -882,6 +897,6 @@ fileFlagToNative = \case
   FileFlagParallelAccess -> DuckDBV2FileFlagParallelAccess
   FileFlagExternalFileCache -> DuckDBV2FileFlagExternalFileCache
 
--- | Raise 'SQLError' for a native enum value that has no Haskell constructor.
+-- | Raise t'SQLError' for a native enum value that has no Haskell constructor.
 throwUnknownNative :: Text -> CUInt -> IO a
 throwUnknownNative kind value = throwInternalError ("unknown native " <> kind <> " " <> Text.pack (show value))

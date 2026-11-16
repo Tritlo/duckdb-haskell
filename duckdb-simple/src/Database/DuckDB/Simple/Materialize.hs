@@ -25,7 +25,7 @@ module Database.DuckDB.Simple.Materialize (
 ) where
 
 import Control.Exception (bracket)
-import Control.Monad (forM, when)
+import Control.Monad (foldM, forM, when)
 import Data.Array (Array, bounds, elems, listArray, rangeSize, (!))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64)
@@ -99,7 +99,10 @@ rejectRows raise vector = pure \row ->
 prepareVariantReader :: VariantCodec.VariantState -> VectorReader
 prepareVariantReader =
   VariantCodec.prepareVariantDecoder
-    (materializeValue (rejectRows (throwInternalError (Text.pack "expected a value without VARIANT"))) . InstanceFactory)
+    (materializeValue noVariant . InstanceFactory)
+    (\factory vector -> prepareVectorReader (FallbackReaders noVariant (prepareGeometryReader (InstanceFactory factory))) vector >>= ($ 0))
+  where
+    noVariant = rejectRows (throwInternalError (Text.pack "expected a value without VARIANT"))
 
 -- | The factory of a read, and its kind. The kind decides how
 -- 'prepareGeometryReader' casts GEOMETRY to BLOB. See
@@ -194,12 +197,11 @@ type EnumLabels = Maybe (IORef (IntMap.IntMap Text))
 
 {- Note [Vector flatten]
 ~~~~~~~~~~~~~~~~~~~~~~~~
-A flatten changes a vector to the FLAT representation in place. The reader of
-prepareVectorReaderWith flattens each vector before it reads the view. A writer
-of a callback output vector flattens the vector before it writes rows.
+vector_flatten changes a vector to the FLAT representation in place. A reader
+flattens each vector before it reads the view. A writer of a callback output
+vector flattens the vector before it writes rows.
 
-Read (prepareVectorReaderWith). The reader flattens each vector, and then reads
-the view of the vector.
+Read (prepareVectorReaderWith).
 
 - The header of duckdb_v2_vector_get_view says: "Rejects VECTOR_TYPE_OTHER;
   call vector_flatten first." The flatten also changes a CONSTANT or DICTIONARY
@@ -377,9 +379,10 @@ their result:
 - Reads. prepareGeometryReader casts a GEOMETRY vector to BLOB. A result, the
   value of an option (getConfigValue), and the default value of an option
   (getConfigDefaultValue) read a GEOMETRY value with the factory of the
-  instance, and so does queryMetrics. The type cache of the connection keeps that factory (typeCacheCasts
-  in "Database.DuckDB.Simple.TypeCache"). The callbacks of a registration on a
-  connection read a GEOMETRY value with the same factory: the value of an option
+  instance, and so does queryMetrics. The type cache of the connection keeps
+  that factory (typeCacheCasts in "Database.DuckDB.Simple.TypeCache"). The
+  callbacks of a registration on a connection read a GEOMETRY value with the
+  same factory: the value of an option
   update, the arguments of a pragma, a scalar function, a typed aggregate, or a
   table function, and the rows of a COPY TO function. The
   registration takes the factory (targetCastFactory in
@@ -493,6 +496,7 @@ enumStorage dataPtr count rowIdx
 -- vector. Parameter 1 of an ARRAY type is the size, as 'logicalTypeToRep' reads
 -- it. The decoder does not convert the element type. The element reader takes
 -- its tree from the tree of the ARRAY. See Note [Type trees].
+-- See Note [Constant stack at safe calls] in "Database.DuckDB.Simple.Native".
 prepareArrayDecoder :: FallbackReaders -> TypeTree -> EnumLabels -> DuckDBV2VectorHandle -> IO (Int -> IO (Array Int FieldValue))
 prepareArrayDecoder readers tree labels vector = do
   size <- withVectorType vector \logical -> alloca \name ->
@@ -501,18 +505,19 @@ prepareArrayDecoder readers tree labels vector = do
   readChild <- vectorChild vector 0 >>= prepareVectorReaderWith readers (elementTree tree) labels
   pure \rowIdx -> do
     let baseIdx = rowIdx * arraySize
-    values <- forM [0 .. arraySize - 1] \delta -> readChild (baseIdx + delta)
+    values <- reverse <$> foldM (\values delta -> (: values) <$> readChild (baseIdx + delta)) [] [0 .. arraySize - 1]
     pure (listArray (0, arraySize - 1) values)
 
 -- | Prepare the element reader once for a LIST vector. The element reader
 -- takes its tree from the tree of the LIST. See Note [Type trees].
+-- See Note [Constant stack at safe calls] in "Database.DuckDB.Simple.Native".
 prepareListDecoder :: FallbackReaders -> TypeTree -> EnumLabels -> DuckDBV2VectorHandle -> Ptr Void -> IO (Int -> IO [FieldValue])
 prepareListDecoder readers tree labels vector dataPtr = do
   readChild <- vectorChild vector 0 >>= prepareVectorReaderWith readers (elementTree tree) labels
   pure \rowIdx -> do
     entry <- peekElemOff (castPtr dataPtr :: Ptr DuckDBV2ListEntry) rowIdx
     (baseIdx, len) <- listEntryBounds (Text.pack "list") entry
-    forM [0 .. len - 1] \delta -> readChild (baseIdx + delta)
+    reverse <$> foldM (\values delta -> (: values) <$> readChild (baseIdx + delta)) [] [0 .. len - 1]
 
 -- | Prepare the key reader and the value reader once for a MAP vector. The
 -- decoder gives them no type tree. Each converts the type of its own vector when
@@ -521,6 +526,7 @@ prepareListDecoder readers tree labels vector dataPtr = do
 -- convert the key type, for example the dictionary of a large ENUM. The
 -- decoder does not flatten the entry STRUCT. See Note [Vector flatten] and
 -- Note [Type trees].
+-- See Note [Constant stack at safe calls] in "Database.DuckDB.Simple.Native".
 prepareMapDecoder :: FallbackReaders -> DuckDBV2VectorHandle -> Ptr Void -> IO (Int -> IO [(FieldValue, FieldValue)])
 prepareMapDecoder readers vector dataPtr = do
   entries <- vectorChild vector 0
@@ -529,11 +535,16 @@ prepareMapDecoder readers vector dataPtr = do
   pure \rowIdx -> do
     entry <- peekElemOff (castPtr dataPtr :: Ptr DuckDBV2ListEntry) rowIdx
     (baseIdx, len) <- listEntryBounds (Text.pack "map") entry
-    forM [0 .. len - 1] \delta -> do
-      let childIdx = baseIdx + delta
-      keyValue <- readKey childIdx
-      valueValue <- readValue childIdx
-      pure (keyValue, valueValue)
+    reverse
+      <$> foldM
+        ( \pairs delta -> do
+            let childIdx = baseIdx + delta
+            keyValue <- readKey childIdx
+            valueValue <- readValue childIdx
+            pure ((keyValue, valueValue) : pairs)
+        )
+        []
+        [0 .. len - 1]
 
 -- | Read the STRUCT type and prepare a reader for each child once for a vector.
 -- The decoder reads a valid row. It must not outlive its chunk. See
@@ -678,8 +689,8 @@ ensureWithinIntRange context value =
         then pure (fromInteger actual)
         else throwInternalError (context <> Text.pack " exceeds Int range")
 
--- | Take the element tree from the tree of a LIST or ARRAY. The action runs the
--- action of the parent only when the element reader needs its tree. See
+-- | Take the element tree from the tree of a LIST or ARRAY. Read the parent
+-- tree only when the element reader needs its tree. See
 -- Note [Type trees].
 elementTree :: TypeTree -> TypeTree
 elementTree tree =

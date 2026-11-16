@@ -43,6 +43,7 @@ module Database.DuckDB.Simple.Internal (
   withParsedStatements,
   withCollectionStatement,
   statementSchemas,
+  withStatementSchemas,
   clearStatementSchemas,
   withKeptParameterTypes,
   preparedParameterType,
@@ -284,7 +285,7 @@ data ConnectionOptions = ConnectionOptions
   -- ^ The longest time in microseconds that a DuckDB callback waits for the
   --     lock of this connection. A statement of a callback on the connection
   --     that runs the callback waits for this lock. After the bound, the
-  --     statement raises an 'SQLError' of the type 'ErrorResourceInUse'. For
+  --     statement raises an t'SQLError' of the type 'ErrorResourceInUse'. For
   --     most callbacks, the outer statement then fails. The bound applies
   --     also to a callback that uses this connection while another statement
   --     runs on it. 'Nothing' sets no bound. The default is
@@ -476,7 +477,7 @@ checkLibraryVersion = do
 -- Wait for child creation and all descendant operations to finish before closing.
 -- DuckDB refuses to destroy the environment while an instance is alive that
 -- 'createInstance' did not create. In this case, this function closes the
--- instances from 'createInstance' and their connections, raises an 'SQLError'
+-- instances from 'createInstance' and their connections, raises an t'SQLError'
 -- with the type 'ErrorResourceInUse', and keeps the environment open.
 -- Destroy the other instance, then close the environment again.
 -- After a successful close, a second close has no effect.
@@ -825,7 +826,7 @@ Note [Callback marks] in "Database.DuckDB.Simple.CallbackMark".
 -- | Run an action with the lock of the connection. The lock is not reentrant.
 -- Do not run a function of the user, such as the step of a fold, in the
 -- action. A thread with a callback mark waits for the lock at most the bound
--- of the connection ('connectionCallbackLockWait'), and then raises an 'SQLError' of
+-- of the connection ('connectionCallbackLockWait'), and then raises an t'SQLError' of
 -- the type 'ErrorResourceInUse'. Each other thread waits without a bound. See
 -- Note [Connection lock], and Note [Callback marks] in
 -- "Database.DuckDB.Simple.CallbackMark".
@@ -915,8 +916,8 @@ The action holds the connection lock. Thus no step function runs in the action.
 -}
 
 -- | Run the native calls of one result in one helper thread, and hold the
--- connection lock. The first argument releases the result of the action when
--- the caller is cancelled after the helper thread has made that result. Do not
+-- connection lock. The release action runs when the caller is cancelled after
+-- the helper thread has made its result. Do not
 -- run a function of the user in the action. See Note [Result window].
 withResultWindow :: Connection -> (a -> IO ()) -> IO a -> IO a
 withResultWindow conn@Connection{connectionWindow} release action =
@@ -995,7 +996,7 @@ A call from the helper thread of the result window runs the work directly,
 without a new helper thread. See Note [Result window].
 -}
 
--- | Run native work with cancellation and wait for it before releasing inputs.
+-- | Run native work with cancellation. Wait for the work before releasing inputs.
 -- The work must keep its native results in storage that the caller releases.
 -- See Note [Interruptible native calls].
 runInterruptibleQuery :: Connection -> IO a -> IO a
@@ -1149,7 +1150,7 @@ storeBoundValue stmt index value = withStatementHandle stmt \_ -> mask_ do
 
 -- | Release all owned parameter values.
 clearBoundValues :: IORef (IntMap.IntMap DuckDBV2ValueHandle) -> IO ()
-clearBoundValues ref = atomicModifyIORef' ref (IntMap.empty,) >>= releaseItems destroyValue . IntMap.elems
+clearBoundValues ref = mask_ $ atomicModifyIORef' ref (IntMap.empty,) >>= releaseItems destroyValue . IntMap.elems
 
 {- Note [Statement schemas]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1161,6 +1162,11 @@ connection lock, and it stores both handles. The next calls give the same
 handles until the cache is empty again. columnCount and columnName in
 "Database.DuckDB.Simple" read the result schema, and preparedParameterType
 reads the type of one parameter.
+
+The statement owns both schemas. withStatementSchemas keeps the statement alive
+while an action reads a schema and copies its borrowed names and types. Keeping
+only a schema handle or another field of the statement does not keep the state
+IORef alive. The finalizer can then close the statement and destroy the schemas.
 
 clearStatementSchemas releases both handles and empties the cache.
 resetStatementStream in "Database.DuckDB.Simple.Result" calls it. Thus each
@@ -1196,8 +1202,9 @@ when the statement closes.
 -}
 
 -- | Bind SQL metadata and borrow the cached output and parameter schemas.
--- The handles remain valid until the statement resets, rebinds, or closes. See
--- Note [Statement schemas].
+-- The statement owns the handles. They remain valid until the statement resets,
+-- rebinds, or closes. Use 'withStatementSchemas' to keep the statement alive
+-- while reading them. See Note [Statement schemas].
 statementSchemas :: Statement -> IO (DuckDBV2SchemaHandle, DuckDBV2SchemaHandle)
 statementSchemas stmt = withStatementHandle stmt \_ -> mask_ do
   state <- readIORef (statementState stmt)
@@ -1218,6 +1225,11 @@ statementSchemas stmt = withStatementHandle stmt \_ -> mask_ do
             writeIORef statementSchemaCache (Just schemas)
             pure schemas
 
+-- | Borrow both schemas and keep their statement alive until the action ends.
+-- Copy borrowed names and types in the action. See Note [Statement schemas].
+withStatementSchemas :: Statement -> (DuckDBV2SchemaHandle -> DuckDBV2SchemaHandle -> IO a) -> IO a
+withStatementSchemas stmt action = keepAlive stmt (statementSchemas stmt >>= uncurry action)
+
 -- | Read a parameter type when the binder can determine it without values.
 -- While 'withKeptParameterTypes' runs, read each type one time. See
 -- Note [Statement schemas].
@@ -1232,8 +1244,7 @@ preparedParameterType stmt idx = do
       modifyIORef' (statementParameterTypes stmt) (fmap (IntMap.insert (fromIntegral idx) rep))
       pure rep
   where
-    readParameterType = do
-      (_, schema) <- statementSchemas stmt
+    readParameterType = withStatementSchemas stmt \_ schema ->
       alloca \name -> do
         dtype <- output (c_duckdb_v2_schema_get_field schema (idx - 1) name)
         ident <- output (c_duckdb_v2_logical_type_get_id dtype)

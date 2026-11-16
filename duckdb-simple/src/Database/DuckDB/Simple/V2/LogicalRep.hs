@@ -100,6 +100,9 @@ logicalTypeFromRepWith factory resolve = create
     boxed rep = bracket (create rep) destroyLogicalType (output . c_duckdb_v2_value_create_type factory)
     text value = withText value (output . c_duckdb_v2_value_create_varchar factory)
     fromText value = withText value (output . c_duckdb_v2_factory_create_type_from_text factory)
+    fromName value = withIdentifier value \part ->
+      bracket (output (c_duckdb_v2_qname_create part 1)) (destroy c_duckdb_v2_qname_destroy) \name ->
+        output (c_duckdb_v2_factory_create_type_from_name factory name (ConstPtr nullPtr) (ConstPtr nullPtr) 0)
     construct dtype names actions = do
       when (any (Text.any (== '\0')) names) $
         throwInvalidArgument (Text.pack "logical type name contains NUL")
@@ -114,7 +117,7 @@ logicalTypeFromRepWith factory resolve = create
     -- "Database.DuckDB.Simple.TypeCache".
     create rep = resolve rep >>= maybe (constructRep rep) pure
     constructRep = \case
-      LogicalTypeScalar LogicalTypeIdVariant -> fromText (Text.pack "VARIANT")
+      LogicalTypeScalar LogicalTypeIdVariant -> fromName (Text.pack "VARIANT")
       LogicalTypeScalar LogicalTypeIdGeometry -> fromText (Text.pack "GEOMETRY")
       LogicalTypeScalar LogicalTypeIdSQLNull -> fromText (Text.pack "\"NULL\"")
       LogicalTypeScalar dtype -> construct (logicalTypeIdToNative dtype) [] []

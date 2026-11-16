@@ -57,20 +57,20 @@ The generator does not manage ownership. Callers must still release native
 resources, keep callbacks alive for their required lifetime, and catch
 exceptions inside callbacks.
 
-DuckDB 2.0.0 plans a cast between some pairs of types as a cast that cannot
-fail, also a registered cast, for example a cast from INTEGER to VARCHAR. A V1
-cast that reports an error for such a pair gives an INTERNAL error, because the
-V1 API cannot choose the type of the error. A V2 cast gives an INTERNAL error
-for such a pair when it reports an Invalid Input, Out of Range, or Conversion
-code, or a code that DuckDB does not map, for example `DUCKDB_V2_ERROR_API`.
-After an INTERNAL error during the execution of a query, DuckDB invalidates the
-database. A V2 cast can report the code `DUCKDB_V2_ERROR_TYPE_MISMATCH`. The
-section Errors of the duckdb-simple README gives the details.
+DuckDB 2.0.0 plans casts between some pairs of types as casts that cannot fail.
+This includes registered casts, for example from INTEGER to VARCHAR. A V1 cast
+that reports an error for such a pair gives an INTERNAL error, because the V1
+API cannot choose the error type. A V2 cast gives an INTERNAL error for such a
+pair if it reports an Invalid Input, Out of Range, or Conversion code, or a code
+that DuckDB does not map, for example `DUCKDB_V2_ERROR_API`. An INTERNAL error
+during query execution invalidates the database. A V2 cast can report
+`DUCKDB_V2_ERROR_TYPE_MISMATCH` to avoid this. The Errors section of the
+duckdb-simple README gives the details.
 
 ### duckdb-simple 0.3 to 1.0
 
-The version of this release is 1.0.0.0, because the release has many breaking
-changes against 0.3.0.0.
+This release is version 1.0.0.0 because it has many breaking changes from
+0.3.0.0.
 
 `duckdb-simple` 1.0 uses the V2 C API for connections, results, conversions,
 and callbacks. Upstream marks that API as unstable, so 1.0 requires exactly
@@ -81,12 +81,12 @@ The SQL workflow stays the same. These changes can affect your code:
   Version 0.3 accepted `base` 4.14.
 - Raw types come from `Database.DuckDB.FFI.V2`. They are distinct from the
   retained API types in `Database.DuckDB.FFI`.
-- `Database.DuckDB.Simple.Internal` uses the V2 handles, and some of its
-  functions take other arguments. `withResult` and `executePreparedResult` take
+- `Database.DuckDB.Simple.Internal` uses V2 handles. Some of its functions
+  take different arguments. `withResult` and `executePreparedResult` take
   a `Statement`. `fetchResultChunk` takes no `ResultMode`.
   `runInterruptibleQuery` takes an `IO a` action, not an `IO DuckDBState`
-  action. `withDatabaseHandle` gives the native instance handle. The changelog lists
-  the removed names and the new record fields.
+  action. `withDatabaseHandle` gives the native instance handle. The changelog
+  lists the removed names and the new record fields.
 - `SQLError.sqlErrorType` is `Maybe ErrorType`. `Database.DuckDB.Simple`
   exports `ErrorType`. It has one constructor for each error code of the V2 C
   API. The V2 codes are a different set from the codes of version 0.3. Thus
@@ -106,9 +106,9 @@ The SQL workflow stays the same. These changes can affect your code:
   and match only the fields that you need, for example
   `SQLError {sqlErrorType}`.
 - A statement whose callback raises an `SQLError` with a type fails with that
-  type, except a failed cast, which gives `ErrorTypeMismatch`, and the 16 types
-  that the section "Errors" of `duckdb-simple/README.md` lists. Code that
-  expects `ErrorInputInvalid` for such a statement gets the type of the inner
+  type. The exceptions are a failed cast, which gives `ErrorTypeMismatch`, and
+  the 16 types listed in the "Errors" section of `duckdb-simple/README.md`.
+  Code that expects `ErrorInputInvalid` for such a statement gets the type of the inner
   error, for example `ErrorTypeConversion` for a failed query in a scalar
   function.
 - `ToDuckValue.toDuckValue` takes a `ValueFactory` and returns a
@@ -458,16 +458,17 @@ The SQL workflow stays the same. These changes can affect your code:
   nanosecond value is not equal to a VARIANT of the microsecond value, so a row
   that version 0.3 stored in a `VARIANT` column does not match `WHERE x = ?`
   for the same Haskell value with such digits.
-- Each input check of the library raises an `SQLError` with the type
-  `ErrorInputInvalid`, except a value outside the range of its SQL type, which
-  raises an `SQLError` with the type `ErrorTypeConversion` when it binds, as the
-  Conversion Error of DuckDB for the same value in SQL (an integer for its
-  parameter type or its declared type, a date or a timestamp for the range of DuckDB, a nanosecond
-  timestamp for its storage, a HUGEINT or UHUGEINT field, a TIMETZ offset, a
-  time of day that is not a TIME value, a `DecimalValue` for its width, or an
-  ENUM label for its dictionary), and a parameter count or a parameter name that
-  does not match the query, which raises a `FormatError`. A value of the wrong
-  shape or type keeps `ErrorInputInvalid`, also where DuckDB gives another type
+- Input checks raise an `SQLError` with the type `ErrorInputInvalid`, with two
+  exceptions. A value outside its SQL type's range raises an `SQLError` with
+  the type `ErrorTypeConversion` when it binds, consistent with DuckDB's
+  Conversion Error for the same value in SQL. This includes an integer outside
+  its parameter type or declared type, a date or timestamp outside DuckDB's
+  range, a nanosecond timestamp outside its storage, a HUGEINT or UHUGEINT
+  field, a TIMETZ offset, a time of day that is not a TIME value, a
+  `DecimalValue` outside its width, or an ENUM label outside its dictionary.
+  A parameter count or name that does not match the query raises a
+  `FormatError`. A value of the wrong shape or type keeps `ErrorInputInvalid`,
+  also where DuckDB gives another type
   for the same input, for example a UNION tag that is not a member, a leaf built
   from another type, a STRUCT field that does not match its type, or an unknown
   CRS. A check in a callback fails the outer statement with the type of the
@@ -530,8 +531,6 @@ This guide covers the changes needed when upgrading this repository from the
 DuckDB 1.4 line to the DuckDB 1.5 line.
 This part describes `duckdb-ffi` 1.5.6.0 and `duckdb-simple` 0.3.0.0. The part
 [DuckDB 2.0](#duckdb-20) gives the changes of the later releases.
-
-The short version is:
 
 - `duckdb-ffi` uses the DuckDB `1.5.6` C header. The native minimum is 1.5.3.
 - `duckdb-simple` now depends on `duckdb-ffi-1.5`.
@@ -623,7 +622,7 @@ add `instance ToField YourType`. The default implementation requires `Show`.
 - Rebuild applications that use the FFI directly. The corrected C adapters
   preserve Haskell types.
 
-### Who Needs to Change What
+### Who needs to change what
 
 If you use `duckdb-ffi` directly:
 
@@ -641,18 +640,11 @@ If you use `duckdb-simple`:
 - New 1.5 helpers are available from dedicated modules instead of being folded
   into the core query API.
 
-### Runtime Compatibility
+### Runtime compatibility
 
-The biggest practical change is the runtime baseline.
-
-Before:
-
-- The packages were validated against DuckDB 1.4.x.
-
-Now:
-
-- `duckdb-ffi-1.5.6.0` and `duckdb-simple-0.3.0.0` require a DuckDB 1.5
-  shared library >= 1.5.3 and < 1.6 at runtime.
+The earlier packages were validated against DuckDB 1.4.x.
+`duckdb-ffi-1.5.6.0` and `duckdb-simple-0.3.0.0` require a DuckDB 1.5
+shared library >= 1.5.3 and < 1.6 at runtime.
 
 If your executable still finds a 1.4 shared library first, you will see symbol
 lookup failures for new 1.5 APIs such as config, catalog, or logging symbols.
@@ -673,9 +665,9 @@ LD_LIBRARY_PATH=/path/to/duckdb-1.5 \
   cabal test --extra-lib-dirs=/path/to/duckdb-1.5
 ```
 
-### `duckdb-ffi` Migration
+### `duckdb-ffi` migration
 
-#### Header and Symbol Surface
+#### Header and symbol surface
 
 The vendored `duckdb.h` of `duckdb-ffi` 1.5.6.0 matched DuckDB 1.5.6.
 
@@ -689,7 +681,7 @@ This means most direct FFI users do not need to rewrite existing code. Instead:
 - keep existing bindings for legacy 1.4 APIs
 - opt into the new 1.5 APIs where needed
 
-#### New Raw Modules
+#### New raw modules
 
 The new 1.5 areas are exposed through these modules:
 
@@ -698,10 +690,10 @@ The new 1.5 areas are exposed through these modules:
 - `Database.DuckDB.FFI.FileSystem`
 - `Database.DuckDB.FFI.Logging`
 
-Use these when adopting new 1.5 functionality rather than trying to infer the
-symbols manually from the header.
+Use these modules for the new 1.5 functionality. They provide the symbols
+declared in the header.
 
-#### New Types and Callbacks
+#### New types and callbacks
 
 DuckDB 1.5 introduces new opaque handles and enums that may affect your own FFI
 layer if you were maintaining local bindings. In this repository they are now
@@ -719,22 +711,19 @@ provided centrally, including:
 If you had local downstream bindings for any of these, delete them and import
 the shared versions from `Database.DuckDB.FFI.Types`.
 
-#### Error-Handling Guidance
+#### Error-handling guidance
 
-DuckDB 1.5 adds more `duckdb_error_data`-style paths.
-
-You do not need to rewrite all existing code to use them immediately.
-
-Recommended approach:
+DuckDB 1.5 adds more `duckdb_error_data`-style error paths. Existing code can
+adopt them incrementally:
 
 - leave old bindings that already use legacy error accessors in place
 - prefer the structured 1.5 error-data interface when binding new APIs
 
-That is the policy used in this repository.
+This repository follows that policy.
 
-### `duckdb-simple` Migration
+### `duckdb-simple` migration
 
-#### Existing Query Code
+#### Existing query code
 
 Most `duckdb-simple` code should not need source changes.
 
@@ -746,7 +735,7 @@ The following remain source-compatible:
 - `ToField`/`FromField`-based row and parameter handling
 - existing scalar function registration with `createFunction`
 
-#### New Modules
+#### New modules
 
 DuckDB 1.5 features are exposed in additive modules:
 
@@ -759,7 +748,7 @@ DuckDB 1.5 features are exposed in additive modules:
 Import them only where needed. The main `Database.DuckDB.Simple` module stays
 focused on the core query interface.
 
-#### Opening with Config
+#### Opening with config
 
 If you previously created connections only with:
 
@@ -781,10 +770,10 @@ or:
 withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn -> ...
 ```
 
-#### Stateful Scalar Functions
+#### Stateful scalar functions
 
-DuckDB 1.5 adds scalar-function init/state hooks. In `duckdb-simple`, that is
-surfaced as `createFunctionWithState`.
+DuckDB 1.5 adds scalar-function init/state hooks. `duckdb-simple` exposes them
+through `createFunctionWithState`.
 
 Use `createFunction` when:
 
@@ -805,10 +794,9 @@ createFunctionWithState conn "hs_counter" (newIORef (0 :: Int)) $ \ref -> do
      in (next, next)
 ```
 
-This is an additive feature. Existing `createFunction` users do not need to
-rewrite working code.
+Existing `createFunction` code continues to work.
 
-#### Copy Functions
+#### Copy functions
 
 DuckDB 1.5 adds C APIs for custom `COPY` integrations. `duckdb-simple` now
 exposes `registerCopyToFunction` in `Database.DuckDB.Simple.Copy`.
@@ -826,30 +814,27 @@ The wrapper separates the callback phases:
 - sink
 - finalize
 
-This mirrors DuckDB’s ownership model closely on purpose. If you had no custom
-COPY integration before, nothing changes for normal SQL `COPY` usage.
+These phases follow DuckDB's ownership model. Normal SQL `COPY` usage is
+unchanged if you have no custom COPY integration.
 
 #### Logging
 
 DuckDB 1.5 adds custom log storage registration. `duckdb-simple` now exposes
 `registerLogStorage` in `Database.DuckDB.Simple.Logging`.
 
-This is optional advanced functionality. Existing applications do not need to
-change anything unless they want to capture DuckDB log events.
+Use it to capture DuckDB log events. Other applications need no changes.
 
-### Behavior Changes Worth Noting
+### Behavior changes worth noting
 
-#### `TIME_NS` Decoding
+#### `TIME_NS` decoding
 
 The test suite was updated because DuckDB 1.5 now successfully decodes
 `TIME_NS`, where older expectations treated that as unsupported.
 
-For most users this is a strict improvement:
-
 - code that already handled `FieldTime` continues to work
 - tests that expected a failure for `TIME_NS` should be updated
 
-#### `duckdb_string_t` Handling
+#### `duckdb_string_t` handling
 
 DuckDB 1.5 made it more obvious that `duckdb_string_t_data` must be consumed
 with its explicit length, not by assuming NUL termination.
@@ -868,7 +853,7 @@ peekCStringLen ...
 
 using `duckdb_string_t_length`.
 
-### Suggested Upgrade Steps
+### Suggested upgrade steps
 
 1. Upgrade the Haskell packages to:
    - `duckdb-ffi-1.5.6.0`
@@ -879,7 +864,7 @@ using `duckdb_string_t_length`.
    `TIME_NS` or string helper assumptions.
 5. Adopt the new modules only where you need 1.5-specific features.
 
-## Repository Notes
+## Repository notes
 
 Relevant release notes live in:
 

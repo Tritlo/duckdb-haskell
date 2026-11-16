@@ -9,10 +9,10 @@
 -- Module      : Database.DuckDB.Simple.Copy.Internal
 -- Description : Share the typed COPY registrations for connections and extensions.
 --
--- This module is not exposed: the cabal file lists it in @other-modules@. It
--- holds the implementation. The functions with the suffix @On@ take a
--- registration target. "Database.DuckDB.Simple.Copy" gives the connection
--- forms. "Database.DuckDB.Simple.Extension" gives the extension forms.
+-- The cabal file lists this hidden module in @other-modules@.
+-- The functions with the suffix @On@ take a registration target.
+-- "Database.DuckDB.Simple.Copy" exports the connection forms.
+-- "Database.DuckDB.Simple.Extension" exports the extension forms.
 module Database.DuckDB.Simple.Copy.Internal (
   CopyBindInfo (..),
   LogicalTypeId (..),

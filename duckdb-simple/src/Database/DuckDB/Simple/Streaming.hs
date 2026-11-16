@@ -6,7 +6,8 @@
 --
 -- Import this module qualified to request native streaming. Operators such as
 -- sorting can buffer data. Streaming reduces result storage when the query
--- supports it. It does not bound query memory. The default @Database.DuckDB.Simple@ API materializes native results.
+-- supports it. It does not bound query memory. The default
+-- "Database.DuckDB.Simple" API materializes native results.
 --
 -- Rows and Arrow batches use the same decoders and cleanup as the default API.
 -- Cancellation also interrupts native chunk fetching. Prompt interruption requires
@@ -15,9 +16,10 @@
 -- "Database.DuckDB.Simple.Function".
 --
 -- Serialize connection use for the entire cursor or fold. Another query on the
--- same connection fails while its stream is active. Call @closeStatement@ or
--- @clearStatementBindings@ from @Database.DuckDB.Simple@ on an abandoned statement
--- to release its result.
+-- same connection fails while its stream is active. Call
+-- 'Database.DuckDB.Simple.closeStatement' or
+-- 'Database.DuckDB.Simple.clearStatementBindings' on an abandoned statement to
+-- release its result.
 module Database.DuckDB.Simple.Streaming (
   fold,
   fold_,
@@ -63,10 +65,12 @@ nextRow :: (FromRow r) => Statement -> IO (Maybe r)
 nextRow = nextRowWith fromRow
 
 -- | Fetch a row with a custom parser, requesting streaming on the first fetch.
---   The active result retains its execution mode until @bind@, @bindNamed@,
---   @clearStatementBindings@, or @executeStatement@ from @Database.DuckDB.Simple@
---   releases it. Switching between this module and the default
---   @Database.DuckDB.Simple.nextRow@ does not restart or change an active result.
+--   The active result retains its execution mode until
+--   'Database.DuckDB.Simple.bind', 'Database.DuckDB.Simple.bindNamed',
+--   'Database.DuckDB.Simple.clearStatementBindings', or
+--   'Database.DuckDB.Simple.executeStatement' releases it. Switching between this
+--   module and 'Database.DuckDB.Simple.nextRow' does not restart or change an
+--   active result.
 --   After EOF, this function returns 'Nothing' until one of those functions runs.
 nextRowWith :: RowParser r -> Statement -> IO (Maybe r)
 nextRowWith = Result.nextRowWith StreamingResult
@@ -74,7 +78,7 @@ nextRowWith = Result.nextRowWith StreamingResult
 -- | Fold Arrow batches, requesting native streaming.
 --   Each batch has a separate schema and array. The callback may read, release,
 --   or move them under the Arrow C Data Interface. The pointers themselves are
---   valid during the callback only. See @Database.DuckDB.Simple.Arrow@ for the
+--   valid during the callback only. See "Database.DuckDB.Simple.Arrow" for the
 --   ownership rules.
 --   Query execution and Arrow export use the native V2 API.
 --   The fold releases contents that the consumer has not

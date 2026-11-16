@@ -5,10 +5,10 @@
 -- Module      : Database.DuckDB.Simple.Config.Internal
 -- Description : Share the typed custom option registration for connections and extensions.
 --
--- This module is not exposed: the cabal file lists it in @other-modules@. It
--- holds the implementation. 'registerCustomOptionOn' takes a registration
--- target. "Database.DuckDB.Simple.Config" gives the connection form.
--- "Database.DuckDB.Simple.Extension" gives the extension form.
+-- The cabal file lists this hidden module in @other-modules@.
+-- 'registerCustomOptionOn' takes a registration target.
+-- "Database.DuckDB.Simple.Config" exports the connection form.
+-- "Database.DuckDB.Simple.Extension" exports the extension form.
 module Database.DuckDB.Simple.Config.Internal (
   CustomOption (..),
   registerCustomOptionOn,

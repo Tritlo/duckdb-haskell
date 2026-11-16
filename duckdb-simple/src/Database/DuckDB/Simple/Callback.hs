@@ -248,7 +248,7 @@ requireThreadedRuntime config = unless rtsSupportsBoundThreads do
   threads <- withIdentifier (Text.pack "threads") \key -> alloca \scope ->
     bracket
       (output (\value -> c_duckdb_v2_config_get_option_value handle key value scope))
-      (destroy c_duckdb_v2_value_destroy)
+      destroyValue
       (output . c_duckdb_v2_value_get_bigint)
   when (threads > 1) $
     throwInvalidArgument

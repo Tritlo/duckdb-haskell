@@ -117,7 +117,7 @@ pragmaArguments casts name info context = withContextFactory context \contextFac
       value <-
         bracket
           (output (c_duckdb_v2_function_bind_get_arg_value info index))
-          (destroy c_duckdb_v2_value_destroy)
+          destroyValue
           (materializeValue (noVariant argument) factory)
       pure (Field argument (fromIntegral index) value)
     noVariant argument = rejectRows (throwInvalidArgument (Text.intercalate ": " [name, "parameter " <> argument, variantArgumentReason]))

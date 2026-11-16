@@ -116,7 +116,7 @@ module Database.DuckDB.Simple (
 ) where
 
 import Control.Exception (SomeException, bracket, evaluate, finally, mask, mask_, onException, throwIO, try)
-import Control.Monad (forM_, void, when, zipWithM_)
+import Control.Monad (foldM, forM_, void, when, zipWithM_)
 import Data.Array (elems)
 import Data.List (findIndex)
 import qualified Data.Map.Strict as Map
@@ -458,7 +458,14 @@ execute conn queryText params =
 executeMany :: (ToRow q) => Connection -> Query -> [q] -> IO Int
 executeMany conn queryText rows =
   withStatement conn queryText \stmt -> withKeptParameterTypes stmt do
-    sum <$> mapM (\row -> bind stmt (toRow row) >> executeStatement stmt) rows
+    foldM
+      ( \total row -> do
+          bind stmt (toRow row)
+          affected <- executeStatement stmt
+          pure $! total + affected
+      )
+      0
+      rows
 
 -- | Execute an ad-hoc query without parameters and return the affected row count.
 execute_ :: Connection -> Query -> IO Int

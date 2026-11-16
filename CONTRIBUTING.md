@@ -102,7 +102,7 @@ sets the style and the column limit.
 Format Cabal files with `cabal-gild`. Keep names consistent with the surrounding
 module.
 
-Build parameter values with the V2 handle of the statement's connection.
+Build parameter values with a factory borrowed from the statement's connection.
 Use the managed type cache for configured GEOMETRY types. Run VARIANT metadata
 queries on its helper connection so decoding does not interrupt an active
 stream. Use public V2 operations and SQL metadata.

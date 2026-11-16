@@ -390,9 +390,10 @@ their result:
   row to a BLOB vector with the default cast (withDefaultCastVector in
   "Database.DuckDB.Simple.Native"), as the values below do. Without this rule,
   a cast from GEOMETRY to BLOB whose callback reads its argument with the
-  library calls itself without end: its reader runs the cast. The update callback of an aggregate function has
-  no context and thus no factory, so a typed aggregate of an extension refuses
-  a GEOMETRY argument at registration.
+  library would run the same cast again to read the argument. This recursion
+  would not end. The update callback of an aggregate function has no context
+  and thus no factory, so a typed aggregate of an extension refuses a GEOMETRY
+  argument at registration.
 - withObjectChildren and withCast cast VARIANT values to the types of their
   payloads ("Database.DuckDB.Simple.VariantCodec"). The codec also reads a
   GEOMETRY payload. It uses the factory of the instance of its helper

@@ -52,7 +52,7 @@ tests :: Paths -> TestTree
 tests paths =
   testGroup
     "Haskell demo extension"
-    [ testCase "a second LOAD in the same process" $ do
+    [ testCase "a second LOAD in the same database instance" $ do
         loadAgain <- loadStatement paths
         checkProcess
           paths
@@ -64,6 +64,19 @@ tests paths =
           , "SELECT 'replacement', amount FROM haskell_missing;"
           ]
           [["loaded", "42"], ["after_second_load", "42"], ["loaded_once", "true"], ["pragma", "7"], ["replacement", "42"]]
+          []
+    , testCase "LOAD in a new database instance reuses the initialized runtime" $ do
+        loadAgain <- loadStatement paths
+        checkProcess
+          paths
+          [ "SELECT 'first_instance', haskell_add_one(41::BIGINT);"
+          , ".open :memory:"
+          , loadAgain
+          , "SELECT 'second_instance', haskell_add_one(41::BIGINT);"
+          , "SELECT 'second_aggregate', haskell_sum(i) FROM range(10000) AS t(i);"
+          , "SELECT 'second_replacement', amount FROM haskell_missing;"
+          ]
+          [["first_instance", "42"], ["second_instance", "42"], ["second_aggregate", "49995000"], ["second_replacement", "42"]]
           []
     , testCase "scalar functions: native batches, NULL, and text" $
         checkProcess
@@ -192,6 +205,33 @@ tests paths =
           ["haskell_lines writes exactly one BIGINT column"]
         written <- readFile file
         written @?= unlines [if i `mod` 1000 == 7 then "" else show i | i <- [0 .. 2999 :: Int]]
+    , testGroup
+        "file readers reject BIGINT overflow"
+        [ testCase badValue $ withDirectory $ \directory -> do
+            writeFile (directory </> "bounds.lines") "-9223372036854775808\n9223372036854775807\n"
+            writeFile (directory </> "overflow.lines") (badValue <> "\n")
+            bounds <- sqlLiteral (directory </> "bounds.lines")
+            overflow <- sqlLiteral (directory </> "overflow.lines")
+            checkProcess
+              paths
+              [ "CREATE TABLE copied (value BIGINT);"
+              , "COPY copied FROM " <> bounds <> " (FORMAT haskell_lines);"
+              , "SELECT 'bounds', min(value), max(value) FROM copied;"
+              , "COPY copied FROM " <> overflow <> " (FORMAT haskell_lines);"
+              , "SELECT 'after_copy_overflow', count(*) FROM copied;"
+              , "SELECT count(*) FROM haskell_read_line_file(" <> overflow <> ");"
+              , "SELECT 'after_single_overflow', 42;"
+              , "SELECT sum(value) FROM haskell_read_lines([" <> bounds <> ", " <> overflow <> "]);"
+              , "SELECT 'after_multi_overflow', 42;"
+              ]
+              [ ["bounds", "-9223372036854775808", "9223372036854775807"]
+              , ["after_copy_overflow", "2"]
+              , ["after_single_overflow", "42"]
+              , ["after_multi_overflow", "42"]
+              ]
+              ["haskell_lines: the line is not a BIGINT: " <> badValue]
+        | badValue <- ["9223372036854775808", "-9223372036854775809"]
+        ]
     , testCase "multi-file function" $ withDirectory $ \directory -> do
         writeFile (directory </> "first.lines") "7\n"
         writeFile (directory </> "second.lines") "11\n\n"

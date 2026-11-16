@@ -1490,9 +1490,9 @@ a connection and in the callbacks of an extension. The library reads GEOMETRY
 and VARIANT values with the built-in casts, and it builds GEOMETRY, ENUM, and
 VARIANT values with the default cast of DuckDB. For example, a cast from
 GEOMETRY to BLOB changes the result of `CAST(g AS BLOB)`, but not a GEOMETRY
-value that a query gives or that a callback reads. Only `setConfigValue` and
-`setConfigOption` use registered casts: DuckDB casts the value to the type of
-the option, as SQL `SET` does.
+value that a query gives or that a callback reads. Of the casts that the library
+performs itself, only `setConfigValue` and `setConfigOption` use registered
+casts. DuckDB casts the value to the type of the option, as SQL `SET` does.
 
 `createAggregate` registers an aggregate function as a fold. Its result type
 must be one of the types that write directly into the result vector:

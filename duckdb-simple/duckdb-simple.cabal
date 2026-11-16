@@ -200,6 +200,8 @@ test-suite duckdb-simple-leak-test
 
 -- This suite has no -threaded. It checks the guard for such a program.
 test-suite duckdb-simple-nonthreaded-test
+  if flag(extension)
+    buildable: False
   type: exitcode-stdio-1.0
   hs-source-dirs: nonthreaded-test
   main-is: Main.hs

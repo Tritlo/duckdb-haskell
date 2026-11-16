@@ -143,7 +143,6 @@ import Database.DuckDB.Simple.ToField (
   renderFieldBinding,
  )
 import Database.DuckDB.Simple.ToRow (ToRow (..))
-import Database.DuckDB.Simple.TypeCache (defaultGeometryCRS)
 import Database.DuckDB.Simple.Types (FormatError (..), Null (..), Only (..), (:.) (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (peek)
@@ -196,13 +195,11 @@ connect instance_ = connectWithOptions instance_ defaultConnectionOptions
 -- GLOBAL thus changes the instance. This change applies to all connections of
 -- the instance.
 connectWithOptions :: Instance -> ConnectionOptions -> IO Connection
-connectWithOptions instance_ ConnectionOptions{connectionConfig, connectionGeometryCRS, connectionCallbackLockWait, connectionAggregateStripes, connectionArrowBatchSize} = mask_ do
+connectWithOptions instance_ options@ConnectionOptions{connectionConfig} = mask_ do
   when (any (\(name, value) -> Text.any (== '\0') name || Text.any (== '\0') value) connectionConfig) $
     throwInvalidArgument (Text.pack "configuration contains NUL")
-  callbackLockWait <- checkCallbackLockWait connectionCallbackLockWait
-  stripes <- checkAggregateStripes connectionAggregateStripes
-  arrowBatch <- checkArrowBatchSize connectionArrowBatchSize
-  conn <- createConnection instance_ connectionGeometryCRS callbackLockWait stripes arrowBatch (pure ())
+  checked' <- checkConnectionOptions options
+  conn <- createConnection instance_ checked' (pure ())
   flip onException (close conn) do
     withConnectionHandle conn \raw -> do
       config <- output (c_duckdb_v2_connection_get_config raw)
@@ -223,80 +220,20 @@ open path = openWithConfig path []
 openWithConfig :: FilePath -> [(Text, Text)] -> IO Connection
 openWithConfig path settings = openWithOptions path defaultConnectionOptions{connectionConfig = settings}
 
--- | Settings that duckdb-simple applies when it opens a connection.
-data ConnectionOptions = ConnectionOptions
-  { connectionConfig :: [(Text, Text)]
-  -- ^ DuckDB configuration flags. 'openWithOptions' applies them when it
-  --     creates the instance, as 'openWithConfig' does. 'connectWithOptions' applies
-  --     them to a new connection of a running instance, so options that DuckDB
-  --     accepts only at startup fail there. 'connectWithOptions' writes each option
-  --     with its default scope. An option whose default scope is GLOBAL thus changes
-  --     the instance. This change applies to all connections of the instance.
-  , connectionGeometryCRS :: [Text]
-  -- ^ CRS definitions to preserve in composite parameters. DuckDB constructs
-  --     a recognized name, such as @OGC:CRS84@, and a complete definition
-  --     directly. For each other name, the connection reads a SQL-derived type
-  --     when it opens, and a name that DuckDB drops fails the open. The
-  --     connection keeps each type, and a bind copies it. The default is
-  --     @OGC:CRS84@. Include custom CRS names in this list. A typed
-  --     registration does not use this list. A declared GEOMETRY type with a
-  --     custom CRS name raises the DuckDB error "unrecognized coordinate
-  --     system" at registration: for an argument, a result, the source or the
-  --     target of a cast, a pragma parameter, and a column of a table function.
-  --     A plain GEOMETRY argument reads a value with a custom CRS without the
-  --     CRS, because DuckDB casts the value to the declared type. A query
-  --     column with a custom CRS reads with its CRS.
-  , connectionCallbackLockWait :: Maybe Int
-  -- ^ The longest time in microseconds that a DuckDB callback waits for the
-  --     lock of this connection. A statement of a callback on the connection
-  --     that runs the callback waits for this lock. After the bound, the
-  --     statement raises an 'SQLError' of the type 'ErrorResourceInUse'. For
-  --     most callbacks, the outer statement then fails. The bound applies
-  --     also to a callback that uses this connection while another statement
-  --     runs on it. 'Nothing' sets no bound. The default is
-  --     'defaultCallbackLockWait'. The open rejects a negative value.
-  --     "Database.DuckDB.Simple.Function" gives the cases that the bound does
-  --     not cover.
-  , connectionAggregateStripes :: Int
-  -- ^ The number of stripes in the state table of each typed aggregate
-  --     function that 'createAggregate' registers through this connection. The
-  --     registration keeps the number, also when another connection calls the
-  --     aggregate. The table holds the live aggregate states. Two DuckDB
-  --     threads that change the table wait for each other only when they change
-  --     the same stripe. No result depends on the number. The default is
-  --     'defaultAggregateStripes'. The open rejects a number that is not
-  --     positive. The library sets no upper limit. Each bind of each call
-  --     site (a call of the aggregate in a query) makes one IORef for each
-  --     stripe.
-  , connectionArrowBatchSize :: Int
-  -- ^ The largest number of rows in one Arrow array of an Arrow fold on this
-  --     connection ("Database.DuckDB.Simple.Arrow" and
-  --     "Database.DuckDB.Simple.Streaming"). DuckDB can give shorter arrays. As
-  --     in DuckDB, 0 means 131072. The default is 'defaultArrowBatchSize'. The
-  --     open rejects a negative value.
-  }
-  deriving (Eq, Show)
-
--- | No configuration flags, the CRS @OGC:CRS84@, the default bound for a
--- callback that waits for the connection lock, the default number of
--- aggregate stripes, and the default Arrow batch size.
-defaultConnectionOptions :: ConnectionOptions
-defaultConnectionOptions =
-  ConnectionOptions
-    { connectionConfig = []
-    , connectionGeometryCRS = defaultGeometryCRS
-    , connectionCallbackLockWait = Just defaultCallbackLockWait
-    , connectionAggregateStripes = defaultAggregateStripes
-    , connectionArrowBatchSize = defaultArrowBatchSize
-    }
-
--- | The default of 'connectionCallbackLockWait': 10 seconds, in microseconds.
-defaultCallbackLockWait :: Int
-defaultCallbackLockWait = 10000000
-
--- | The default of 'connectionArrowBatchSize': 2048 rows.
-defaultArrowBatchSize :: Int
-defaultArrowBatchSize = 2048
+-- | Check the fields of 'ConnectionOptions' and give the record with the
+-- checked fields. The fields are lazy, so an error in a field occurs here and
+-- not in a later use. Each open calls this before it creates a native handle.
+checkConnectionOptions :: ConnectionOptions -> IO ConnectionOptions
+checkConnectionOptions options@ConnectionOptions{connectionCallbackLockWait, connectionAggregateStripes, connectionArrowBatchSize} = do
+  callbackLockWait <- checkCallbackLockWait connectionCallbackLockWait
+  stripes <- checkAggregateStripes connectionAggregateStripes
+  arrowBatch <- checkArrowBatchSize connectionArrowBatchSize
+  pure
+    options
+      { connectionCallbackLockWait = callbackLockWait
+      , connectionAggregateStripes = stripes
+      , connectionArrowBatchSize = arrowBatch
+      }
 
 -- | Evaluate the bound of 'connectionCallbackLockWait' and reject a negative
 -- bound. The fields of 'ConnectionOptions' are lazy, so an error in the field
@@ -315,27 +252,26 @@ checkAggregateStripes stripes
   | stripes <= 0 = throwInvalidArgument (Text.pack "connectionAggregateStripes is not positive")
   | otherwise = pure stripes
 
--- | Reject a negative 'connectionArrowBatchSize'. The check evaluates the
--- field, so an error in the field occurs here and not in a later fold.
+-- | Reject a 'connectionArrowBatchSize' that is not positive. The check
+-- evaluates the field, so an error in the field occurs here and not in a later
+-- fold.
 checkArrowBatchSize :: Int -> IO Int
 checkArrowBatchSize size
-  | size < 0 = throwInvalidArgument (Text.pack "connectionArrowBatchSize is negative")
+  | size <= 0 = throwInvalidArgument (Text.pack "connectionArrowBatchSize is not positive")
   | otherwise = pure size
 
 -- | Open a database with a private environment and instance.
 openWithOptions :: FilePath -> ConnectionOptions -> IO Connection
-openWithOptions path ConnectionOptions{connectionConfig, connectionGeometryCRS, connectionCallbackLockWait, connectionAggregateStripes, connectionArrowBatchSize} = mask_ do
-  callbackLockWait <- checkCallbackLockWait connectionCallbackLockWait
-  stripes <- checkAggregateStripes connectionAggregateStripes
-  arrowBatch <- checkArrowBatchSize connectionArrowBatchSize
+openWithOptions path options = mask_ do
+  checked' <- checkConnectionOptions options
   environment <- createEnvironment
-  instance_ <- createInstance environment connectionConfig `onException` closeEnvironment environment
+  instance_ <- createInstance environment (connectionConfig checked') `onException` closeEnvironment environment
   -- See Note [Native handle ownership] in "Database.DuckDB.Simple.Internal".
   let release = closeInstance instance_ `finally` closeEnvironment environment
   flip onException release do
     -- An empty alias lets DuckDB derive the catalog name from the path.
     attachCatalog instance_ (if null path then ":memory:" else path) Text.empty [] True
-    createConnection instance_ connectionGeometryCRS callbackLockWait stripes arrowBatch release
+    createConnection instance_ checked' release
 
 -- | Close a connection and its statements. The operation is idempotent.
 close :: Connection -> IO ()

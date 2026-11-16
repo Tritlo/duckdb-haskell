@@ -1086,7 +1086,8 @@ success, failure, or cancellation. The consumer owns any contents it moves.
 
 Each array has at most `connectionArrowBatchSize` rows. Set this option in
 `ConnectionOptions`. The default is `defaultArrowBatchSize`, 2048 rows. DuckDB
-can give shorter arrays. As in DuckDB, 0 means 131072.
+can give shorter arrays. The open rejects a value that is not positive. For the
+batch size of DuckDB, set 131072.
 
 The original pointers are valid only during the callback. To retain contents,
 a consumer must move the root structs into its own storage and set the source

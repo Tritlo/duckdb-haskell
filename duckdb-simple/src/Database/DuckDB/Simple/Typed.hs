@@ -40,7 +40,7 @@ import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
   ReadFactory,
-  lazyTypeRep,
+  ownedTypeRep,
   prepareGeometryReader,
   prepareVectorReader,
   rejectRows,
@@ -180,7 +180,7 @@ prepareArgumentReader casts index vector = do
       noGeometry = rejectRows (throwInvalidArgument (Text.pack "a typed argument of this callback cannot be or contain GEOMETRY"))
   readValue <- prepareVectorReader (FallbackReaders noVariant (maybe noGeometry prepareGeometryReader casts)) vector
   -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
-  argumentType <- lazyTypeRep (output (c_duckdb_v2_vector_get_logical_type vector))
+  argumentType <- ownedTypeRep (output (c_duckdb_v2_vector_get_logical_type vector))
   pure \row -> (\value -> Field (argumentName index) index value argumentType) <$> readValue row
 
 -- | Describe the arguments that 'Database.DuckDB.Simple.FromField.FromField' or

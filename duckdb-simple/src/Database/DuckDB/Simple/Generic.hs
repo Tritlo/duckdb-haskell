@@ -91,7 +91,7 @@ module Database.DuckDB.Simple.Generic (
   ViaDuckDB (..),
 ) where
 
-import Control.Exception (displayException)
+import Control.Exception (toException)
 import Control.Monad (unless)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
@@ -108,6 +108,12 @@ import Data.Time.LocalTime (LocalTime, TimeOfDay)
 import Data.Typeable (Typeable)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
+import Database.DuckDB.Simple.Conversion (
+  Conversion,
+  conversionError,
+  mapConversionErrors,
+  mapConversionErrorsWith,
+ )
 import Database.DuckDB.Simple.Element (containsType, valueTypeName)
 import Database.DuckDB.Simple.FromField (
   Field (..),
@@ -134,7 +140,6 @@ import Database.DuckDB.Simple.LogicalRep (
   mapEntryTypes,
  )
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..), ToField (..))
 import Database.DuckDB.Simple.Variant (Variant (..))
@@ -155,30 +160,43 @@ import Numeric.Natural (Natural)
 --
 -- The primitive instances define the scalar representations for generic
 -- conversion. The default decoder uses the @FromField@ instance of the type.
+-- See Note [Generic decoding].
 class DuckValue a where
+  -- | Encode a field value.
   duckToField :: a -> FieldValue
-  duckFromField :: FieldValue -> Either String a
+
+  -- | Decode a field value. Run it with @runConversion@.
+  duckFromField :: FieldValue -> Conversion a
+
+  -- | Give the SQL type used to encode the field.
   duckLogicalType :: Proxy a -> LogicalTypeRep
 
   -- | Decode a value with the SQL type of its place, for example the type of a
-  -- field of a STRUCT or of an element of a LIST. The default ignores the type
-  -- and runs 'duckFromField', so an instance without this method compiles with
-  -- no change. An instance that reads through 'FromField' can use
-  -- 'typedFromField', so that 'fieldType' gives the type. See
+  -- field of a STRUCT or of an element of a LIST. The default runs
+  -- 'duckFromField' and ignores the supplied type. An instance that reads
+  -- through 'FromField' can use
+  -- 'typedFromField', so that 'fieldType' returns the type. See
   -- Note [Column types] in "Database.DuckDB.Simple.FromField".
-  duckFromTypedField :: LogicalTypeRep -> FieldValue -> Either String a
+  duckFromTypedField :: LogicalTypeRep -> FieldValue -> Conversion a
   duckFromTypedField _ = duckFromField
 
-  default duckFromField :: (FromField a, Show a) => FieldValue -> Either String a
+  default duckFromField :: (FromField a) => FieldValue -> Conversion a
   duckFromField = typedFromField (LogicalTypeScalar LogicalTypeIdVariant)
 
+{- Note [Generic decoding]
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+Generic decoding uses Conversion because a FromField instance can request SQL
+metadata. Encoding and logical type declarations remain pure. Error context is
+added only when a conversion's failure is selected. A discarded Alternative
+branch does not request metadata for its diagnostic.
+-}
+
 -- | Decode a value through 'FromField', with a t'Field' of the given SQL type.
--- See Note [Column types] in "Database.DuckDB.Simple.FromField".
-typedFromField :: (FromField a) => LogicalTypeRep -> FieldValue -> Either String a
+-- See Note [Generic decoding] and Note [Column types] in
+-- "Database.DuckDB.Simple.FromField".
+typedFromField :: (FromField a) => LogicalTypeRep -> FieldValue -> Conversion a
 typedFromField logical fv =
-  case fromField Field{fieldName = Text.empty, fieldIndex = 0, fieldValue = fv, fieldType = logical} of
-    Ok x -> Right x
-    Errors errs -> Left (intercalate "; " (map exceptionText errs))
+  fromField Field{fieldName = Text.empty, fieldIndex = 0, fieldValue = fv, fieldType = pure logical}
 
 instance DuckValue Variant where
   duckToField = variantPayload
@@ -338,9 +356,9 @@ instance (DuckValue a) => DuckValue (Maybe a) where
   duckToField (Just x) = duckToField x
   duckToField Nothing = FieldNull
   duckLogicalType _ = duckLogicalType (Proxy @a)
-  duckFromField FieldNull = Right Nothing
+  duckFromField FieldNull = pure Nothing
   duckFromField other = Just <$> duckFromField other
-  duckFromTypedField _ FieldNull = Right Nothing
+  duckFromTypedField _ FieldNull = pure Nothing
   duckFromTypedField logical other = Just <$> duckFromTypedField logical other
 
 -- | List values encode as DuckDB LIST (variable-length). A field reads a LIST
@@ -370,18 +388,16 @@ instance (KnownNat n, DuckValue a) => DuckValue (SizedArray n a) where
     where
       size = natVal (Proxy @n)
       sized entries
-        | Just reason <- arraySizeReason size = Left (sizeError reason)
+        | Just reason <- arraySizeReason size = conversionError (sizeError reason)
         | otherwise = case sizedArrayFromList entries of
-            Nothing -> Left (sizeError (Text.pack ("the value has " <> show (length entries) <> " elements")))
+            Nothing -> conversionError (sizeError (Text.pack ("the value has " <> show (length entries) <> " elements")))
             Just values -> traverse (duckFromTypedField (listElementType logical)) values
       sizeError reason =
-        displayException
-          ( Incompatible
-              (fieldTypeName logical value)
-              Text.empty
-              (Text.pack ("SizedArray " <> show size))
-              reason
-          )
+        Incompatible
+          (fieldTypeName logical value)
+          Text.empty
+          (Text.pack ("SizedArray " <> show size))
+          reason
 
 -- | Map values encode as DuckDB MAP.
 instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
@@ -407,13 +423,13 @@ instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
 -- | The error of a decoder that does not read a value. The text has the form of
 -- each other read error: it names the SQL type of the value, not the value,
 -- because a value can be large.
-unexpectedValue :: String -> FieldValue -> Either String a
-unexpectedValue expected value = Left (displayException (Incompatible (valueTypeName value) Text.empty (Text.pack expected) Text.empty))
+unexpectedValue :: String -> FieldValue -> Conversion a
+unexpectedValue expected value = conversionError (Incompatible (valueTypeName value) Text.empty (Text.pack expected) Text.empty)
 
 -- | The error of a decoder that cannot read a value with the given SQL type.
 -- It names the type as 'returnError' does.
-unexpectedTypedValue :: LogicalTypeRep -> String -> FieldValue -> Either String a
-unexpectedTypedValue logical expected value = Left (displayException (Incompatible (fieldTypeName logical value) Text.empty (Text.pack expected) Text.empty))
+unexpectedTypedValue :: LogicalTypeRep -> String -> FieldValue -> Conversion a
+unexpectedTypedValue logical expected value = conversionError (Incompatible (fieldTypeName logical value) Text.empty (Text.pack expected) Text.empty)
 
 --------------------------------------------------------------------------------
 -- Generic machinery
@@ -438,8 +454,9 @@ genericToFieldValue = encodedValue . gToField . from
 genericLogicalType :: forall a. (Generic a, GToField (Rep a)) => Proxy a -> LogicalTypeRep
 genericLogicalType _ = gLogicalType (Proxy @(Rep a ()))
 
--- | Decode a DuckDB @FieldValue@ back into a Haskell value using its generic representation.
-genericFromFieldValue :: forall a. (Generic a, GFromField (Rep a)) => FieldValue -> Either String a
+-- | Decode a DuckDB @FieldValue@ with its generic representation. Run the
+-- result with @runConversion@. See Note [Generic decoding].
+genericFromFieldValue :: forall a. (Generic a, GFromField (Rep a)) => FieldValue -> Conversion a
 genericFromFieldValue fv = to <$> gFromField fv
 
 -- | Extract the STRUCT encoding when the value produces one.
@@ -614,7 +631,7 @@ toMaybe name
 class GSum f where
   gSumMembers :: Proxy (f p) -> [UnionMemberType]
   gSumEncode :: f p -> (Int, FieldValue)
-  gSumDecode :: Int -> FieldValue -> Either String (f p)
+  gSumDecode :: Int -> FieldValue -> Conversion (f p)
 
 instance (GSum a, GSum b) => GSum (a :+: b) where
   gSumMembers _ = gSumMembers (Proxy @(a _)) ++ gSumMembers (Proxy @(b _))
@@ -650,13 +667,13 @@ instance (Constructor c, GStruct f, GStructDecode f) => GSum (M1 C c f) where
         indexMap = Map.fromList (zip names [0 ..])
     in  (0, FieldStruct StructValue{structValueFields = valueArray, structValueTypes = typeArray, structValueIndex = indexMap})
   gSumDecode idx payload
-    | idx /= 0 = Left ("duckdb-simple: union tag mismatch (expected 0, got " <> show idx <> ")")
+    | idx /= 0 = decodingError ("duckdb-simple: union tag mismatch (expected 0, got " <> show idx <> ")")
     | otherwise =
         case payload of
           -- Version 0.3 wrote this payload. See Note [Types without fields].
           FieldNull -> M1 . fst <$> gStructDecodeList (Proxy @(f _)) []
           FieldStruct structVal -> do
-            ordered <- orderStructFields (gStructTypes (Proxy @(f _))) structVal
+            ordered <- either decodingError pure (orderStructFields (gStructTypes (Proxy @(f _))) structVal)
             M1 <$> gStructDecodeStruct (Proxy @(f _)) ordered
           other -> unexpectedValue "STRUCT for a member of a sum type" other
 
@@ -690,25 +707,25 @@ orderStructFields components sv
 
 -- | Inverse of @GStruct@: decode struct payloads back into a generic product.
 class GStructDecode f where
-  gStructDecodeStruct :: Proxy (f p) -> StructValue FieldValue -> Either String (f p)
+  gStructDecodeStruct :: Proxy (f p) -> StructValue FieldValue -> Conversion (f p)
 
   -- | Consume a prefix of fields from left to right while decoding, returning
   --     the reconstructed value and any remaining fields. Each field has its
   --     type and its value.
-  gStructDecodeList :: Proxy (f p) -> [(LogicalTypeRep, FieldValue)] -> Either String (f p, [(LogicalTypeRep, FieldValue)])
+  gStructDecodeList :: Proxy (f p) -> [(LogicalTypeRep, FieldValue)] -> Conversion (f p, [(LogicalTypeRep, FieldValue)])
 
 instance GStructDecode U1 where
   gStructDecodeStruct _ structVal =
     if null (elems (structValueFields structVal))
-      then Right U1
-      else Left ("duckdb-simple: expected empty struct, but got " <> show (length (elems (structValueFields structVal))) <> " field(s)")
-  gStructDecodeList _ xs = Right (U1, xs)
+      then pure U1
+      else decodingError ("duckdb-simple: expected empty struct, but got " <> show (length (elems (structValueFields structVal))) <> " field(s)")
+  gStructDecodeList _ xs = pure (U1, xs)
 
 instance (GStructDecode a, GStructDecode b) => GStructDecode (a :*: b) where
   gStructDecodeStruct proxy structVal = do
     (decoded, rest) <- gStructDecodeList proxy (typedFields structVal)
     unless (null rest) $
-      Left ("duckdb-simple: extra " <> show (length rest) <> " field(s) when decoding struct (too many fields provided)")
+      decodingError ("duckdb-simple: extra " <> show (length rest) <> " field(s) when decoding struct (too many fields provided)")
     pure decoded
   gStructDecodeList _ xs = do
     (leftVal, rest) <- gStructDecodeList (Proxy @(a _)) xs
@@ -719,10 +736,10 @@ instance (Selector s, DuckValue a) => GStructDecode (M1 S s (K1 i a)) where
   gStructDecodeStruct _ structVal =
     case typedFields structVal of
       [(logical, fv)] -> M1 . K1 <$> namedField (selName (undefined :: M1 S s (K1 i a) ())) (duckFromTypedField logical fv)
-      [] -> Left "duckdb-simple: missing struct field (expected 1, got 0)"
-      xs -> Left ("duckdb-simple: expected single field struct, but got " <> show (length xs) <> " fields")
+      [] -> decodingError "duckdb-simple: missing struct field (expected 1, got 0)"
+      xs -> decodingError ("duckdb-simple: expected single field struct, but got " <> show (length xs) <> " fields")
 
-  gStructDecodeList _ [] = Left "duckdb-simple: missing struct field (expected field but list is empty)"
+  gStructDecodeList _ [] = decodingError "duckdb-simple: missing struct field (expected field but list is empty)"
   gStructDecodeList _ ((logical, fv) : rest) = do
     val <- namedField (selName (undefined :: M1 S s (K1 i a) ())) (duckFromTypedField logical fv)
     pure (M1 (K1 val), rest)
@@ -737,13 +754,25 @@ typedFields StructValue{structValueFields, structValueTypes} =
     (map structFieldValue (elems structValueFields))
 
 -- | Name the record field in the error of its decoder, after the prefix of the
--- library. A positional field has no name.
-namedField :: String -> Either String a -> Either String a
+-- library. A positional field has no name. See Note [Generic decoding].
+namedField :: String -> Conversion a -> Conversion a
 namedField name
   | null name = id
-  | otherwise = either (Left . (("duckdb-simple: field " <> name <> ": ") <>) . withoutPrefix) Right
+  | otherwise = mapConversionErrors \errors ->
+      [ toException
+          ( ConversionFailed
+              Text.empty
+              Text.empty
+              Text.empty
+              (Text.pack ("duckdb-simple: field " <> name <> ": " <> withoutPrefix (intercalate "; " (map exceptionText errors))))
+          )
+      ]
   where
     withoutPrefix message = fromMaybe message (stripPrefix "duckdb-simple: " message)
+
+-- | Fail a generic decoder with the supplied diagnostic text.
+decodingError :: String -> Conversion a
+decodingError = conversionError . ConversionFailed Text.empty Text.empty Text.empty . Text.pack
 
 instance (GStructDecode f) => GStructDecode (M1 C c f) where
   gStructDecodeStruct _ structVal = M1 <$> gStructDecodeStruct (Proxy @(f _)) structVal
@@ -757,20 +786,20 @@ instance (GStructDecode f) => GStructDecode (M1 C c f) where
 -- | Generic decoding entry point mirroring @GToField@. This is used both by
 -- @genericFromFieldValue@ and the @ViaDuckDB@ deriving helper.
 class GFromField f where
-  gFromField :: FieldValue -> Either String (f p)
+  gFromField :: FieldValue -> Conversion (f p)
 
 instance (GFromField' (IsSum f) f) => GFromField f where
   gFromField = gFromField' (Proxy @(IsSum f))
 
 class GFromField' (isSum :: Bool) f where
-  gFromField' :: Proxy isSum -> FieldValue -> Either String (f p)
+  gFromField' :: Proxy isSum -> FieldValue -> Conversion (f p)
 
 instance (GStruct f, GStructDecode f) => GFromField' 'False (M1 D meta (M1 C c f)) where
   gFromField' _ = \case
     -- Version 0.3 wrote this value. See Note [Types without fields].
     FieldNull -> M1 . M1 . fst <$> gStructDecodeList (Proxy @(f _)) []
     FieldStruct sv -> do
-      ordered <- orderStructFields (gStructTypes (Proxy @(f _))) sv
+      ordered <- either decodingError pure (orderStructFields (gStructTypes (Proxy @(f _))) sv)
       M1 . M1 <$> gStructDecodeStruct (Proxy @(f _)) ordered
     other -> unexpectedValue "STRUCT for a product type" other
 
@@ -780,19 +809,19 @@ instance (GSum f) => GFromField' 'True (M1 D meta f) where
       let actualMembers = elems (unionValueMembers uv)
           actualIndex = fromIntegral (unionValueIndex uv)
       unless (actualIndex < length actualMembers) $
-        Left "duckdb-simple: union tag out of range"
+        decodingError "duckdb-simple: union tag out of range"
       unless (unionMemberName (actualMembers !! actualIndex) == unionValueLabel uv) $
-        Left "duckdb-simple: union tag and member name mismatch"
+        decodingError "duckdb-simple: union tag and member name mismatch"
       let members = gSumMembers (Proxy @(f _))
           indexed = zip [0 ..] members
           matching = [idx | (idx, member) <- indexed, unionMemberName member == unionValueLabel uv]
       case matching of
         [idx] -> M1 <$> gSumDecode idx (unionValuePayload uv)
-        _ -> Left "duckdb-simple: unknown union member name"
+        _ -> decodingError "duckdb-simple: unknown union member name"
     other -> unexpectedValue "UNION for a sum type" other
 
 instance GFromField' 'False (M1 D meta U1) where
-  gFromField' _ _ = Right (M1 U1)
+  gFromField' _ _ = pure (M1 U1)
 
 --------------------------------------------------------------------------------
 -- ViaDuckDB instances
@@ -845,10 +874,9 @@ instance (Generic a, GToField (Rep a)) => ToDuckValue (ViaDuckDB a) where
 
 -- | Deriving-via @FromField@ instance. It reads a STRUCT for a product type and
 -- a UNION for a sum type. Convert decoder errors to @ResultError@ with
--- @returnError@.
+-- @returnError@. See Note [Generic decoding].
 instance (Generic a, GFromField (Rep a), Typeable a) => FromField (ViaDuckDB a) where
   fromField f@Field{fieldValue} =
-    case genericFromFieldValue fieldValue of
-      Right value -> pure (ViaDuckDB value)
-      Left err ->
-        returnError ConversionFailed f (Text.pack err)
+    mapConversionErrorsWith
+      (\errors -> [] <$ returnError @(ViaDuckDB a) ConversionFailed f (Text.pack (intercalate "; " (map exceptionText errors))))
+      (ViaDuckDB <$> genericFromFieldValue fieldValue)

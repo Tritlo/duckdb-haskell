@@ -14,11 +14,12 @@ module Database.DuckDB.Simple.Result (
   resetStatementStream,
 ) where
 
-import Control.Exception (bracket, evaluate, finally, mask, mask_, onException, throwIO)
+import Control.Exception (bracket, finally, mask, mask_, onException, throwIO)
 import Control.Monad (foldM, forM, when, zipWithM)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Text as Text
+import Database.DuckDB.Simple.Conversion (runConversion)
 import Database.DuckDB.Simple.Element (withVectorType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue)
 import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
@@ -26,8 +27,7 @@ import Database.DuckDB.Simple.Internal
 import Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
   ReadFactory (..),
-  destroySchemaAddress,
-  ownedHandle,
+  ownedTypeRep,
   prepareGeometryReader,
   prepareVariantReader,
   prepareVectorReaderWith,
@@ -35,10 +35,8 @@ import Database.DuckDB.Simple.Materialize (
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.TypeCache (typeCacheCasts, withVariantState)
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
-import Foreign.ForeignPtr (withForeignPtr)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (peek)
-import System.IO.Unsafe (unsafeInterleaveIO)
 
 -- | Fold rows from one statement and release its result on every exit path.
 foldStatementWith :: ResultMode -> RowParser row -> Statement -> a -> (a -> row -> IO a) -> IO a
@@ -90,7 +88,7 @@ consumeStream streamRef parser stmt stream = mask \restore -> do
     Just chunk -> do
       fields <-
         restore $ buildMaterializedRow (statementStreamColumns loaded) (statementStreamChunkReaders chunk) (statementStreamChunkIndex chunk)
-      parsed <- restore (evaluate (parseRow parser fields))
+      parsed <- restore (runConversion (parseRow parser fields))
       case parsed of
         Errors rowErr -> throwIO $ rowErrorsToSqlError (statementQuery stmt) rowErr
         Ok value -> do
@@ -265,25 +263,15 @@ collectStreamRows conn query acquire = withQueryError query $
         >>= maybe (throwInternalError (Text.pack "internal error: the owned chunks do not match the chunk fold")) pure
 
 collectResultColumns :: DuckDBV2ResultHandle -> IO [StatementStreamColumn]
-collectResultColumns result = do
-  -- The schema lives as long as a column type that is not converted. See
-  -- Note [Column types] in "Database.DuckDB.Simple.FromField".
-  owner <- ownedHandle destroySchemaAddress (output (c_duckdb_v2_result_get_schema result))
-  let columnType idx = withForeignPtr owner \cell ->
-        peek cell >>= \schema -> alloca \name ->
-          output (c_duckdb_v2_schema_get_field schema (fromIntegral idx) name) >>= logicalTypeToRep
-  -- One withForeignPtr holds the schema for the loop. With a deeper stack
-  -- here, the helper thread of each query (Note [Interruptible native calls]
-  -- in "Database.DuckDB.Simple.Internal") grew past its first stack chunk and
-  -- allocated a new chunk of 32 KB.
-  withForeignPtr owner \cell -> do
-    schema <- peek cell
+collectResultColumns result =
+  bracket (output (c_duckdb_v2_result_get_schema result)) (destroy c_duckdb_v2_schema_destroy) \schema -> do
     count <- fromIntegral <$> output (c_duckdb_v2_schema_get_count schema)
     forM [0 .. count - 1] \idx -> alloca \name -> do
-      _ <- output (c_duckdb_v2_schema_get_field schema (fromIntegral idx) name)
+      borrowed <- output (c_duckdb_v2_schema_get_field schema (fromIntegral idx) name)
       columnName <- peek name >>= readIdentifier
-      lazyType <- unsafeInterleaveIO (columnType idx)
-      StatementStreamColumn idx columnName lazyType <$> newIORef Nothing <*> newIORef IntMap.empty
+      -- A column owns only its type. It does not retain the result schema.
+      columnType <- ownedTypeRep (output (c_duckdb_v2_logical_type_copy borrowed))
+      StatementStreamColumn idx columnName columnType <$> newIORef Nothing <*> newIORef IntMap.empty
 
 buildMaterializedRow :: [StatementStreamColumn] -> [Int -> IO FieldValue] -> Int -> IO [Field]
 buildMaterializedRow columns readers rowIdx =

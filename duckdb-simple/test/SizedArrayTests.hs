@@ -25,6 +25,7 @@ import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue (..))
 import Database.DuckDB.Simple.Generic (DuckValue (..), ViaDuckDB (..))
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), TypeDeclaration (..))
+import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue)
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import GHC.Generics (Generic)
@@ -122,9 +123,10 @@ sizedArrayTests =
           (query_ conn "SELECT [1]::BIGINT[1]" :: IO [Only (SizedArray 0 Int64)])
         assertSqlErrorType ErrorQueryBinder $
           (query_ conn "SELECT []::BIGINT[0]" :: IO [Only Int64])
-        case duckFromTypedField (LogicalTypeList (LogicalTypeScalar LogicalTypeIdBigInt)) (FieldList []) :: Either String (SizedArray 0 Int64) of
-          Left message -> assertBool message ("a DuckDB ARRAY has at least one element" `Text.isInfixOf` Text.pack message)
-          Right _ -> assertFailure "expected the generic size error"
+        runConversion
+          (duckFromTypedField (LogicalTypeList (LogicalTypeScalar LogicalTypeIdBigInt)) (FieldList []) :: Conversion (SizedArray 0 Int64)) >>= \case
+          Errors errors -> assertBool (show errors) ("a DuckDB ARRAY has at least one element" `Text.isInfixOf` Text.pack (show errors))
+          Ok _ -> assertFailure "expected the generic size error"
         (query_ conn "SELECT NULL::BIGINT[]" :: IO [Only (Maybe (SizedArray 0 Int64))]) >>= (@?= [Only Nothing])
         assertReusable conn
     , testCase "the largest ARRAY size binds and declares, and a larger size fails at the bind, declaration, and read" $ withConnection ":memory:" \conn -> do

@@ -32,7 +32,6 @@ import Database.DuckDB.Simple.Internal (
   SQLError (..),
   Statement,
  )
-import Database.DuckDB.Simple.Ok (Ok (..))
 
 -- | Placeholder representing SQL @NULL@.
 data Null = Null
@@ -43,7 +42,7 @@ data Null = Null
 -- @FromField@ would cause an import cycle.
 instance FromField Null where
   fromField f = case fieldValue f of
-    FieldNull -> Ok Null
+    FieldNull -> pure Null
     _ -> returnError Incompatible f (Text.pack "expected NULL")
 
 -- | Wrapper used for single-column rows.

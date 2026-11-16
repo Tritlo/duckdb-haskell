@@ -22,9 +22,10 @@ import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (attachOpaque, readCallbackState, targetCastFactory, transferCallbackState)
+import Database.DuckDB.Simple.Conversion (runConversion)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
-import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory, lazyTypeRep, materializeValue, rejectRows)
+import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory, materializeValue, ownedTypeRep, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Typed (
@@ -225,8 +226,9 @@ readArguments name count factory input = do
       -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
       Field (argumentName index) index
         <$> materializeValue unexpectedVariant factory value
-        <*> lazyTypeRep (output (c_duckdb_v2_value_get_logical_type value))
-  case parseRow fromRow fields of
+        <*> ownedTypeRep (output (c_duckdb_v2_value_get_logical_type value))
+  converted <- runConversion (parseRow fromRow fields)
+  case converted of
     Ok params -> pure params
     Errors failures -> throwIO (userError ("duckdb-simple: " <> Text.unpack name <> ": " <> conversionMessage failures))
   where

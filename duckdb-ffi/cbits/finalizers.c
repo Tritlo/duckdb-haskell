@@ -23,8 +23,3 @@
 DUCKDB_FFI_EXPORT void duckdb_ffi_destroy_logical_type(duckdb_v2_logical_type_handle *type) {
     (void)duckdb_v2_logical_type_destroy(type);
 }
-
-/* Destroy an owned schema. The function ignores the result code, as above. */
-DUCKDB_FFI_EXPORT void duckdb_ffi_destroy_schema(duckdb_v2_schema_handle *schema) {
-    (void)duckdb_v2_schema_destroy(schema);
-}

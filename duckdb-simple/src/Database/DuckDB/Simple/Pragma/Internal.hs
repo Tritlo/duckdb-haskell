@@ -22,10 +22,11 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (targetCastFactory)
+import Database.DuckDB.Simple.Conversion (runConversion)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal (Connection)
-import Database.DuckDB.Simple.Materialize (callbackReadFactory, lazyTypeRep, materializeValue, rejectRows)
+import Database.DuckDB.Simple.Materialize (callbackReadFactory, materializeValue, ownedTypeRep, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Typed (checkArgumentType, variantArgumentReason)
@@ -101,7 +102,8 @@ pragmaArguments casts name info context = withContextFactory context \contextFac
     checked (c_duckdb_v2_function_bind_get_arg_count info counts (advancePtr counts 1) (advancePtr counts 2) (advancePtr counts 3))
     sum <$> peekArray 4 counts
   fields <- mapM (argumentField factory) (indices count)
-  case parseRow fromRow fields of
+  converted <- runConversion (parseRow fromRow fields)
+  case converted of
     Ok args -> pure args
     Errors failures -> do
       let message = sqlErrorMessage (rowErrorsToSqlError (Query name) failures)
@@ -119,6 +121,6 @@ pragmaArguments casts name info context = withContextFactory context \contextFac
         bracket
           (output (c_duckdb_v2_function_bind_get_arg_value info index))
           destroyValue
-          \native -> (,) <$> materializeValue (noVariant argument) factory native <*> lazyTypeRep (output (c_duckdb_v2_value_get_logical_type native))
+          \native -> (,) <$> materializeValue (noVariant argument) factory native <*> ownedTypeRep (output (c_duckdb_v2_value_get_logical_type native))
       pure (Field argument (fromIntegral index) value argumentType)
     noVariant argument = rejectRows (throwInvalidArgument (Text.intercalate ": " [name, "parameter " <> argument, variantArgumentReason]))

@@ -129,6 +129,8 @@ main =
   preparing positional or named parameters.
 - `Database.DuckDB.Simple.FromField` / `FromRow`: typeclasses for decoding
   query results, with generic deriving support for product types.
+- `Database.DuckDB.Simple.Conversion`: explicit IO and conversion errors for
+  custom decoders. `runConversion` returns `IO (Ok a)`.
 - `Database.DuckDB.Simple.Generic`: automatic encoding/decoding of Haskell
   ADTs as DuckDB STRUCTs and UNIONs via GHC generics and the `ViaDuckDB`
   deriving-via helper.
@@ -270,27 +272,73 @@ for `Int64`. It also reads other SQL types when it can return the value of
 DuckDB's cast. The "Reads" column and notes 3 to 5 of [Types](#types) list
 these types.
 
-The `fieldType` of a `Field` is the SQL type of the column, or of the element,
-the key, or the value of a LIST, an ARRAY, or a MAP, with each alias, for
-example JSON. The library converts the type at the first use of `fieldType`,
-one time for each column and execution, so a read that does not use it
-converts no type. A value in a VARIANT has the type VARIANT, and so does a
-`Field` that the library makes from a `FieldValue` alone: then the type of the
-value decides. `logicalTypeSQL` gives the type text of DuckDB, for example
-DECIMAL(18,3), for an error text. An instance can check the type:
+Decoders return `Conversion a`. This follows the `postgresql-simple` style:
+a conversion can run IO and report conversion errors. This library's
+`runConversion` takes no connection argument. The query and callback APIs run
+conversions for you. The decoder types are:
+
+```haskell
+type FieldParser a = Field -> Conversion a
+
+fromField :: FromField a => Field -> Conversion a
+parseRow :: RowParser a -> [Field] -> Conversion a
+runConversion :: Conversion a -> IO (Ok a)
+```
+
+For example, `runConversion (fromField field :: Conversion Int64)` returns
+`Ok value` or `Errors errors` in IO. Import the runner from
+`Database.DuckDB.Simple.Conversion` and the result constructors from
+`Database.DuckDB.Simple.Ok`. Use `liftConversion` to run IO inside a custom
+decoder. IO exceptions, including cancellation, propagate to the caller.
+Sequential and applicative conversions stop at the first conversion failure.
+`Alternative` tries the second branch if the first fails. If both fail, it
+combines their diagnostics.
+
+A decoder for a registered function's arguments runs inside its callback.
+Do not run another query on that callback's connection from the decoder. Use
+another connection. See [User-defined functions](#user-defined-functions) for the connection rules.
+`fieldType` reads its owned logical type without taking the connection lock.
+
+`fieldType :: Field -> Conversion LogicalTypeRep` reads the SQL type of a
+column, or of an element, key, or value in a LIST, ARRAY, or MAP. It preserves
+aliases such as JSON. Each query captures one owned native logical type per
+result column. The library converts it to `LogicalTypeRep` when a decoder
+requests `fieldType` and caches a successful result for that column and
+execution. It does not convert an unused type or copy its ENUM dictionary.
+If cancellation interrupts a read, a later call can retry it. The cache does
+not store exceptions.
+
+The `fieldType` action keeps its native logical type alive. You can retain the
+action and run it after the statement or connection closes. The library
+releases the type when its owner becomes unreachable. `Field` has no `Eq` or
+`Show` instance. A value in a VARIANT has the type VARIANT, and so does a
+`Field` made from a `FieldValue` alone. In those cases, the stored value
+determines the type. `logicalTypeSQL` gives the SQL type text, for example
+DECIMAL(18,3). A custom decoder can check the type:
 
 ```haskell
 newtype Cents = Cents DecimalValue
 
 instance FromField Cents where
-  fromField f@Field{fieldType} = case fieldType of
-    LogicalTypeDecimal _ 2 -> Cents <$> fromField f
-    _ -> returnError Incompatible f "expected a DECIMAL with the scale 2"
+  fromField field = do
+    logical <- fieldType field
+    case logical of
+      LogicalTypeDecimal _ 2 -> Cents <$> fromField field
+      _ -> returnError Incompatible field "expected a DECIMAL with the scale 2"
 ```
 
 A field of a `ViaDuckDB` record reads with its type when its `DuckValue`
-instance sets `duckFromTypedField = typedFromField`. The instances of the
-library do this.
+instance sets `duckFromTypedField = typedFromField`. The library's instances
+do this. Generic decoders have these types:
+
+```haskell
+duckFromField :: DuckValue a => FieldValue -> Conversion a
+duckFromTypedField :: DuckValue a => LogicalTypeRep -> FieldValue -> Conversion a
+typedFromField :: FromField a => LogicalTypeRep -> FieldValue -> Conversion a
+genericFromFieldValue :: (Generic a, GFromField (Rep a)) => FieldValue -> Conversion a
+```
+
+Encoding and logical type declarations remain pure.
 
 ## Types
 
@@ -601,8 +649,8 @@ fails:
   text. For a VARIANT column, TYPE is the type of the stored value in the same
   text, for example DOUBLE or TIMESTAMP WITH TIME ZONE. A value that does not
   hold its full type, for example a LIST or a STRUCT in a VARIANT, gives the
-  name of its kind: LIST or STRUCT. The text costs nothing until the error
-  renders.
+  name of its kind: LIST or STRUCT. The library reads the diagnostic type
+  only when the conversion's failure is selected.
   HASKELLTYPE is the type of the instance that reads, for example `Text` for
   `String`.
 - `duckdb-simple: column NAME is NULL but expected HASKELLTYPE` for NULL in a
@@ -617,6 +665,10 @@ fails:
 The library creates a `ResultError` for each failure and puts its text in the
 `SQLError`. It does not raise the `ResultError`. A custom `FromField` instance
 reports a failure with `returnError` and a constructor of `ResultError`.
+`returnError` defers its metadata read until the final conversion fails. If an
+`Alternative` branch succeeds, the library discards the other branch's error
+without reading its diagnostic metadata. A completed `ResultError` contains
+pure data. Its rendering and comparison perform no native IO.
 `query` and `query_` raise the error and give no rows. A fold raises it at the
 row that fails. A row type with more or fewer fields than the result has
 columns raises an `SQLError` with the text `column index N out of bounds`.

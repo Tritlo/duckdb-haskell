@@ -17,7 +17,6 @@ import Database.DuckDB.Simple.Element (containsType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (..), returnError)
 import Database.DuckDB.Simple.Geometry (RawGeometry (..))
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeId (..), LogicalTypeRep (..), StructField (..), StructValue (..), withoutAliases)
-import Database.DuckDB.Simple.Ok (Ok (..))
 
 -- | A VARIANT value. The payload is a 'FieldValue' with the native type of the
 -- stored value. Arrays are 'FieldList' values. Objects are 'FieldStruct' values
@@ -53,15 +52,18 @@ variantObject entries =
 -- not the text. See Note [Reads of another SQL type] in
 -- "Database.DuckDB.Simple.FromField".
 instance FromField Variant where
-  fromField field@Field{fieldName, fieldValue, fieldType}
-    | containsType isJson fieldType =
+  fromField field@Field{fieldName, fieldValue, fieldType} = do
+    logical <- fieldType
+    if containsType isJson logical
+      then
         returnError
           Incompatible
           field
           (Text.concat [Text.pack "DuckDB casts JSON to VARIANT by parsing the text; write ", column, Text.pack "::VARIANT"])
-    | variantShape fieldValue = Ok (Variant fieldValue)
-    | otherwise =
-        returnError Incompatible field (Text.pack "a VARIANT does not hold a value of this shape; write c::VARIANT")
+      else
+        if variantShape fieldValue
+          then pure (Variant fieldValue)
+          else returnError Incompatible field (Text.pack "a VARIANT does not hold a value of this shape; write c::VARIANT")
     where
       isJson (LogicalTypeAlias name _) = name == Text.pack "JSON"
       isJson _ = False

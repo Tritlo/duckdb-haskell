@@ -57,6 +57,7 @@ import Database.DuckDB.Simple.Callback (
   withRegistrationFactory,
   withTarget,
  )
+import Database.DuckDB.Simple.Conversion (runConversion)
 import Database.DuckDB.Simple.Element (vectorElementType)
 import Database.DuckDB.Simple.FromField (
   Field,
@@ -246,7 +247,7 @@ instance {-# OVERLAPPABLE #-} (FromField a, DuckDBColumnType a, Function r) => F
   applyFunction [] _ =
     throwInternalError (Text.pack "insufficient arguments supplied")
   applyFunction (field : rest) fn =
-    case fromField field of
+    runConversion (fromField field) >>= \case
       Errors err -> throwIO (argumentConversionError err)
       Ok value -> applyFunction rest (fn value)
 

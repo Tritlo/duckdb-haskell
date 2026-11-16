@@ -57,6 +57,7 @@ library
     Database.DuckDB.Simple.Arrow
     Database.DuckDB.Simple.Catalog
     Database.DuckDB.Simple.Config
+    Database.DuckDB.Simple.Conversion
     Database.DuckDB.Simple.Copy
     Database.DuckDB.Simple.Extension
     Database.DuckDB.Simple.FileSystem

@@ -1329,7 +1329,7 @@ instance DuckDBColumnType ArgumentType where
   duckdbColumnTypeFor _ = "DECIMAL(4,1)"
 
 instance FromField ArgumentType where
-  fromField Field{fieldType} = pure (ArgumentType (Text.pack (show fieldType)))
+  fromField Field{fieldType} = ArgumentType . Text.pack . show <$> fieldType
 
 -- | The argument of a scalar function gives the type of its vector.
 testArgumentType :: Assertion
@@ -1773,7 +1773,7 @@ linesTo =
   where
     line [Field{fieldValue = FieldInt64 value}] = show value
     line [Field{fieldValue = FieldNull}] = ""
-    line row = error ("typed_lines: unexpected row " <> show row)
+    line row = error ("typed_lines: unexpected row " <> show (map fieldValue row))
 
 -- | Read a file of 'linesTo'. An empty line is NULL.
 readLines :: FilePath -> IO [Only (Maybe Int64)]

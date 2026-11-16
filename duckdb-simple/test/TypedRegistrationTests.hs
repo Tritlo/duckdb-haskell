@@ -1389,11 +1389,11 @@ testNoDeclaration = withConnection ":memory:" \conn -> do
           }
     )
   assertSqlError
-    "typed_ranked: column r: an Array field has no size, so its ARRAY type has no declaration. Use a field of a newtype"
+    "typed_ranked: column r: an Array field has no size, so its ARRAY type has no declaration. Use a SizedArray field"
     (createTableFunction conn "typed_ranked" ["r"] \() -> pure ([] :: [Only Ranked]))
   -- A bare Array has no declaration in each position, also inside a Maybe, a
   -- list, or a Map.
-  let unsized = "an Array has no size, so its ARRAY type has no declaration. Use a newtype of the Array"
+  let unsized = "an Array has no size, so its ARRAY type has no declaration. Use a SizedArray"
   assertSqlError
     ("typed_array_argument: argument arg0: " <> unsized)
     (createFunction conn "typed_array_argument" \(_ :: Array Int Int64) -> True)

@@ -839,9 +839,7 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
     | hasUnsizedArray rep =
         Left
           ( Text.pack
-              ( "an Array field has no size, so its ARRAY type has no declaration. Use a field of a newtype of the Array"
-                  <> " with a DuckValue instance that gives the size, or a list field, which is a LIST."
-              )
+              "an Array field has no size, so its ARRAY type has no declaration. Use a SizedArray field, whose type gives the size, for an ARRAY, or a list field for a LIST."
           )
     | otherwise = Right (StructuredType rep)
     where

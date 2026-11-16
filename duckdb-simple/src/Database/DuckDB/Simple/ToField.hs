@@ -419,16 +419,17 @@ why the type has no declaration.
 - ViaDuckDB gives the structured type of the record or the sum type
   (genericLogicalType in "Database.DuckDB.Simple.Generic"). A type with an
   Array field gives Left: the DuckValue instance of Array declares an ARRAY
-  of the size 0, and DuckDB rejects that size. A field of a newtype whose
-  DuckValue instance gives the size declares that ARRAY.
+  of the size 0, and DuckDB rejects that size. A SizedArray field, or a field of a
+  newtype whose DuckValue instance gives the size, declares that ARRAY.
 - Maybe a has the declaration of a.
 - A list gives a LIST (listDeclaration): the text T[] for the element text T,
   or a structured LIST for a structured element type.
 - An Array gives Left. A DuckDB ARRAY type has a size, and the Haskell type
   has none. DuckDB 2.0.0 has no declaration for an ARRAY of each size: it
   does not parse the type text T[ANY], and it rejects an ARRAY of the size 0
-  ("ARRAY type size must be at least 1"). A newtype of the Array with the
-  type text of one size, for example BIGINT[3], declares that ARRAY. DuckDB
+  ("ARRAY type size must be at least 1"). A SizedArray declares the ARRAY of its
+  size (see Note [Sized arrays]). A newtype of the Array with the type text of
+  one size, for example BIGINT[3], also declares that ARRAY. DuckDB
   then rejects an ARRAY of another size when it binds the call (a Binder
   Error). It casts a LIST of the same length to the ARRAY with no error,
   because the cast from LIST to ARRAY is implicit in DuckDB. A LIST of
@@ -455,8 +456,8 @@ the element as its target (declaredTarget).
 -}
 
 -- | Types that map to a concrete DuckDB column type when used with @ToField@.
--- A newtype with its own instance gives its own type text, for example
--- @BIGINT[3]@ for a newtype of an 'Array' of three 'Int64' values.
+-- A newtype with its own instance gives its own type text. A 'SizedArray' gives the
+-- text of its ARRAY type, for example @BIGINT[3]@ for @SizedArray 3 Int64@.
 -- See Note [Type declarations].
 class DuckDBColumnType a where
   -- | The DuckDB type text of @a@.
@@ -470,9 +471,8 @@ class DuckDBColumnType a where
   -- 'Database.DuckDB.Simple.Function.createAggregate', and an 'Array'
   -- parameter or column of 'Database.DuckDB.Simple.Function.createTableFunction',
   -- also inside a @Maybe@, a list, or a 'Map.Map', raise an error at
-  -- registration. Use a list for a LIST, or a newtype of the 'Array' whose
-  -- 'duckdbColumnTypeFor' gives the size, for example @BIGINT[3]@, for an
-  -- ARRAY. See Note [Type declarations].
+  -- registration. Use a list for a LIST, or a 'SizedArray' for an ARRAY. See
+  -- Note [Type declarations].
   duckdbTypeDeclaration :: Proxy a -> Either Text TypeDeclaration
   duckdbTypeDeclaration proxy = Right (TypeExpression (duckdbColumnTypeFor proxy))
 
@@ -1153,9 +1153,7 @@ instance (DuckDBColumnType a) => DuckDBColumnType (Array Int a) where
   duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a) <> Text.pack "[]"
   duckdbTypeDeclaration _ =
     Left
-      ( "an Array has no size, so its ARRAY type has no declaration. Use a newtype of the Array with a DuckDBColumnType"
-          <> " instance that gives the size, for example BIGINT[3], or a list, which is a LIST."
-      )
+      "an Array has no size, so its ARRAY type has no declaration. Use a SizedArray, whose type gives the size, for an ARRAY, or a list for a LIST."
 
 -- | The type text is @T[n]@, and the declaration is the ARRAY type of size @n@.
 -- See Note [Sized arrays].

@@ -43,6 +43,7 @@ import qualified Database.DuckDB.Simple.FileSystem as FileSystem
 import Database.DuckDB.Simple.FromField (FieldValue (..))
 import Database.DuckDB.Simple.Internal (
   MacroFunctionType,
+  acquireItems,
   errorTypeCodes,
   errorTypeFromNative,
   logLevelFromNative,
@@ -300,6 +301,38 @@ extensionRegressionTests =
           createFunction conn "text_payload" payload
           createFunction conn "text_identity" (id :: Text.Text -> Text.Text)
           query_ conn "SELECT text_identity(text_payload())" >>= (@?= [Only payload])
+    , testCase "a throwing String result tail fails the query and permits another call" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "broken_text" \(index :: Int64) ->
+            if index == 1
+              then replicate 64 'x' <> error "text result tail failed"
+              else replicate 64 'x'
+          assertSqlErrorContaining "text result tail failed" $
+            (query_ conn "SELECT broken_text(i) FROM range(3) t(i)" :: IO [Only String])
+          query_ conn "SELECT broken_text(0)" >>= (@?= [Only (replicate 64 'x')])
+    , testGroup
+        "native acquisition cleanup"
+        [ testCase label do
+            released <- newIORef []
+            outcome <- try (acquireItems (\item -> atomicModifyIORef' released (\items -> (items <> [item], ()))) actions)
+            case outcome of
+              Left (failure :: SomeException) ->
+                assertBool "the acquisition exception reaches the caller" ("acquisition failed" `isInfixOf` displayException failure)
+              Right _ -> assertFailure "the acquisition succeeded"
+            readIORef released >>= (@?= [2, 1 :: Int])
+        | (label, actions) <-
+            [ ("a failing list spine releases the acquired prefix in reverse order", pure 1 : pure 2 : error "acquisition failed")
+            , ("a failing acquisition action releases the acquired prefix in reverse order", [pure 1, pure 2, throwIO (userError "acquisition failed")])
+            ]
+        ]
+    , testCase "a failing lazy list parameter permits another query" $
+        withConnection ":memory:" \conn -> do
+          outcome <- try (query conn "SELECT ?::BIGINT[]" (Only (1 : error "parameter tail failed" :: [Int64])) :: IO [Only [Int64]])
+          case outcome of
+            Left (failure :: ErrorCall) ->
+              assertBool "the list exception reaches the caller" ("parameter tail failed" `isInfixOf` displayException failure)
+            Right _ -> assertFailure "the lazy list parameter succeeded"
+          query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "scalar NULL arguments reach Maybe functions" $
         withConnection ":memory:" \conn -> do
           createFunction conn "null_default" (\(x :: Maybe Int64) -> maybe 42 id x)

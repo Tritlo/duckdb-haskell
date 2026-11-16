@@ -69,7 +69,7 @@ module Database.DuckDB.Simple.Native (
 ) where
 
 import Control.Applicative ((<|>))
-import Control.Exception (Exception (..), SomeException (..), bracket, finally, mask_, onException, throwIO, try)
+import Control.Exception (Exception (..), SomeException (..), bracket, evaluate, finally, mask_, onException, throwIO, try)
 import Control.Monad (foldM, mfilter, unless, when, (<$!>))
 import qualified Data.ByteString as BS
 import Data.Char (isAsciiUpper, toLower)
@@ -322,9 +322,12 @@ The code uses these forms:
 - forM_ for a loop that gives no result (writeRows in
   "Database.DuckDB.Simple.Typed.Table").
 
-- foldM with an accumulator. A fold that builds a list puts each element in
-  front of the list, and then reverses the list (acquireItems). A fold can also
-  keep one value, as the first error in releaseItems.
+- foldM with an accumulator. A fold can keep one value, as the first error in
+  releaseItems.
+
+- A tail-recursive loop with an accumulator. acquireItems puts each item in
+  front of the list, and then reverses the list. Its exception handler covers
+  one step, including the evaluation of the next list constructor.
 
 - A loop that reads the elements from the last to the first, and puts each
   element in front of the list. The list then needs no reverse (the row loop of
@@ -350,11 +353,24 @@ the list is short in practice or the operation is rare:
 -}
 
 -- | Run the acquire actions in list order under 'mask_', and give the items in
--- list order. If an acquire action raises an error, release the items that the
--- earlier actions gave, from the last to the first, and raise that error. The
--- fold keeps a constant stack. See Note [Constant stack at safe calls].
+-- list order. If evaluation of the input list or an acquire action fails,
+-- release the items that the earlier actions gave, from the last to the first,
+-- and raise that error. The loop keeps a constant stack. See
+-- Note [Constant stack at safe calls].
 acquireItems :: (a -> IO ()) -> [IO a] -> IO [a]
-acquireItems release = mask_ . fmap reverse . foldM (\owned acquire -> (: owned) <$> acquire `onException` releaseItems release owned) []
+acquireItems release = mask_ . go []
+  where
+    go owned remaining = do
+      next <- flip onException (releaseItems release owned) $ do
+        actions <- evaluate remaining
+        case actions of
+          [] -> pure Nothing
+          acquire : rest -> do
+            item <- acquire
+            pure (Just (item, rest))
+      case next of
+        Nothing -> pure (reverse owned)
+        Just (item, rest) -> go (item : owned) rest
 
 -- | Release each item in list order, also when a release raises an error.
 -- Raise the first error after the last release. The fold keeps a constant stack.

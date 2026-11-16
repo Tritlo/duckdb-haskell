@@ -21,7 +21,7 @@ import Data.Text (Text)
 -- 'rawGeometryCRS'. DuckDB then casts it to the type of the parameter. A value
 -- without a CRS takes the CRS of the target. A target without a CRS removes the
 -- CRS of the value. A target with another CRS raises an error. Use
--- @Maybe RawGeometry@ for SQL NULL. An @Array@, a list, or a typed row cannot
+-- @Maybe RawGeometry@ for SQL NULL. A @SizedArray@, a list, or a typed row cannot
 -- hold this type. A STRUCT, TUPLE, or UNION parameter binds a @FieldGeometry@ value with
 -- its CRS. A VARIANT parameter binds one only when it has no CRS. See
 -- Note [Raw GEOMETRY parameters] in "Database.DuckDB.Simple.ToField".

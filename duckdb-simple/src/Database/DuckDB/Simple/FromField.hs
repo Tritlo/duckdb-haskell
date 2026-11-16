@@ -7,6 +7,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TypeApplications #-}
@@ -134,7 +135,7 @@ data FieldValue
   deriving (Eq, Show)
 
 -- | Exact-width decimal payload plus its declared width and scale. A parameter
--- of this type binds as a DECIMAL with this width and scale. An @Array@, a
+-- of this type binds as a DECIMAL with this width and scale. A @SizedArray@, a
 -- list, or a typed row cannot hold it, because it has no @DuckDBColumnType@
 -- instance: one column type cannot give the width and scale of each value.
 data DecimalValue = DecimalValue
@@ -274,6 +275,8 @@ timeWithZone time zone = TimeWithZone time (fromIntegral (timeZoneMinutes zone) 
 timeWithZoneZone :: TimeWithZone -> TimeZone
 timeWithZoneZone value = minutesToTimeZone (fromIntegral (timeWithZoneOffsetSeconds value `quot` 60))
 
+type role SizedArray nominal representational
+
 -- | A list of exactly @n@ values. A parameter of this type binds as the ARRAY
 -- type @T[n]@, and a typed registration declares that type. See
 -- Note [Sized arrays] in "Database.DuckDB.Simple.ToField". Make a value with
@@ -281,14 +284,19 @@ timeWithZoneZone value = minutesToTimeZone (fromIntegral (timeWithZoneOffsetSeco
 newtype SizedArray (n :: Nat) a = SizedArray [a]
   deriving stock (Eq, Ord, Show, Functor, Foldable, Traversable)
 
--- | Make a 'SizedArray' from a list. The result is 'Nothing' when the list
+-- | Make a t'SizedArray' from a list. The result is 'Nothing' when the list
 -- does not have exactly @n@ values.
 sizedArray :: forall n a. (KnownNat n) => [a] -> Maybe (SizedArray n a)
 sizedArray values
-  | toInteger (length values) == natVal (Proxy @n) = Just (SizedArray values)
+  | hasSize (natVal (Proxy @n)) values = Just (SizedArray values)
   | otherwise = Nothing
+  where
+    hasSize 0 [] = True
+    hasSize 0 (_ : _) = False
+    hasSize _ [] = False
+    hasSize remaining (_ : rest) = hasSize (remaining - 1) rest
 
--- | Give the values of a 'SizedArray' in their order.
+-- | Give the values of a t'SizedArray' in their order.
 sizedArrayToList :: SizedArray n a -> [a]
 sizedArrayToList (SizedArray values) = values
 

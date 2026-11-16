@@ -76,6 +76,7 @@
   declaration, and the registration raises an error for them. A
   `SizedArray n a` declares the ARRAY of size `n`. DuckDB casts a LIST of the
   same length to it with no error.
+  `Database.DuckDB.Simple.LogicalRep` exports `TypeDeclaration`.
 - `SizedArray n a` is new, and it replaces the instances of `Array Int a`: a
   list of exactly `n` values, made with `sizedArray` and read with
   `sizedArrayToList`. It binds as an ARRAY of size `n`, a typed registration
@@ -88,7 +89,6 @@
 - An ARRAY parameter with more than 100000 elements, the largest ARRAY of
   DuckDB, raises an `SQLError` of the type `ErrorInputInvalid`, as an empty
   ARRAY parameter does.
-  `Database.DuckDB.Simple.LogicalRep` exports `TypeDeclaration`.
 - An argument of `createFunction` can have each type with `FromField` and
   `DuckDBColumnType`, for example a record through `ViaDuckDB`, a list, a `Map`,
   or a newtype with its own column type name. `FunctionArg` is gone. An

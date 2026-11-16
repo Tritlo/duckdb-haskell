@@ -16,12 +16,16 @@ import Control.Exception (try)
 import Control.Monad (forM_)
 import Data.Array (listArray)
 import Data.Int (Int32, Int64, Int8)
-import Data.Maybe (fromJust)
+import qualified Data.Map.Strict as Map
+import Data.Maybe (fromJust, isNothing)
+import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue (..))
-import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
+import Database.DuckDB.Simple.Generic (DuckValue (..), ViaDuckDB (..))
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), TypeDeclaration (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue)
+import qualified Database.DuckDB.Simple.V2.Registration as R
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -32,12 +36,32 @@ newtype Sized = Sized {sizedValues :: SizedArray 3 Int64}
   deriving stock (Eq, Show, Generic)
   deriving (DuckDBColumnType, ToField, ToDuckValue, FromField) via (ViaDuckDB Sized)
 
+-- | A typed NULL must not allow an unsupported ARRAY size in a generic field.
+newtype Above = Above {aboveValues :: Maybe (SizedArray 100001 Int64)}
+  deriving stock (Show, Generic)
+  deriving (DuckDBColumnType, ToField, ToDuckValue, FromField) via (ViaDuckDB Above)
+
+-- | This size would wrap to one element if narrowed directly to Word64.
+newtype Overflow = Overflow {overflowValues :: Maybe (SizedArray 18446744073709551617 Int64)}
+  deriving stock (Show, Generic)
+  deriving (DuckDBColumnType, ToField, ToDuckValue, FromField) via (ViaDuckDB Overflow)
+
+-- | The generic declaration must check ARRAY sizes below each container.
+newtype NestedAbove = NestedAbove {nestedValues :: [Map.Map Text.Text (Maybe (SizedArray 100001 Int64))]}
+  deriving stock (Show, Generic)
+  deriving (DuckDBColumnType, ToField, ToDuckValue, FromField) via (ViaDuckDB NestedAbove)
+
 -- | The cases of 'SizedArray' as a parameter, a column, and a function argument.
 sizedArrayTests :: TestTree
 sizedArrayTests =
   testGroup
     "sized arrays"
-    [ testCase "a SizedArray binds as an ARRAY of its size and reads back from a parameter and a column" $ withConnection ":memory:" \conn -> do
+    [ testCase "a SizedArray rejects a longer list without forcing its tail or elements" $ do
+        assertBool "an infinite list is too long" (isNothing (sizedArray @3 ([1 ..] :: [Int64])))
+        assertBool
+          "a fourth element is enough to reject the list"
+          (isNothing (sizedArray @3 ([undefined, undefined, undefined, undefined] ++ undefined :: [Int64])))
+    , testCase "a SizedArray binds as an ARRAY of its size and reads back from a parameter and a column" $ withConnection ":memory:" \conn -> do
         let values = fromJust (sizedArray @3 [1, 2, 3 :: Int64])
         sizedArrayToList values @?= [1, 2, 3]
         sizedArray @3 [1, 2 :: Int64] @?= Nothing
@@ -80,6 +104,27 @@ sizedArrayTests =
           (query conn "SELECT len(?)" (Only above) :: IO [Only Int64])
         assertInputErrorContaining "a SizedArray of size 100001 has no ARRAY type, because a DuckDB ARRAY has at most 100000 elements" $
           createFunction conn "sized_above" \(v :: SizedArray 100001 Int8) -> length v
+    , testCase "generic ARRAY bounds are checked for NULL, nested containers, and a Nat above Word64" $ withConnection ":memory:" \conn -> do
+        assertInputErrorContaining "a DuckDB ARRAY has at most 100000 elements" (query conn "SELECT ?" (Only (Above Nothing)) :: IO [Only Above])
+        assertInputErrorContaining
+          "a DuckDB ARRAY has at most 100000 elements"
+          (query conn "SELECT ?" (Only (Overflow Nothing)) :: IO [Only Overflow])
+        let above = Above (Just (fromJust (sizedArray @100001 (replicate 100001 (1 :: Int64)))))
+        assertInputErrorContaining "an ARRAY parameter of 100001 elements is not possible" (query conn "SELECT ?" (Only above) :: IO [Only Above])
+        assertInputErrorContaining "a DuckDB ARRAY must have 1 to 100000 elements" $
+          createFunction conn "generic_above" \(_ :: Above) -> (1 :: Int64)
+        assertInputErrorContaining "a DuckDB ARRAY must have 1 to 100000 elements" $
+          createFunction conn "generic_overflow" \(_ :: Overflow) -> (1 :: Int64)
+        assertInputErrorContaining "a DuckDB ARRAY must have 1 to 100000 elements" $
+          createFunction conn "generic_nested_above" \(_ :: NestedAbove) -> (1 :: Int64)
+        assertInputErrorContaining "a DuckDB ARRAY has at most 100000 elements" $
+          R.registerCustomType
+            conn
+            "invalid_array"
+            (StructuredType (LogicalTypeAlias "invalid_array_base" (LogicalTypeArray (LogicalTypeScalar LogicalTypeIdBigInt) 100001)))
+        case duckLogicalType (Proxy @(SizedArray 18446744073709551617 Int64)) of
+          LogicalTypeArray _ size -> size @?= maxBound
+          logical -> assertFailure ("expected an invalid ARRAY size sentinel, got " <> show logical)
     , testCase "a list goes into an ARRAY column of its length and reads an ARRAY of each size" $ withConnection ":memory:" \conn -> do
         _ <- execute_ conn "CREATE TABLE fixed (v BIGINT[3])"
         _ <- execute conn "INSERT INTO fixed VALUES (?)" (Only [1, 2, 3 :: Int64])
@@ -106,4 +151,10 @@ sizedArrayTests =
               (Text.unpack sqlErrorMessage)
               ("has type BIGINT[2] but expected SizedArray 3: the value has 2 elements" `Text.isInfixOf` sqlErrorMessage)
           Right rows -> assertFailure ("expected the size error, got " <> show rows)
+        try (query_ conn "SELECT {'sizedValues': ['x', 'y']::VARCHAR[]}" :: IO [Only Sized]) >>= \case
+          Left SQLError{sqlErrorMessage} ->
+            assertBool
+              (Text.unpack sqlErrorMessage)
+              ("has type VARCHAR[] but expected SizedArray 3: the value has 2 elements" `Text.isInfixOf` sqlErrorMessage)
+          Right rows -> assertFailure ("expected the size error before an element error, got " <> show rows)
     ]

@@ -21,6 +21,7 @@ import Control.Exception (bracket, mask_, onException)
 import Control.Monad (foldM, forM, when)
 import Data.Array (elems, listArray)
 import qualified Data.Text as Text
+import Database.DuckDB.Simple.Element (arraySizeReason)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
 import Database.DuckDB.Simple.Native
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -158,9 +159,9 @@ logicalTypeFromRepWith factory resolve = create
           []
           [output (c_duckdb_v2_value_create_utinyint factory width), output (c_duckdb_v2_value_create_utinyint factory scale)]
       LogicalTypeList element -> construct DuckDBV2LogicalTypeIdList [] [boxed element]
+      -- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Element".
       LogicalTypeArray element size -> do
-        when (toInteger size > toInteger (maxBound :: Int)) $
-          throwInvalidArgument (Text.pack "ARRAY size exceeds Int range")
+        maybe (pure ()) throwInvalidArgument (arraySizeReason (toInteger size))
         construct DuckDBV2LogicalTypeIdArray [] [boxed element, output (c_duckdb_v2_value_create_bigint factory (fromIntegral size))]
       LogicalTypeMap key value -> construct DuckDBV2LogicalTypeIdMap [] [boxed key, boxed value]
       LogicalTypeStruct fields

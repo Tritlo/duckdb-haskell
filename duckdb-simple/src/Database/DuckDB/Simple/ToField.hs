@@ -56,7 +56,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime, utc, utcToLocalTime)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.Simple.Element (containsType, timeTzMaxOffsetSeconds, timeTzOffsetBits, valueTypeName)
+import Database.DuckDB.Simple.Element (arraySizeReason, containsType, timeTzMaxOffsetSeconds, timeTzOffsetBits, valueTypeName)
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
   BitString (..),
@@ -1131,17 +1131,9 @@ instance (DuckDBColumnType a) => DuckDBColumnType (Maybe a) where
 -- See Note [Sized arrays].
 instance (KnownNat n, DuckDBColumnType a) => DuckDBColumnType (SizedArray n a) where
   duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a) <> Text.pack ("[" <> show (natVal (Proxy @n)) <> "]")
-  duckdbTypeDeclaration _
-    | size == 0 = Left "a SizedArray of size 0 has no ARRAY type, because a DuckDB ARRAY has at least one element"
-    | size > toInteger maxArraySize =
-        Left
-          ( "a SizedArray of size "
-              <> Text.pack (show size)
-              <> " has no ARRAY type, because a DuckDB ARRAY has at most "
-              <> Text.pack (show maxArraySize)
-              <> " elements"
-          )
-    | otherwise = arrayDeclaration size <$> duckdbTypeDeclaration (Proxy @a)
+  duckdbTypeDeclaration _ = case arraySizeReason size of
+    Just reason -> Left ("a SizedArray of size " <> Text.pack (show size) <> " has no ARRAY type, because " <> reason)
+    Nothing -> arrayDeclaration size <$> duckdbTypeDeclaration (Proxy @a)
     where
       size = natVal (Proxy @n)
 
@@ -1306,7 +1298,7 @@ utcTimestampDuckValue factory value =
     >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_tz factory encoded))
 
 -- | Construct an ARRAY value. An array with no element or with more elements
--- than 'maxArraySize' raises 'SQLError'. See 'withElementType' for the element
+-- than DuckDB permits raises 'SQLError'. See 'withElementType' for the element
 -- type.
 arrayDuckValue
   :: forall a
@@ -1321,33 +1313,17 @@ arrayDuckValue builder target elementValue values = do
   sequenceDuckValue (withElementType (Proxy @a) builder target) c_duckdb_v2_value_create_array builder elementValue values
 
 -- | Give the input error of an ARRAY parameter of a size that DuckDB does not
--- have: no element, or more elements than 'maxArraySize'. A 'SizedArray' and a
+-- have: no element, or more elements than DuckDB permits. A 'SizedArray' and a
 -- 'FieldArray' raise this error. See Note [Sized arrays].
 arraySizeError :: Int -> Maybe (IO a)
-arraySizeError count
-  | count == 0 =
-      Just
-        ( throwInvalidArgument
-            "an empty ARRAY parameter is not possible, because a DuckDB ARRAY has at least one element; bind an empty list for an empty LIST"
-        )
-  | count > maxArraySize =
-      Just
-        ( throwInvalidArgument
-            ( "an ARRAY parameter of "
-                <> Text.pack (show count)
-                <> " elements is not possible, because a DuckDB ARRAY has at most "
-                <> Text.pack (show maxArraySize)
-                <> " elements; bind a list for a LIST"
-            )
-        )
-  | otherwise = Nothing
-
--- | The largest size of a DuckDB ARRAY: @ArrayType::MAX_ARRAY_SIZE@ in
--- @src/include/duckdb/common/types.hpp@ of DuckDB 2.0.0. The SQL of DuckDB
--- rejects a larger ARRAY type, but its value API does not check the size. See
--- Note [Sized arrays].
-maxArraySize :: Int
-maxArraySize = 100000
+arraySizeError count = case arraySizeReason (toInteger count) of
+  Nothing -> Nothing
+  Just reason ->
+    Just
+      ( throwInvalidArgument case count of
+          0 -> "an empty ARRAY parameter is not possible, because " <> reason <> "; bind an empty list for an empty LIST"
+          _ -> "an ARRAY parameter of " <> Text.pack (show count) <> " elements is not possible, because " <> reason <> "; bind a list for a LIST"
+      )
 
 -- | Construct a LIST value. An empty list is an empty LIST of the element type.
 -- See 'withElementType' for the element type.
@@ -1688,9 +1664,10 @@ fieldValueWithTypeDuckValue builder@ValueBuilder{builderFactory = factory, build
   (LogicalTypeDecimal width scale, FieldDecimal decimal@DecimalValue{decimalWidth, decimalScale})
     | width == decimalWidth && scale == decimalScale -> decimalDuckValue factory decimal
   (LogicalTypeList child, FieldList values) -> sequenceValue c_duckdb_v2_value_create_list child values
-  -- The generic ARRAY type declares the size 0. The value then gives the size.
   (LogicalTypeArray child size, FieldArray array)
-    | size == 0 || fromIntegral (length (elems array)) == size -> sequenceValue c_duckdb_v2_value_create_array child (elems array)
+    | fromIntegral (length (elems array)) == size -> do
+        sequence_ (arraySizeError (length (elems array)))
+        sequenceValue c_duckdb_v2_value_create_array child (elems array)
   (LogicalTypeMap keyRep valueRep, FieldMap pairs) ->
     bracket (makeType keyRep) destroyLogicalType \keyType ->
       bracket (makeType valueRep) destroyLogicalType \valueType ->

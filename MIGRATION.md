@@ -445,9 +445,9 @@ The SQL workflow stays the same. These changes can affect your code:
   module without a list. Hide these names in the import, or import the module
   qualified.
 - `Array Int a` has no `ToField`, `FromField`, `DuckDBColumnType`,
-  `ToDuckValue`, or `DuckValue` instance. One SQL type has one Haskell type:
-  an ARRAY is a `SizedArray n a`, whose type gives the size (README note 8 of
-  Types). Use a list for an ARRAY of a size that varies: a list reads an ARRAY
+  `ToDuckValue`, or `DuckValue` instance. Use `SizedArray n a` for an ARRAY.
+  Its type gives the size (README note 8 of Types).
+  Use a list for an ARRAY of a size that varies: a list reads an ARRAY
   of each size, and DuckDB casts a bound list to an ARRAY column of the same
   length. Use a `FieldArray` for an ARRAY value that the program builds at run
   time. An empty ARRAY parameter raises `SQLError`, where version 0.3 bound an

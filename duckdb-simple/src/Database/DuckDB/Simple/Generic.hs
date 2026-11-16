@@ -103,7 +103,7 @@ import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List (intercalate, stripPrefix)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -113,7 +113,7 @@ import Data.Time.LocalTime (LocalTime, TimeOfDay)
 import Data.Typeable (Typeable)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.Simple.Element (valueTypeName)
+import Database.DuckDB.Simple.Element (arraySizeReason, containsType, maxArraySize, valueTypeName)
 import Database.DuckDB.Simple.FromField (
   Field (..),
   FieldValue (..),
@@ -367,7 +367,9 @@ instance (KnownNat n, DuckValue a) => DuckValue (SizedArray n a) where
   duckToField values = FieldArray (listArray (0, length list - 1) list)
     where
       list = map duckToField (sizedArrayToList values)
-  duckLogicalType _ = LogicalTypeArray (duckLogicalType (Proxy @a)) (fromInteger (natVal (Proxy @n)))
+
+  -- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Element".
+  duckLogicalType _ = LogicalTypeArray (duckLogicalType (Proxy @a)) (fromInteger (min (natVal (Proxy @n)) (toInteger (maxBound :: Word64))))
   duckFromField = duckFromTypedField (LogicalTypeScalar LogicalTypeIdVariant)
   duckFromTypedField logical value = case value of
     FieldArray arr -> sized (elems arr)
@@ -375,9 +377,9 @@ instance (KnownNat n, DuckValue a) => DuckValue (SizedArray n a) where
     other -> unexpectedTypedValue logical "ARRAY" other
     where
       size = natVal (Proxy @n)
-      sized entries = do
-        decoded <- traverse (duckFromTypedField (listElementType logical)) entries
-        maybe (Left (sizeError (length decoded))) Right (sizedArray decoded)
+      sized entries = case sizedArray entries of
+        Nothing -> Left (sizeError (length entries))
+        Just values -> traverse (duckFromTypedField (listElementType logical)) values
       sizeError count =
         displayException
           ( Incompatible
@@ -811,8 +813,16 @@ instance GFromField' 'False (M1 D meta U1) where
 -- of the generic logical type, for diagnostics. The declaration is the
 -- structured generic logical type. Each field type comes from 'DuckValue'.
 -- See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
+-- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Element".
 instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
-  duckdbTypeDeclaration _ = Right (StructuredType (genericLogicalType (Proxy @a)))
+  duckdbTypeDeclaration _
+    | containsType invalidArray logical =
+        Left (Text.pack ("a generic field has no ARRAY type, because a DuckDB ARRAY must have 1 to " <> show maxArraySize <> " elements"))
+    | otherwise = Right (StructuredType logical)
+    where
+      logical = genericLogicalType (Proxy @a)
+      invalidArray (LogicalTypeArray _ size) = isJust (arraySizeReason (toInteger size))
+      invalidArray _ = False
   duckdbColumnTypeFor _ =
     case genericLogicalType (Proxy @a) of
       LogicalTypeStruct{} -> Text.pack "STRUCT"

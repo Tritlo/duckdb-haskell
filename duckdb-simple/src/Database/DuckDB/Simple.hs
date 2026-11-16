@@ -402,8 +402,7 @@ namedParameterIndex stmt name = withStatementHandle stmt \_ -> do
 
 -- | Retrieve the number of columns produced by the supplied prepared statement.
 columnCount :: Statement -> IO Int
-columnCount stmt = do
-  (schema, _) <- statementSchemas stmt
+columnCount stmt = withStatementSchemas stmt \schema _ ->
   fromIntegral <$> output (c_duckdb_v2_schema_get_count schema)
 
 -- | Look up the zero-based column name of a prepared statement result.
@@ -413,8 +412,7 @@ columnName stmt columnIndex
   | otherwise = do
       total <- columnCount stmt
       when (columnIndex >= total) $ columnIndexError stmt columnIndex (Just total)
-      (schema, _) <- statementSchemas stmt
-      alloca \name -> do
+      withStatementSchemas stmt \schema _ -> alloca \name -> do
         _ <- output (c_duckdb_v2_schema_get_field schema (fromIntegral columnIndex) name)
         peek name >>= readIdentifier
 

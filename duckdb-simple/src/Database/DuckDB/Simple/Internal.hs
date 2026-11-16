@@ -43,6 +43,7 @@ module Database.DuckDB.Simple.Internal (
   withParsedStatements,
   withCollectionStatement,
   statementSchemas,
+  withStatementSchemas,
   clearStatementSchemas,
   withKeptParameterTypes,
   preparedParameterType,
@@ -1162,6 +1163,11 @@ handles until the cache is empty again. columnCount and columnName in
 "Database.DuckDB.Simple" read the result schema, and preparedParameterType
 reads the type of one parameter.
 
+The statement owns both schemas. withStatementSchemas keeps the statement alive
+while an action reads a schema and copies its borrowed names and types. Keeping
+only a schema handle or another field of the statement does not keep the state
+IORef alive. The finalizer can then close the statement and destroy the schemas.
+
 clearStatementSchemas releases both handles and empties the cache.
 resetStatementStream in "Database.DuckDB.Simple.Result" calls it. Thus each
 call of bind, bindNamed, clearStatementBindings, and executeStatement clears
@@ -1196,8 +1202,9 @@ when the statement closes.
 -}
 
 -- | Bind SQL metadata and borrow the cached output and parameter schemas.
--- The handles remain valid until the statement resets, rebinds, or closes. See
--- Note [Statement schemas].
+-- The statement owns the handles. They remain valid until the statement resets,
+-- rebinds, or closes. Use 'withStatementSchemas' to keep the statement alive
+-- while reading them. See Note [Statement schemas].
 statementSchemas :: Statement -> IO (DuckDBV2SchemaHandle, DuckDBV2SchemaHandle)
 statementSchemas stmt = withStatementHandle stmt \_ -> mask_ do
   state <- readIORef (statementState stmt)
@@ -1218,6 +1225,11 @@ statementSchemas stmt = withStatementHandle stmt \_ -> mask_ do
             writeIORef statementSchemaCache (Just schemas)
             pure schemas
 
+-- | Borrow both schemas and keep their statement alive until the action ends.
+-- Copy borrowed names and types in the action. See Note [Statement schemas].
+withStatementSchemas :: Statement -> (DuckDBV2SchemaHandle -> DuckDBV2SchemaHandle -> IO a) -> IO a
+withStatementSchemas stmt action = keepAlive stmt (statementSchemas stmt >>= uncurry action)
+
 -- | Read a parameter type when the binder can determine it without values.
 -- While 'withKeptParameterTypes' runs, read each type one time. See
 -- Note [Statement schemas].
@@ -1232,8 +1244,7 @@ preparedParameterType stmt idx = do
       modifyIORef' (statementParameterTypes stmt) (fmap (IntMap.insert (fromIntegral idx) rep))
       pure rep
   where
-    readParameterType = do
-      (_, schema) <- statementSchemas stmt
+    readParameterType = withStatementSchemas stmt \_ schema ->
       alloca \name -> do
         dtype <- output (c_duckdb_v2_schema_get_field schema (idx - 1) name)
         ident <- output (c_duckdb_v2_logical_type_get_id dtype)

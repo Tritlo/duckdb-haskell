@@ -139,6 +139,8 @@
   which writes a message through the context of a native callback.
   `Database.DuckDB.Simple.V2.LogicalRep` has `logicalTypeToRep`,
   `logicalTypeFromRep`, `logicalTypeFromRepWith`, and `destroyLogicalType`.
+- Keep statements alive while reading cached schemas for column metadata and
+  parameter types. `Internal.withStatementSchemas` scopes these borrowed handles.
 - `Database.DuckDB.Simple.Internal` changes. It re-exports the native helper
   layer. It no longer exports `toSQLError`, `fetchPrepareError`,
   `fetchResultError`, `throwResultError`, `mkExecuteError`,

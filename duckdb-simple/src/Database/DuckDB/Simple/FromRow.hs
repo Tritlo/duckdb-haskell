@@ -83,6 +83,7 @@ class FromRow a where
 
 -- | Read the next field with the supplied @FieldParser@.
 fieldWith :: FieldParser a -> RowParser a
+{-# INLINE fieldWith #-}
 fieldWith fieldParser = RowParser $ do
   RowParseRO{rowParseColumnCount} <- ask
   (columnIndex, remaining) <- lift get
@@ -98,6 +99,7 @@ fieldWith fieldParser = RowParser $ do
 
 -- | Read the next field with its @FromField@ instance.
 field :: (FromField a) => RowParser a
+{-# INLINE field #-}
 field = fieldWith fromField
 
 -- | Report how many columns remain unread in the current row.
@@ -109,6 +111,7 @@ numFieldsRemaining = RowParser $ do
 
 -- | Execute a @RowParser@ against the provided row.
 parseRow :: RowParser a -> [Field] -> Conversion a
+{-# INLINE parseRow #-}
 parseRow parser fields =
   let context = RowParseRO (length fields)
       initialState = (0, fields)

@@ -6,10 +6,10 @@
 -- Module      : Database.DuckDB.Simple.Pragma.Internal
 -- Description : Share the typed PRAGMA registration for connections and extensions.
 --
--- This module is not exposed: the cabal file lists it in @other-modules@. It
--- holds the implementation. 'registerPragmaFunctionOn' takes a registration
--- target. "Database.DuckDB.Simple.Pragma" gives the connection form.
--- "Database.DuckDB.Simple.Extension" gives the extension form.
+-- The cabal file lists this hidden module in @other-modules@.
+-- 'registerPragmaFunctionOn' takes a registration target.
+-- "Database.DuckDB.Simple.Pragma" exports the connection form.
+-- "Database.DuckDB.Simple.Extension" exports the extension form.
 module Database.DuckDB.Simple.Pragma.Internal (
   PragmaCallback (..),
   registerPragmaFunction,
@@ -57,7 +57,7 @@ data PragmaCallback args
 -- one field for each parameter, in the order of the declaration.
 --
 -- A call gives a standard parameter by position or by name, for example
--- @PRAGMA p(1, label = 'x')@. The field is at the position of the parameter in
+-- @PRAGMA p(1, label = \'x\')@. The field is at the position of the parameter in
 -- both cases. When the call omits a parameter, the field has the default value of
 -- the parameter. A NULL argument needs a 'Maybe' field. When the row does not
 -- decode, the call fails with an SQL error that names the pragma. A parameter

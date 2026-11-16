@@ -125,8 +125,8 @@ Then do these steps:
 ## Native runtime
 
 `duckdb-ffi/native.sha256` pins the official shared-library archives.
-`Setup.hs` downloads from it by default. `dev/fetch-duckdb.sh` downloads the
-same archive for `-fsystemlib` builds. It checks the archive digest and
+`Setup.hs` downloads the pinned archive by default. `dev/fetch-duckdb.sh`
+downloads the same archive for `-fsystemlib` builds. It checks the archive digest and
 requires the release headers to be identical to the vendored headers.
 
 ```sh

@@ -175,10 +175,10 @@ Unbounded forms, with this rule:
   (fitsNanoseconds). A VARIANT holds TIME_NS, TIMESTAMP_NS, and TIMESTAMPTZ_NS
   values. A value outside that range, for example in the year 3000, gets the
   microsecond value, as for a parameter with no known type. The payload of a
-  Variant follows the same rule (variantPayloadType). Each other parameter, and a parameter with no known type, gets the
-  microsecond value. The digits below one microsecond go away, as for the SQL
-  literal.
-- The digits below one nanosecond go away in each case.
+  Variant follows the same rule (variantPayloadType). Each other parameter,
+  and a parameter with no known type, gets the microsecond value. The binding
+  discards the digits below one microsecond, as the SQL literal does.
+- The binding discards the digits below one nanosecond in each case.
 
 A value in an Array, a list, a Map, a STRUCT, a TUPLE, or a UNION parameter
 follows the type of its leaf in the target: timestampTypeForTarget gives a
@@ -562,7 +562,7 @@ instance ToField Int64
 -- range binds as a UHUGEINT for a UHUGEINT parameter that can hold it, and as a
 -- BIGNUM for a parameter that has no known type or is not an integer or DECIMAL
 -- type. For another integer or DECIMAL parameter, such a value raises
--- 'SQLError'. Bind a t'BigNum' to bind a BIGNUM value in each case. See
+-- t'SQLError'. Bind a t'BigNum' to bind a BIGNUM value in each case. See
 -- Note [Integer parameters].
 instance ToField Integer where
   toField = integerBinding
@@ -570,7 +570,7 @@ instance ToField Integer where
 -- | A value from 0 to 2^127 - 1 binds as a HUGEINT. A larger value binds as a
 -- UHUGEINT for a UHUGEINT parameter that can hold it, and as a BIGNUM for a
 -- parameter that has no known type or is not an integer or DECIMAL type. For
--- another integer or DECIMAL parameter, such a value raises 'SQLError'. Bind a
+-- another integer or DECIMAL parameter, such a value raises t'SQLError'. Bind a
 -- t'BigNum' to bind a BIGNUM value in each case. See Note [Integer parameters].
 instance ToField Natural where
   toField = integerBinding . toInteger
@@ -925,7 +925,7 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToField k, ToField v) => ToFie
 -- 'FieldNull' elements takes the element type of the parameter, or the type
 -- NULL for a parameter with no known type, as a SQL list literal does.
 --
--- An empty 'FieldArray' raises an 'SQLError' of the type 'ErrorInputInvalid',
+-- An empty 'FieldArray' raises an t'SQLError' of the type 'ErrorInputInvalid',
 -- because a DuckDB ARRAY has at least one element. Inside a 'FieldStruct', a
 -- 'FieldTuple', or a 'FieldUnion', a 'FieldEnum' binds its label to the
 -- declared ENUM type.
@@ -1265,7 +1265,7 @@ utcTimestampDuckValue factory value =
   encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value
     >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_tz factory encoded))
 
--- | Construct an ARRAY value. An empty array raises 'SQLError'. See
+-- | Construct an ARRAY value. An empty array raises t'SQLError'. See
 -- 'withElementType' for the element type.
 arrayDuckValue
   :: forall a
@@ -1693,7 +1693,7 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
 -- | Construct an ENUM value by the default cast of the label to the ENUM type.
 -- The label of a 'FieldEnum' gives the value, not its index: an index of
 -- another dictionary would give another label with no error. A label that is
--- not in the dictionary raises an 'SQLError' of the type 'ErrorTypeConversion',
+-- not in the dictionary raises an t'SQLError' of the type 'ErrorTypeConversion',
 -- as the cast of DuckDB from VARCHAR does. See
 -- Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".

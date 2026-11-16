@@ -152,9 +152,10 @@ newtype BigNum = BigNum Integer
   deriving stock (Eq, Show)
   deriving (Num) via Integer
 
--- | Decode DuckDB’s BIGNUM blob (3-byte header + big-endian payload where negative magnitudes are
--- bitwise complemented) back into a Haskell @Integer@. We undo the complement when needed, then chunk
--- the remaining bytes into machine-word limbs (MSB chunk first) for @integerFromWordList@.
+-- | Decode a DuckDB BIGNUM blob as a Haskell @Integer@. The blob has a 3-byte
+-- header and a big-endian payload. Negative values have a complemented payload.
+-- Restore that payload, then split it into machine-word limbs for
+-- @integerFromWordList@, with the most significant limb first.
 -- This is the BIGNUM storage of DuckDB 2.0.0. The V2 API does not commit to this
 -- layout, and this library does not use this function.
 fromBigNumBytes :: [Word8] -> Integer
@@ -178,11 +179,11 @@ fromBigNumBytes bytes =
       limbs = (if null firstChunk then id else (firstChunk :)) (chunkWords rest)
   in  integerFromWordList isNeg (map toWord limbs)
 
--- | Encode an @Integer@ into DuckDB’s BIGNUM blob layout: emit the 3-byte header
---   (sign bit plus payload length) followed by the magnitude bytes in the same
---   big-endian / complemented-on-negative form that DuckDB stores internally.
---   This is the BIGNUM storage of DuckDB 2.0.0. The V2 API does not commit to
---   this layout, and this library does not use this function.
+-- | Encode an @Integer@ as a DuckDB BIGNUM blob. Write the 3-byte header
+-- (sign bit and payload length), then the magnitude bytes in big-endian order.
+-- Complement the header and the payload for a negative value.
+-- This is the BIGNUM storage of DuckDB 2.0.0. The V2 API does not commit to
+-- this layout, and this library does not use this function.
 toBigNumBytes :: Integer -> [Word8]
 toBigNumBytes value =
   let isNeg = value < 0

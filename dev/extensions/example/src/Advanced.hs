@@ -94,13 +94,18 @@ registerLineFiles extension = do
   Extension.registerMultiFileFunction extension "haskell_read_lines" "haskell_read_line_file" Copy.defaultMultiFileOptions
 
 -- | Read a file with one BIGINT value on each line. An empty line is NULL.
+-- Reject a number outside the BIGINT range before converting it to 'Int64'.
 readLines :: FilePath -> IO [Only (Maybe Int64)]
 readLines path = TextIO.readFile path >>= mapM parse . Text.lines
   where
     parse line
       | Text.null line = pure (Only Nothing)
-      | otherwise = case TextRead.signed TextRead.decimal line of
-          Right (value, rest) | Text.null rest -> pure (Only (Just value))
+      | otherwise = case (TextRead.signed TextRead.decimal line :: Either String (Integer, Text)) of
+          Right (value, rest)
+            | Text.null rest
+            , value >= toInteger (minBound :: Int64)
+            , value <= toInteger (maxBound :: Int64) ->
+                pure (Only (Just (fromInteger value)))
           _ -> throwIO (userError ("haskell_lines: the line is not a BIGINT: " <> Text.unpack line))
 
 -- | Add two BIGINT values. Overflow gives 'Nothing'.

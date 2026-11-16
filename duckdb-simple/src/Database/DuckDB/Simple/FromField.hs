@@ -879,27 +879,26 @@ instance FromField BigNum where
 instance {-# OVERLAPPABLE #-} (Typeable a, FromField a) => FromField [a] where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldList entries ->
-        traverse (uncurry parseElement) (zip [0 :: Int ..] entries)
-      FieldArray arr ->
-        traverse (uncurry parseElement) (assocs arr)
+      FieldList entries -> traverse fromField (elementFields f (zip [0 ..] entries))
+      FieldArray arr -> traverse fromField (elementFields f (assocs arr))
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
-    where
-      parseElement idx value =
-        fromField
-          Field
-            { fieldName = fieldNameWithIndex idx
-            , fieldIndex = fieldIndex f
-            , fieldValue = value
-            , fieldType = elementType
-            }
-      -- The elements share one thunk of the element type.
-      elementType = listElementType (fieldType f)
-      fieldNameWithIndex idx =
-        let base = fieldName f
-            idxText = Text.pack (show idx)
-        in  base <> Text.pack "[" <> idxText <> Text.pack "]"
+
+-- | Give the fields of the elements of a LIST or an ARRAY field, from the index
+-- and the value of each element. An element has the name @name[index]@ and the
+-- element type of the field.
+elementFields :: Field -> [(Int, FieldValue)] -> [Field]
+elementFields f = map element
+  where
+    element (idx, value) =
+      Field
+        { fieldName = fieldName f <> Text.pack "[" <> Text.pack (show idx) <> Text.pack "]"
+        , fieldIndex = fieldIndex f
+        , fieldValue = value
+        , fieldType = elementType
+        }
+    -- The elements share one thunk of the element type.
+    elementType = listElementType (fieldType f)
 
 -- | Reads ARRAY. Each element reads as @a@.
 instance (Typeable a, FromField a) => FromField (Array Int a) where

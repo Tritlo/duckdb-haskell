@@ -73,16 +73,18 @@
   type that a typed table function and a typed aggregate function declare. A
   record or a sum type gets `ToDuckValue` and a STRUCT or UNION declaration
   through `ViaDuckDB`. `StructValue`, `TupleValue`, and `UnionValue` have no
-  declaration, and the registration raises an error for them. An `Array` has
-  no declaration, because its ARRAY type has no size, so a registration
-  refuses an `Array` argument, result, parameter, or column, also inside a
-  `Maybe`, a list, or a `Map`. A `SizedArray n a` declares the ARRAY of size `n`.
-  DuckDB casts a LIST of the same length to it with no error.
-- `SizedArray n a` is new: a list of exactly `n` values, made with `sizedArray` and read
-  with `sizedArrayToList`. It binds as an ARRAY of size `n`, a typed registration
+  declaration, and the registration raises an error for them. A
+  `SizedArray n a` declares the ARRAY of size `n`. DuckDB casts a LIST of the
+  same length to it with no error.
+- `SizedArray n a` is new, and it replaces the instances of `Array Int a`: a
+  list of exactly `n` values, made with `sizedArray` and read with
+  `sizedArrayToList`. It binds as an ARRAY of size `n`, a typed registration
   declares that type, also for a field of a record through `ViaDuckDB`, and it
   reads an ARRAY and a LIST of `n` elements. A value of another length raises
-  `Incompatible`. `Array` stays for an ARRAY of each size.
+  `Incompatible`. `Array Int a` has no `ToField`, `FromField`,
+  `DuckDBColumnType`, `ToDuckValue`, or `DuckValue` instance. A list reads an
+  ARRAY of each size, and a `FieldArray` is an ARRAY value that a program
+  builds at run time. See MIGRATION.md.
 - An ARRAY parameter with more than 100000 elements, the largest ARRAY of
   DuckDB, raises an `SQLError` of the type `ErrorInputInvalid`, as an empty
   ARRAY parameter does.
@@ -261,7 +263,7 @@
   (`TIME_NS`, `TIMESTAMP_NS`, or `TIMESTAMPTZ_NS`), also in collections,
   STRUCTs, MAPs, and UNIONs. For a `VARIANT` parameter, one such value keeps
   them when it fits the range of the nanosecond type, but the elements of a
-  list, an `Array`, or a `Map` of such values get the microsecond value (see
+  list, a `SizedArray`, or a `Map` of such values get the microsecond value (see
   the entry on `VARIANT` parameters below). Only a value with such digits
   reads the parameter type. Each other parameter gets the microsecond value,
   as for the SQL literal. An explicit cast such as `?::TIMESTAMP_NS` makes a
@@ -310,10 +312,11 @@
   same WKB bytes and its own CRS. DuckDB casts it to the type of the parameter,
   as in SQL text. A value without a CRS takes the CRS of the target. A target
   without a CRS removes the CRS. A target with another CRS raises `SQLError`.
-  Version 0.3 had only a `FromField` instance for `RawGeometry`. An `Array`, a
-  list, or a typed row cannot hold a `RawGeometry`.
-- An empty `Array` parameter raises `SQLError`. Version 0.3 bound an empty
-  `Array` of scalar elements. Bind an empty list for an empty LIST.
+  Version 0.3 had only a `FromField` instance for `RawGeometry`. A
+  `SizedArray`, a list, or a typed row cannot hold a `RawGeometry`.
+- An empty ARRAY parameter, a `SizedArray` of size 0 or a `FieldArray` with no
+  element, raises `SQLError`. Version 0.3 bound an empty `Array` of scalar
+  elements. Bind an empty list for an empty LIST.
 - `TimeWithZone` holds the offset in seconds east of UTC, as a TIMETZ stores it.
   The field `timeWithZoneZone :: TimeZone` of version 0.3 is now
   `timeWithZoneOffsetSeconds :: Int32`. `timeWithZone` and `timeWithZoneZone`
@@ -323,18 +326,18 @@
 - Add `ToField` instances for `IntervalValue`, `TimeWithZone`, and
   `DecimalValue`, and `ToDuckValue` instances for `IntervalValue` and
   `TimeWithZone`. An `IntervalValue` binds as an INTERVAL and a `TimeWithZone`
-  as a TIMETZ, also in an `Array`, a list, or a typed row. A `TimeWithZone`
+  as a TIMETZ, also in a `SizedArray`, a list, or a typed row. A `TimeWithZone`
   reads back equal to the bound value, except that a time loses its digits
   below one microsecond. An offset outside -15:59:59 to +15:59:59 raises an
-  error. A `DecimalValue` binds as a DECIMAL with its own width and scale. An
-  `Array`, a list, or a typed row cannot hold a `DecimalValue`. Version 0.3
+  error. A `DecimalValue` binds as a DECIMAL with its own width and scale. A
+  `SizedArray`, a list, or a typed row cannot hold a `DecimalValue`. Version 0.3
   had only `FromField` instances for these types.
 - Add `ToField` and `ToDuckValue` instances for `Map`. A `Map` binds as a MAP
   value with its pairs in ascending key order. The keys and the values follow
   the element rules of a list, and an empty `Map` binds as an empty MAP of its
   key and value types. Version 0.3 had only a `FromField` instance for `Map`.
 - Add `ToField` and `ToDuckValue` instances for lists. A list binds as a LIST
-  value with the element rules of an `Array`, and an empty list binds as an
+  value with the element rules of a `SizedArray`, and an empty list binds as an
   empty LIST of its element type (for an empty list of `Integer` or `Natural`
   values, see the entry on `Integer` parameters). A `String` stays one VARCHAR
   parameter, and a list as a row is still a row of parameters, so a list
@@ -342,43 +345,43 @@
 - Each input check of the library raises `SQLError` with the type
   `ErrorInputInvalid`: a parameter value that does not fit its type (for example
   a `BitString` with bad padding, a `UnionValue` with a tag out of range, or an
-  empty `Array`), a logical type with a NUL in a name or a bad DECIMAL width, a
-  CRS name that DuckDB does not keep, a NUL in a database path, an alias, an
-  attach option, a configuration, a query, or a parameter name, a NUL in a file
-  path, a negative file offset or read size, a file range outside `Int64`, a bad
-  `ConnectionOptions` field, SQL text with no statement or with more than one
-  statement, a parameter index out of bounds, a column index of `columnName` out
-  of bounds, a bad name or argument of a registration, a catalog lookup, a
-  configuration option, or a log sink, the column count of a COPY FROM table,
-  and a VARIANT argument of a typed function, a table function, a pragma, a COPY
-  function, or a custom option. An error about a statement has the query of the
-  statement, and each other error has no query. A value outside the range of its
-  SQL type raises `SQLError` with the type `ErrorTypeConversion` when it binds,
-  the type of the "Conversion Error" that DuckDB raises for the same value in
-  SQL: a date or a timestamp outside the range of DuckDB, an integer outside the
-  range of its parameter type or its declared type, a nanosecond timestamp outside its storage or at
-  an infinity value as a STRUCT field, a TUPLE element, a UNION member, or an
-  element of a list, an `Array`, or a `Map`, a `FieldHugeInt` or a
-  `FieldUHugeInt` outside its type, a TIMETZ offset outside -57599 to 57599
-  seconds, a time of day that is not a TIME value (a field outside its own
-  range, or a time after 24:00:00), an ENUM label that is not in the dictionary
-  of its type, and a `DecimalValue` that its width cannot hold. For such a
-  nanosecond timestamp in the range of DuckDB, for example in the year 2300, as
-  a TIMESTAMP_NS or TIMESTAMPTZ_NS parameter, DuckDB raises its own error, of
-  the same type. A `LocalTime` or a `UTCTime` (in UTC) from 2262-04-11
-  23:47:16.854775807 to 23:47:16.854775999 gets the error of the library in each
-  position. A value of the wrong shape or type keeps `ErrorInputInvalid`, also
-  where DuckDB gives another type for the same input, for example a UNION tag
-  that is not a member, a leaf built from another type, a STRUCT field that does
-  not match its type, or an unknown CRS. A parameter count or a parameter name
-  that does not match the query keeps its `FormatError`. A check in a callback
-  fails the outer statement with the type of the check: such a value as the
-  result of a typed function or a row of a typed table function gives
-  `ErrorTypeConversion` and the text `Conversion Error: duckdb-simple: ...`.
-  Version 0.3 raised an `IOException` for the checks of parameter values,
-  logical types, and CRS names. The error for a scalar value that does not match
-  its declared type names the SQL type, for example `"NULL"` in place of
-  `LogicalTypeIdSQLNull`.
+  empty `SizedArray`), a logical type with a NUL in a name or a bad DECIMAL
+  width, a CRS name that DuckDB does not keep, a NUL in a database path, an
+  alias, an attach option, a configuration, a query, or a parameter name, a NUL
+  in a file path, a negative file offset or read size, a file range outside
+  `Int64`, a bad `ConnectionOptions` field, SQL text with no statement or with
+  more than one statement, a parameter index out of bounds, a column index of
+  `columnName` out of bounds, a bad name or argument of a registration, a
+  catalog lookup, a configuration option, or a log sink, the column count of a
+  COPY FROM table, and a VARIANT argument of a typed function, a table function,
+  a pragma, a COPY function, or a custom option. An error about a statement has
+  the query of the statement, and each other error has no query. A value outside
+  the range of its SQL type raises `SQLError` with the type
+  `ErrorTypeConversion` when it binds, the type of the "Conversion Error" that
+  DuckDB raises for the same value in SQL: a date or a timestamp outside the
+  range of DuckDB, an integer outside the range of its parameter type or its
+  declared type, a nanosecond timestamp outside its storage or at an infinity
+  value as a STRUCT field, a TUPLE element, a UNION member, or an element of a
+  list, a `SizedArray`, or a `Map`, a `FieldHugeInt` or a `FieldUHugeInt`
+  outside its type, a TIMETZ offset outside -57599 to 57599 seconds, a time of
+  day that is not a TIME value (a field outside its own range, or a time after
+  24:00:00), an ENUM label that is not in the dictionary of its type, and a
+  `DecimalValue` that its width cannot hold. For such a nanosecond timestamp in
+  the range of DuckDB, for example in the year 2300, as a TIMESTAMP_NS or
+  TIMESTAMPTZ_NS parameter, DuckDB raises its own error, of the same type. A
+  `LocalTime` or a `UTCTime` (in UTC) from 2262-04-11 23:47:16.854775807 to
+  23:47:16.854775999 gets the error of the library in each position. A value of
+  the wrong shape or type keeps `ErrorInputInvalid`, also where DuckDB gives
+  another type for the same input, for example a UNION tag that is not a member,
+  a leaf built from another type, a STRUCT field that does not match its type,
+  or an unknown CRS. A parameter count or a parameter name that does not match
+  the query keeps its `FormatError`. A check in a callback fails the outer
+  statement with the type of the check: such a value as the result of a typed
+  function or a row of a typed table function gives `ErrorTypeConversion` and
+  the text `Conversion Error: duckdb-simple: ...`. Version 0.3 raised an
+  `IOException` for the checks of parameter values, logical types, and CRS
+  names. The error for a scalar value that does not match its declared type
+  names the SQL type, for example `"NULL"` in place of `LogicalTypeIdSQLNull`.
 - A check of the state of the library, or of a vector, a type, or a value that
   DuckDB gave, raises `SQLError` with the type `ErrorRuntimeInternal`. Such an
   error means a defect of the library or of DuckDB. When a statement raises it,
@@ -398,13 +401,13 @@
   `VARIANT` parameter when it fits the range of that type, so the VARIANT keeps
   the digits. A value with no such digits binds as before, with no read of the
   parameter type. These values get the microsecond value: a value outside the
-  range of the nanosecond type, an element of a list, an `Array`, or a `Map`
+  range of the nanosecond type, an element of a list, a `SizedArray`, or a `Map`
   for a `VARIANT` parameter, and an element of a `VARIANT[]` or a
   `MAP(..., VARIANT)` parameter. In a `Variant` payload, each time leaf, also
   an element of a list payload and a field of an object payload, binds with the
   nanosecond type when it has such digits and fits the range.
-- An empty `Array` and an empty `FieldArray` raise the same `SQLError`, of the
-  type `ErrorInputInvalid`.
+- An empty `SizedArray` and an empty `FieldArray` raise the same `SQLError`, of
+  the type `ErrorInputInvalid`.
 - Add a parameter instance for `FieldValue`, so a row read as `[FieldValue]`
   binds back. A scalar constructor binds as the DuckDB type of the
   constructor, and a `FieldList`, a `FieldArray`, or a `FieldMap` takes the
@@ -415,28 +418,28 @@
   with digits below a microsecond binds with the nanosecond type for a
   nanosecond parameter, and for a `VARIANT` parameter when it fits the range of
   that type.
-- An `Array`, a list, or a `Map` of STRUCT values, UNION values, generic
+- A `SizedArray`, a list, or a `Map` of STRUCT values, UNION values, generic
   records, lists, or arrays with different element types gets the type that
   DuckDB gives a SQL list literal of the elements, for example
   `STRUCT(a INTEGER, b INTEGER)` for `{'a': 1}` and `{'b': 2}`. Elements with
   no common type raise the `SQLError` of DuckDB. Version 0.3 raised an error
-  for each `Array` with different element types.
-- A list or a `Map` of such elements that has no element, and an `Array`, a
+  for each `SizedArray` with different element types.
+- A list or a `Map` of such elements that has no element, and a `SizedArray`, a
   list, or a `Map` with only NULL elements, take the element type of the
   parameter when the parameter has a known type, for example for an `INSERT`
-  into a typed column. An empty `Array` raises an error, as an entry above
+  into a typed column. An empty `SizedArray` raises an error, as an entry above
   says. For a parameter with no known type, such a list of generic records
   through `ViaDuckDB` takes the STRUCT or UNION type of the record. Each other
   such list or `Map` with only NULL elements takes the type of the SQL list
   literal, such as `"NULL"[]`, and each other empty list or `Map` takes the
   type NULL, as `[]` and `MAP {}` have. Version 0.3 raised an error for an
-  `Array` of NULL elements.
+  `SizedArray` of NULL elements.
 - Some parameters bind for the type that DuckDB gives the parameter: a time
-  value with digits below a microsecond, an `Array`, a list, a `Map`, a manual
-  STRUCT, TUPLE, or UNION value, and an `Integer` or a `Natural` outside the
-  HUGEINT range. `executeMany` reads these types one time for each call. A
-  column type that changes during the call does not change how the later rows
-  of that call bind.
+  value with digits below a microsecond, a `SizedArray`, a list, a `Map`, a
+  manual STRUCT, TUPLE, or UNION value, and an `Integer` or a `Natural` outside
+  the HUGEINT range. `executeMany` reads these types one time for each call. A
+  column type that changes during the call does not change how the later rows of
+  that call bind.
 - An `Integer` or a `Natural` parameter binds as a HUGEINT value when the value
   is in the HUGEINT range. Before, it bound as a BIGNUM value in each case. In
   DuckDB 2.0.0 the casts from BIGNUM to the integer types have three defects. A
@@ -447,17 +450,17 @@
   a UHUGEINT parameter that can hold it. For each other integer or DECIMAL
   parameter, such a value raises an `SQLError` of the type
   `ErrorTypeConversion`. `typeof(?)` is thus HUGEINT for an `Integer` in the
-  HUGEINT range. Bind a `BigNum` to bind a BIGNUM value in each case. An `Array`
-  of `Integer` or `Natural` values takes the element type of its target when
-  that type is an integer type or DECIMAL, so DuckDB checks the range of each
-  element. Before, a negative element for an unsigned array column was stored as
-  a wrapped value. For each other target, an `Array`, a list, or a `Map` of such
-  values takes the type that its elements give, as a SQL list literal of the
-  HUGEINT and BIGNUM values: `[1, 2^64]` is `HUGEINT[]`, `[1, 2^200]` is
-  `BIGNUM[]`, and an empty list or a list of only NULL elements is `"NULL"[]`.
-  The rule follows the column type name BIGNUM, so an all-NULL list of `BigNum`
-  values with no target is also `"NULL"[]` in place of `BIGNUM[]`, and a type
-  whose column type name is BIGNUM follows it too.
+  HUGEINT range. Bind a `BigNum` to bind a BIGNUM value in each case. A
+  `SizedArray` of `Integer` or `Natural` values takes the element type of its
+  target when that type is an integer type or DECIMAL, so DuckDB checks the
+  range of each element. Before, a negative element for an unsigned array column
+  was stored as a wrapped value. For each other target, a `SizedArray`, a list,
+  or a `Map` of such values takes the type that its elements give, as a SQL list
+  literal of the HUGEINT and BIGNUM values: `[1, 2^64]` is `HUGEINT[]`,
+  `[1, 2^200]` is `BIGNUM[]`, and an empty list or a list of only NULL elements
+  is `"NULL"[]`. The rule follows the column type name BIGNUM, so an all-NULL
+  list of `BigNum` values with no target is also `"NULL"[]` in place of
+  `BIGNUM[]`, and a type whose column type name is BIGNUM follows it too.
 - `toDuckValue` for an `Integer` or a `Natural` gives a HUGEINT value when the
   value is in the HUGEINT range, and a `Natural` up to 2^128 - 1 gives a
   UHUGEINT value. Each other value raises an `SQLError` of the type
@@ -473,11 +476,6 @@
   list or a `Map` of them in a typed row has HUGEINT or UHUGEINT elements. The
   column type name (`duckdbColumnTypeFor`) still gives BIGNUM for them, the type
   of a parameter that holds each value.
-- A generic record with an `Array` field that has elements binds. The value
-  gives the ARRAY size. When no value gives the size, DuckDB rejects the record
-  with "ARRAY type size must be at least 1". Examples are an `Array` field with
-  the value `Nothing`, an `Array` inside a LIST, ARRAY, or MAP field, and a sum
-  type with an `Array` constructor.
 - A product type with no fields has one encoding: the STRUCT without fields,
   which DuckDB shows as `{}`. `genericToFieldValue` gives this STRUCT, as the
   `ViaDuckDB` binding and `genericToStructValue` did before. A constructor with

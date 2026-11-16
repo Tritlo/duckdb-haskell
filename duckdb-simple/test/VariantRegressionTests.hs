@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE LambdaCase #-}
@@ -13,7 +14,7 @@ module VariantRegressionTests (tests) where
 
 import Control.Exception (bracket, try)
 import Control.Monad (forM, forM_, void, when)
-import Data.Array (Array, elems, listArray)
+import Data.Array (elems, listArray)
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
 import Data.Int (Int64)
@@ -35,7 +36,7 @@ import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (NativeTimestamp (..), assertFailureIO, nativeLocalTime)
+import TestUtils (NativeTimestamp (..), assertFailureIO, nativeLocalTime, sized)
 
 -- | A generic record checks the bridge to composite type metadata.
 newtype VariantRecord = VariantRecord {payload :: Variant}
@@ -66,7 +67,7 @@ tests =
         ( query
             conn
             "SELECT ?::VARIANT, ?::VARIANT, ?::VARIANT, ?::VARIANT"
-            (42 :: Int64, "two" :: Text, record, listArray (0, 1) [1, 2] :: Array Int Int64)
+            (42 :: Int64, "two" :: Text, record, sized [1, 2] :: SizedArray 2 Int64)
             :: IO [(Variant, Variant, Variant, Variant)]
           )
           >>= ( @?=
@@ -226,22 +227,21 @@ tests =
             )
             >>= (@?= [Only object])
     , testCase "ARRAY parameters and generic records contain VARIANT" $ withConnection ":memory:" \conn -> do
-        let array = listArray (0, 2) [Variant (FieldInt8 1), Variant (FieldText "two"), Variant FieldNull]
-        (query conn "SELECT ?" (Only array) :: IO [Only (Array Int Variant)]) >>= (@?= [Only array])
+        let array = sized [Variant (FieldInt8 1), Variant (FieldText "two"), Variant FieldNull] :: SizedArray 3 Variant
+        (query conn "SELECT ?" (Only array) :: IO [Only (SizedArray 3 Variant)]) >>= (@?= [Only array])
         let record = VariantRecord (Variant (variantObject [("x", FieldWord64 maxBound)]))
         (query conn "SELECT ?" (Only record) :: IO [Only VariantRecord]) >>= (@?= [Only record])
     , testCase "nullable ARRAY parameters preserve heterogeneous VARIANT values" $ withConnection ":memory:" \conn -> do
         let values =
-              listArray
-                (0, 3)
+              sized
                 [ Nothing
                 , Just (Variant (FieldInt64 42))
                 , Just (Variant (FieldText "two"))
                 , Just (Variant (variantObject [("xs", FieldList [FieldNull, FieldBool True])]))
                 ]
-        (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, Array Int (Maybe Variant))]) >>= (@?= [("VARIANT[4]", values)])
+        (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, SizedArray 4 (Maybe Variant))]) >>= (@?= [("VARIANT[4]", values)])
     , testCase "empty ARRAY parameters raise an error" $ withConnection ":memory:" \conn -> do
-        let values = listArray (0, -1) [] :: Array Int (Maybe Variant)
+        let values = sized [] :: SizedArray 0 (Maybe Variant)
         result <- try (query conn "SELECT typeof(?)" (Only values))
         case result of
           Left SQLError{sqlErrorMessage, sqlErrorType} -> do
@@ -468,23 +468,44 @@ tests =
                 assertBool (Text.unpack sqlErrorMessage) (Text.pack reason `Text.isInfixOf` sqlErrorMessage)
               Right rows -> assertFailure ("expected the " <> reason <> " error, got " <> show rows)
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "a Variant read of a JSON type raises an error at each depth, and the cast reads the parsed value" $ withConnection ":memory:" \conn -> do
+        let refused column expression sqlName =
+              try (query_ conn (Query ("SELECT " <> expression <> " AS " <> column)) :: IO [Only Variant]) >>= \case
+                Left SQLError{sqlErrorMessage} ->
+                  sqlErrorMessage
+                    @?= "duckdb-simple: column "
+                      <> column
+                      <> " has type "
+                      <> sqlName
+                      <> " but expected Variant: DuckDB casts JSON to VARIANT by parsing the text; write "
+                      <> column
+                      <> "::VARIANT"
+                Right rows -> assertFailure ("expected Incompatible for " <> Text.unpack expression <> ", got " <> show rows)
+        refused "j" "'{\"a\": 1}'::JSON" "JSON"
+        refused "l" "['{\"a\": 1}']::JSON[]" "JSON[]"
+        refused "s" "{'k': '{\"a\": 1}'::JSON}" "STRUCT(k JSON)"
+        refused "m" "MAP {'k': '{\"a\": 1}'::JSON}" "MAP(VARCHAR, JSON)"
+        (query_ conn "SELECT j::VARIANT FROM (SELECT '{\"a\": 1}'::JSON AS j)" :: IO [Only Variant])
+          >>= (@?= [Only (Variant (variantObject [("a", FieldWord64 1)]))])
+        (query_ conn "SELECT l::VARIANT FROM (SELECT ['{\"a\": 1}']::JSON[] AS l)" :: IO [Only Variant])
+          >>= (@?= [Only (Variant (FieldList [variantObject [("a", FieldWord64 1)]]))])
     , testCase "a Variant reads only a value that a VARIANT can hold" $ withConnection ":memory:" \conn -> do
         -- The cast to VARIANT changes a value of another shape, so the read
         -- raises the error of an incompatible column at each depth. The cast in
         -- SQL reads.
         forM_
-          [ ("'a'::ENUM('a', 'b')", "ENUM")
-          , ("MAP {'k': 1}", "MAP")
-          , ("union_value(n := 1)", "UNION")
-          , ("{'b': 1, 'a': 2}", "STRUCT")
-          , ("[1, 2]::INTEGER[2]", "ARRAY")
-          , ("row(1, 'x')", "TUPLE")
-          , ("'POINT (1 2)'::GEOMETRY('OGC:CRS84')", "GEOMETRY")
-          , ("['a'::ENUM('a', 'b')]", "LIST")
-          , ("[{'a': 1}]", "LIST")
-          , ("{'v': 1::VARIANT, 'm': MAP {'k': 1}}", "STRUCT")
-          , ("{'b': 1::VARIANT, 'a': 2::VARIANT}", "STRUCT")
-          , ("{'é': 1::VARIANT, 'z': 2::VARIANT}", "STRUCT")
+          [ ("'a'::ENUM('a', 'b')", "ENUM('a', 'b')")
+          , ("MAP {'k': 1}", "MAP(VARCHAR, INTEGER)")
+          , ("union_value(n := 1)", "UNION(n INTEGER)")
+          , ("{'b': 1, 'a': 2}", "STRUCT(b INTEGER, a INTEGER)")
+          , ("[1, 2]::INTEGER[2]", "INTEGER[2]")
+          , ("row(1, 'x')", "TUPLE(INTEGER, VARCHAR)")
+          , ("'POINT (1 2)'::GEOMETRY('OGC:CRS84')", "GEOMETRY('OGC:CRS84')")
+          , ("['a'::ENUM('a', 'b')]", "ENUM('a', 'b')[]")
+          , ("[{'a': 1}]", "STRUCT(a INTEGER)[]")
+          , ("{'v': 1::VARIANT, 'm': MAP {'k': 1}}", "STRUCT(v VARIANT, m MAP(VARCHAR, INTEGER))")
+          , ("{'b': 1::VARIANT, 'a': 2::VARIANT}", "STRUCT(b VARIANT, a VARIANT)")
+          , ("{'é': 1::VARIANT, 'z': 2::VARIANT}", "STRUCT(\"é\" VARIANT, z VARIANT)")
           ]
           \(expression, sqlName) -> do
             result <- try (query_ conn (Query ("SELECT " <> expression <> " AS c")) :: IO [Only Variant])
@@ -528,10 +549,6 @@ tests =
               >>= \case
                 [(value, cast)] -> assertEqual (Text.unpack expression) cast value
                 rows -> assertFailure (show rows)
-        -- A JSON column decodes as its text, as a VARCHAR does, so it reads as
-        -- Variant with its text. The cast gives the parsed value.
-        (query_ conn "SELECT '{\"a\": 1}'::JSON, ('{\"a\": 1}'::JSON)::VARIANT" :: IO [(Variant, Variant)])
-          >>= (@?= [(Variant (FieldText "{\"a\": 1}"), Variant (variantObject [("a", FieldWord64 1)]))])
         -- The cast of a GEOMETRY with a CRS drops the CRS.
         [(withCrs, wkb)] <-
           query_ conn "SELECT ('POINT (1 2)'::GEOMETRY('OGC:CRS84'))::VARIANT, ST_AsWKB('POINT (1 2)'::GEOMETRY)" :: IO [(Variant, BS.ByteString)]

@@ -137,6 +137,58 @@ The SQL workflow stays the same. These changes can affect your code:
 - SQL TUPLE values decode as `FieldTuple` with a `TupleValue`. `LogicalTypeRep`
   adds `LogicalTypeTuple` and `LogicalTypeCollatedVarchar`. Update exhaustive
   matches.
+- Decoders use `Conversion a`, in the style of `postgresql-simple`.
+  `FieldParser a` is `Field -> Conversion a`, and `FromField.fromField` returns
+  `Conversion a`. `parseRow` now has the type
+  `RowParser a -> [Field] -> Conversion a`. To run a standalone decoder, call
+  `runConversion :: Conversion a -> IO (Ok a)` from
+  `Database.DuckDB.Simple.Conversion`. It takes no connection argument. Query
+  and callback APIs run conversions for you. Use `pure` for success,
+  `returnError` for a field conversion error, and `liftConversion` for IO.
+  IO exceptions, including cancellation, propagate to the caller.
+- Sequential and applicative `Conversion` operations stop at the first
+  conversion failure. The old `Ok` applicative could collect failures from
+  multiple collection elements. `Alternative` still combines the diagnostics
+  of both branches when both fail.
+- A decoder for a registered function's arguments runs inside its callback.
+  Do not run a query on that callback's connection from the decoder. Use
+  another connection. `fieldType` reads its scoped logical type without
+  taking the connection lock.
+- `Field.fieldType` has the type `Conversion LogicalTypeRep`. Read it with
+  `logical <- fieldType field` in a decoder. A positional construction or
+  match of `Field` does not compile. A record construction must give
+  `fieldType`, for example
+  `Field{fieldName = "n", fieldIndex = 0, fieldValue = FieldInt64 1, fieldType = pure (LogicalTypeScalar LogicalTypeIdBigInt)}`.
+  Use `pure (LogicalTypeScalar LogicalTypeIdVariant)` when the stored value
+  determines the type. `Field` has no `Eq` or `Show` instance.
+- Native `fieldType` actions are valid only in their owning query result or
+  callback scope. Query parsers run within the scope. A cursor keeps its
+  metadata until exhaustion, reset, or statement closure. Callback metadata
+  expires when that callback invocation returns. An escaped action raises
+  `SQLError` with the message `duckdb-simple: field type scope is closed`,
+  including an action whose result was cached. Read `LogicalTypeRep` inside
+  the scope to retain a pure snapshot after closure.
+- The metadata cache stores successful reads only. Cancellation or another IO
+  exception permits a retry while the owning scope remains open. Scope
+  closure releases native types and clears the cache. Metadata has no C
+  finalizer shim. Existing statement and connection finalizers are unchanged.
+  Type conversion runs in explicit IO; it performs no hidden IO in a pure
+  value.
+- `returnError` defers diagnostic metadata until the final conversion fails.
+  A successful `Alternative` branch discards the other branch's diagnostic
+  without reading its type or ENUM dictionary. A completed `ResultError` is
+  pure; rendering it performs no native IO. Query and callback decoders resolve
+  these diagnostics before their metadata scope closes.
+- Generic decoding also uses `Conversion a`. Update the `DuckValue` methods
+  `duckFromField` and `duckFromTypedField`, plus calls to `typedFromField` and
+  `genericFromFieldValue`, that used `Either String a`. Define
+  `duckFromTypedField = typedFromField` to pass a record field's SQL type to
+  its `FromField` instance. Generic encoding and type declarations stay pure.
+- `LogicalTypeRep` adds `LogicalTypeAlias`. Update exhaustive matches. The
+  `columnDescriptionType` of a JSON column is
+  `LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)`, also as a
+  child type, and a column of a type from `registerCustomType` gives the name
+  of the type. Apply `withoutAliases` to compare base types.
 - `LogEntry` has six new fields. Use record syntax to construct or match it.
   `logEntrySeverity` has the type `LogLevel`, and `logEntryScope` has the type
   `LogScope`. `Database.DuckDB.Simple.Logging` exports both types.
@@ -149,9 +201,9 @@ The SQL workflow stays the same. These changes can affect your code:
   the process: DuckDB raised the C++ exception "Calling StringValue::Get on a
   NULL value" in `duckdb_get_varchar`.
 - A date or a timestamp outside the range of DuckDB raises an `SQLError` of the
-  type `ErrorTypeConversion` when it binds, also as an element of a list, an
-  `Array`, or a `Map`, inside a STRUCT, a TUPLE, or a UNION, and in a VARIANT.
-  For a `Day`, that range is the range of DATE, from -5877641-06-25 to
+  type `ErrorTypeConversion` when it binds, also as an element of a list, a
+  `SizedArray`, or a `Map`, inside a STRUCT, a TUPLE, or a UNION, and in a
+  VARIANT. For a `Day`, that range is the range of DATE, from -5877641-06-25 to
   5881580-07-10. For a `LocalTime` or a `UTCTime` (in UTC), it is the range of
   TIMESTAMP, TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS, from -290308-12-22
   00:00:00 to 294247-01-10 04:00:54.775806. The dates are in the notation of
@@ -163,9 +215,9 @@ The SQL workflow stays the same. These changes can affect your code:
   - A parameter: the error of the library for a value outside the range of
     DuckDB, and the Conversion Error of DuckDB for each other such value, for
     example in the year 2300.
-  - An element of a list, an `Array`, or a `Map`: the error of the library. For
-    a value in the range of DuckDB, its text is "TIMESTAMP value out of finite
-    range".
+  - An element of a list, a `SizedArray`, or a `Map`: the error of the library.
+    For a value in the range of DuckDB, its text is "TIMESTAMP value out of
+    finite range".
   - A field of a STRUCT, an element of a TUPLE, or a member of a UNION: the
     error of the library, "TIMESTAMP value out of finite range", also for a
     value outside the range of DuckDB.
@@ -290,7 +342,8 @@ The SQL workflow stays the same. These changes can affect your code:
   and the error of a field of a `ViaDuckDB` record starts with
   `duckdb-simple: field NAME: `.
   The errors of the generic decoders name the SQL type of a value, not the
-  value, for example `a value has type MAP but expected LIST or ARRAY` in place
+  value, for example
+  `a value has type MAP(VARCHAR, BIGINT) but expected LIST or ARRAY` in place
   of `expected LIST, got FieldMap [...]`. The bind errors
   `cannot encode ... as ...` and `unsupported scalar conversion for ... from ...`
   also name the SQL type of the value, for example `from a value of type
@@ -301,8 +354,15 @@ The SQL workflow stays the same. These changes can affect your code:
   form of a VARIANT object (each field of the type VARIANT, the keys in
   ascending order), or a GEOMETRY with a CRS, at any depth, raises the error of
   an incompatible column. Write `c::VARIANT` in SQL, or read `FieldValue` for the
-  decoded value. A JSON column still reads as its text; write `c::VARIANT` for
-  the parsed value.
+  decoded value. A type that is or contains JSON, at any depth, also raises
+  that error, because DuckDB casts JSON to VARIANT by parsing the text. Write
+  `c::VARIANT` for the parsed value.
+- The error of an incompatible column names the type of the column in the text
+  of DuckDB, for example `has type DECIMAL(18,2)`, `has type TIMESTAMP_NS`, and
+  `has type TIMESTAMP WITH TIME ZONE`. For a VARIANT column, it names the type
+  of the stored value in the same text. The bind errors name each type in the
+  same text, for example `from a value of type TIMESTAMP WITH TIME ZONE`.
+  Change code that matches the error texts.
 - `TimeWithZone` holds the offset as seconds east of UTC. The field
   `timeWithZoneZone :: TimeZone` is now `timeWithZoneOffsetSeconds :: Int32`.
   `timeWithZone` makes a value from a `TimeOfDay` and a `TimeZone`, as the
@@ -312,21 +372,20 @@ The SQL workflow stays the same. These changes can affect your code:
   `12:00:00+01:00:30`, now reads. Version 0.3 raised an error for it.
 - A `TimeOfDay`, a `LocalTime`, or a `UTCTime` with digits below a microsecond
   keeps them for a parameter of the type `TIME_NS`, `TIMESTAMP_NS`, or
-  `TIMESTAMPTZ_NS`. Version 0.3 bound the microsecond value for each
-  parameter. Thus an explicit cast to a nanosecond type for a microsecond
-  column now rounds, as the SQL literal does: `?::TIMESTAMP_NS` for a
-  `TIMESTAMP` column, `?::TIME_NS` for a `TIME` column, and `?::TIMESTAMPTZ_NS`
-  for a `TIMESTAMPTZ` column store .123457 for a value with the fraction
-  .123456999, where version 0.3 stored .123456. A plain `?` for such a column
-  still cuts the digits. A value with no such digits binds as in version 0.3.
-  A `LocalTime` or a `UTCTime` outside the range of the nanosecond type (about
-  the years 1677 to 2262) raises an error for a nanosecond parameter, as in
-  version 0.3. The type of that error can differ from version 0.3 for a
-  `UTCTime` with digits below a microsecond, and for a value in a list, an
-  `Array`, a `Map`, a STRUCT, a TUPLE, or a UNION. For a value just above the
-  range, from 2262-04-11 23:47:16.854775807 to 23:47:16.854775999, version 0.3
-  stored the value without its digits below a microsecond. Such a value now
-  raises an error.
+  `TIMESTAMPTZ_NS`. Version 0.3 bound the microsecond value for each parameter.
+  Thus an explicit cast to a nanosecond type for a microsecond column now
+  rounds, as the SQL literal does: `?::TIMESTAMP_NS` for a `TIMESTAMP` column,
+  `?::TIME_NS` for a `TIME` column, and `?::TIMESTAMPTZ_NS` for a `TIMESTAMPTZ`
+  column store .123457 for a value with the fraction .123456999, where version
+  0.3 stored .123456. A plain `?` for such a column still cuts the digits. A
+  value with no such digits binds as in version 0.3. A `LocalTime` or a
+  `UTCTime` outside the range of the nanosecond type (about the years 1677 to
+  2262) raises an error for a nanosecond parameter, as in version 0.3. The type
+  of that error can differ from version 0.3 for a `UTCTime` with digits below a
+  microsecond, and for a value in a list, a `SizedArray`, a `Map`, a STRUCT, a
+  TUPLE, or a UNION. For a value just above the range, from 2262-04-11
+  23:47:16.854775807 to 23:47:16.854775999, version 0.3 stored the value without
+  its digits below a microsecond. Such a value now raises an error.
 - A value with the declared type SQLNULL must be `FieldNull`. Each other value
   raises a conversion error. Version 0.3 bound it as NULL with no error.
 - `genericToFieldValue` gives the STRUCT without fields (`{}` in DuckDB) for a
@@ -353,7 +412,7 @@ The SQL workflow stays the same. These changes can affect your code:
   table function and of COPY FROM, the result of a scalar function, and a
   parameter of a newtype over `Integer` with the default `toField`. Use `BigNum`
   for a larger value, and derive `ToField` with newtype deriving to keep the
-  parameter rule of `Integer`. An `Array` of such values with no integer or
+  parameter rule of `Integer`. A `SizedArray` of such values with no integer or
   DECIMAL target takes the type that its elements give, for example `HUGEINT[2]`
   for 1 and 2, where version 0.3 gave `BIGNUM[2]`. A list and a `Map` of such
   values follow the same rule. Stored in a VARIANT column, such a value keeps
@@ -401,10 +460,9 @@ The SQL workflow stays the same. These changes can affect your code:
   `[Either Text TypeDeclaration]` in place of `[DuckDBType]`. An argument type
   that is or contains VARIANT or GEOMETRY was a compile error. A VARIANT
   argument is now an `SQLError` at registration, and a GEOMETRY argument
-  reads. An `Array` argument or result is an `SQLError` at registration,
-  because its ARRAY type has no size. Use a list, or a newtype of the `Array`
-  with its own column type name that gives the size, for example `BIGINT[3]`.
-  DuckDB casts a LIST of the same length to that ARRAY with no error.
+  reads. A `SizedArray n a` declares the ARRAY of size `n` (see the entry on
+  `Array Int a`). DuckDB casts a LIST of the same length to that ARRAY with no
+  error.
 - A result of `createFunction` has the SQL type of its Haskell type. In
   version 0.3, an `Int16`, `Int32`, `Word16`, or `Word32` result was BIGINT,
   and a `Float` result was DOUBLE. Now they are SMALLINT, INTEGER, USMALLINT,
@@ -425,24 +483,45 @@ The SQL workflow stays the same. These changes can affect your code:
   constructors. These names can clash with your own names when you import the
   module without a list. Hide these names in the import, or import the module
   qualified.
-- An empty `Array` parameter raises `SQLError`. Version 0.3 bound an empty
-  `Array` of scalar elements. Bind an empty list for an empty LIST.
+- `Array Int a` has no `ToField`, `FromField`, `DuckDBColumnType`,
+  `ToDuckValue`, or `DuckValue` instance. Use `SizedArray n a` for an ARRAY.
+  Its type gives the size (README note 8 of Types), and `sizedArray` converts
+  an `Array Int a` of `n` elements. Use a list for an ARRAY of a size that
+  varies: a list reads an ARRAY of each size, and DuckDB casts a bound list to
+  an ARRAY column of the same length. Use a `FieldArray` for an ARRAY value
+  that the program builds at run time. An empty ARRAY parameter raises
+  `SQLError`, where version 0.3 bound an empty `Array` of scalar elements. Bind
+  an empty list for an empty LIST. Version 0.3 code:
+
+  ```haskell
+  _ <- execute conn "INSERT INTO t VALUES (?)" (Only (listArray (0, 2) [1, 2, 3] :: Array Int Int64))
+  rows <- query_ conn "SELECT v FROM t" :: IO [Only (Array Int Int64)]
+  ```
+
+  Version 1.0 code, with `DataKinds`:
+
+  ```haskell
+  forM_ (sizedArray (listArray (0, 2) [1, 2, 3]) :: Maybe (SizedArray 3 Int64)) \values ->
+    execute conn "INSERT INTO t VALUES (?)" (Only values)
+  rows <- query_ conn "SELECT v FROM t" :: IO [Only (SizedArray 3 Int64)]
+  ```
 - A list binds as a LIST parameter. Version 0.3 had no `ToField` instance for
-  lists, so code bound an `Array` and let DuckDB cast it. That code still
-  works for an `Array` with elements. A `String` stays one VARCHAR parameter,
+  lists, so code bound an `Array` and let DuckDB cast it. Bind the list
+  itself: DuckDB casts it to an ARRAY column of the same length. A `String`
+  stays one VARCHAR parameter,
   and a list as a row is still a row of parameters, so put a list parameter in
   `Only`.
-- An `Array` of STRUCT values, UNION values, generic records, or arrays with
+- A `SizedArray` of STRUCT values, UNION values, generic records, or arrays with
   different element types gets the type that DuckDB gives a SQL list literal of
   the elements. Version 0.3 raised an `IOException` for it. The common type can
   add fields with NULL values, and a `BIGINT` field with a `DOUBLE` field gives
   a `DOUBLE` field, which can round a large value. Elements with no common type
-  now raise the `SQLError` of DuckDB. Such an `Array` with only NULL elements
-  takes the element type of a parameter with a known type, and otherwise the
-  type of `array_value(NULL, ...)`, for example `"NULL"[2]`. Version 0.3 raised
-  an error for it. For a parameter with no known type, such an `Array` of
-  generic records through `ViaDuckDB` takes the STRUCT or UNION type of the
-  record.
+  now raise the `SQLError` of DuckDB. Such a `SizedArray` with only NULL
+  elements takes the element type of a parameter with a known type, and
+  otherwise the type of `array_value(NULL, ...)`, for example `"NULL"[2]`.
+  Version 0.3 raised an error for it. For a parameter with no known type, such a
+  `SizedArray` of generic records through `ViaDuckDB` takes the STRUCT or UNION
+  type of the record.
 - A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
   raises `SQLError`. Version 0.3 bound it without the CRS. Configure custom CRS
   names through `connectionGeometryCRS`.
@@ -453,7 +532,7 @@ The SQL workflow stays the same. These changes can affect your code:
 - A `TimeOfDay`, a `LocalTime`, or a `UTCTime` with digits below a microsecond
   keeps them for a `VARIANT` parameter: it binds as `TIME_NS`, `TIMESTAMP_NS`,
   or `TIMESTAMPTZ_NS` when it fits the range of that type. Version 0.3 bound
-  the microsecond value. A list, an `Array`, or a `Map` of such values for a
+  the microsecond value. A list, a `SizedArray`, or a `Map` of such values for a
   `VARIANT` parameter still binds microsecond elements. A VARIANT of a
   nanosecond value is not equal to a VARIANT of the microsecond value, so a row
   that version 0.3 stored in a `VARIANT` column does not match `WHERE x = ?`
@@ -483,7 +562,7 @@ The SQL workflow stays the same. These changes can affect your code:
   and a bad name in `connectionGeometryCRS`. Code that catches `IOException`
   for these errors must catch `SQLError`.
 - The error for a scalar value that does not match its declared type names the
-  SQL type, for example `NULL` in place of `LogicalTypeIdSQLNull`.
+  SQL type, for example `"NULL"` in place of `LogicalTypeIdSQLNull`.
 - A check of the state of the library, or of a vector, a type, or a value that
   DuckDB gave, raises an `SQLError` with the type `ErrorRuntimeInternal`. Inside
   a callback, the statement that runs the callback fails instead, with an
@@ -514,8 +593,8 @@ The SQL workflow stays the same. These changes can affect your code:
   value of a UNION. Version 0.3 bound such a value with no error. Bind the
   member value, or bind the UNION value as a UNION parameter.
 
-The typed registrations are new in 1.0. Version 0.3 had no `Registration`
-or `Pragma` module and no custom options. Its `Copy` module had
+The typed registrations are new in 1.0. Version 0.3 had no `Registration`,
+`Pragma`, or `Extension` module and no custom options. Its `Copy` module had
 only `registerCopyToFunction`. The arguments of that function do not change,
 except for the type of `copyBindColumnTypes` above. See
 [typed registration](duckdb-simple/README.md#typed-registration).

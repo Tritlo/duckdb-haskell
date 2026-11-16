@@ -54,7 +54,9 @@ construct VARIANT types directly.
 
 GEOMETRY has no committed vector layout. The reader casts each GEOMETRY vector
 to BLOB with the factory of the instance, which has only the built-in casts,
-and copies the WKB rows.
+and copies the WKB rows. In a callback of an extension, which has no instance,
+the reader writes each row to a BLOB vector with `duckdb_v2_vector_set_value`,
+whose default cast also has only the built-in casts.
 
 A connection makes the CRS names in `connectionGeometryCRS` available to
 nested parameters, including typed NULLs and empty collections. When the
@@ -68,6 +70,8 @@ the retained and V2 APIs.
 
 `Database.DuckDB.Simple.Streaming` provides V2 row and Arrow streaming. The
 advanced opaque equality callback remains available through the raw API.
+[The extension recipe](extensions/README.md) builds and loads a Haskell
+extension.
 
 ## Native limitations
 

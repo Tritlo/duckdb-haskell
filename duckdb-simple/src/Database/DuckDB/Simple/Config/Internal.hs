@@ -6,9 +6,9 @@
 -- Description : Share the typed custom option registration for connections and extensions.
 --
 -- The cabal file lists this hidden module in @other-modules@.
--- "Database.DuckDB.Simple.Config" exports the form for a connection.
--- The form that takes a registration target,
--- 'registerCustomOptionOn', is for the module of the loadable extensions.
+-- 'registerCustomOptionOn' takes a registration target.
+-- "Database.DuckDB.Simple.Config" exports the connection form.
+-- "Database.DuckDB.Simple.Extension" exports the extension form.
 module Database.DuckDB.Simple.Config.Internal (
   CustomOption (..),
   registerCustomOptionOn,
@@ -16,12 +16,11 @@ module Database.DuckDB.Simple.Config.Internal (
 
 import Control.Exception (bracket)
 import Control.Monad (forM_, when)
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (targetCastFactory)
 import Database.DuckDB.Simple.FromField (FieldValue)
-import Database.DuckDB.Simple.Materialize (VectorReader, materializeValue, rejectRows)
+import Database.DuckDB.Simple.Materialize (VectorReader, callbackReadFactory, materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Typed (checkArgumentType)
 import Database.DuckDB.Simple.V2.Config (registerCustomOptionWith)
@@ -95,7 +94,7 @@ updateWithValue casts update info context = withContextFactory context \factory 
   bracket
     (output (c_duckdb_v2_custom_option_update_get_value info))
     destroyValue
-    (materializeValue unexpectedVariant (fromMaybe factory casts))
+    (materializeValue unexpectedVariant (callbackReadFactory casts factory))
     >>= update
 
 -- | Raise an @SQLError@ for a VARIANT value. The update function of a custom

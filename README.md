@@ -115,7 +115,9 @@ For raw API changes and earlier upgrade notes, see
 Available on [Hackage](https://hackage.haskell.org/package/duckdb-simple).
 `duckdb-simple` builds on `duckdb-ffi` to provide an interface in the style of
 `sqlite-simple` and `postgresql-simple`. It uses `ToField` for parameter binding
-and `FromField` for result conversion.
+and `FromField` for result conversion. Custom decoders return `Conversion a`,
+which supports explicit IO and conversion errors. Query APIs run conversions;
+`runConversion :: Conversion a -> IO (Ok a)` runs a standalone decoder.
 
 ### Highlights
 

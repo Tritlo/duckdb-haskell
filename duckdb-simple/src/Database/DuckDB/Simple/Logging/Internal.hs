@@ -8,9 +8,9 @@
 -- Description : Share the log sink registration for connections and extensions.
 --
 -- The cabal file lists this hidden module in @other-modules@.
--- "Database.DuckDB.Simple.Logging" exports the forms for a connection and for
--- an instance. The form that takes a registration target, 'registerLogSinkOn',
--- is for the module of the loadable extensions.
+-- 'registerLogSinkOn' takes a registration target.
+-- "Database.DuckDB.Simple.Logging" exports the connection and instance forms.
+-- "Database.DuckDB.Simple.Extension" exports the extension form.
 module Database.DuckDB.Simple.Logging.Internal (
   LogEntry (..),
   LogLevel (..),

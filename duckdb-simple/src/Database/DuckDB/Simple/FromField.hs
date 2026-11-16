@@ -1,9 +1,13 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TypeApplications #-}
@@ -33,14 +37,19 @@ module Database.DuckDB.Simple.FromField (
   TimeWithZone (..),
   timeWithZone,
   timeWithZoneZone,
+  SizedArray,
+  sizedArray,
+  sizedArrayFromList,
+  sizedArrayToArray,
   ResultError (..),
   FieldParser,
   FromField (..),
   returnError,
+  fieldTypeName,
 ) where
 
-import Control.Exception (Exception (..), SomeException (..))
-import Data.Array (Array, assocs, bounds, listArray, range, (!))
+import Control.Exception (Exception (..))
+import Data.Array (Array, assocs, bounds, elems, listArray, rangeSize)
 import Data.Bits (Bits (..), finiteBitSize)
 import qualified Data.ByteString as BS
 import Data.Data (Typeable, typeRep)
@@ -63,6 +72,7 @@ import Data.Time.LocalTime (
  )
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
+import Database.DuckDB.Simple.Conversion (Conversion, conversionErrorWith)
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import Database.DuckDB.Simple.LogicalRep (
   LogicalTypeId (..),
@@ -72,11 +82,16 @@ import Database.DuckDB.Simple.LogicalRep (
   TupleValue (..),
   UnionMemberType (..),
   UnionValue (..),
+  aliasBase,
+  listElementType,
+  logicalTypeSQL,
+  mapEntryTypes,
  )
-import Database.DuckDB.Simple.Ok
+import Database.DuckDB.Simple.Native (arraySizeReason)
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import GHC.Float (double2Float, float2Double, int2Double, int2Float, rationalToDouble, rationalToFloat, word2Double)
 import GHC.Num.Integer (integerFromWordList)
+import GHC.TypeLits (KnownNat, Nat, natVal)
 import Numeric.Natural (Natural)
 
 -- | Internal representation of a column value.
@@ -123,7 +138,7 @@ data FieldValue
   deriving (Eq, Show)
 
 -- | Exact-width decimal payload plus its declared width and scale. A parameter
--- of this type binds as a DECIMAL with this width and scale. An @Array@, a
+-- of this type binds as a DECIMAL with this width and scale. A @SizedArray@, a
 -- list, or a typed row cannot hold it, because it has no @DuckDBColumnType@
 -- instance: one column type cannot give the width and scale of each value.
 data DecimalValue = DecimalValue
@@ -264,6 +279,46 @@ timeWithZone time zone = TimeWithZone time (fromIntegral (timeZoneMinutes zone) 
 timeWithZoneZone :: TimeWithZone -> TimeZone
 timeWithZoneZone value = minutesToTimeZone (fromIntegral (timeWithZoneOffsetSeconds value `quot` 60))
 
+type role SizedArray nominal representational
+
+-- | An 'Array' of exactly @n@ values, with the bounds @(0, n - 1)@. A
+-- parameter of this type binds as the ARRAY type @T[n]@, and a typed
+-- registration declares that type. See Note [Sized arrays] in
+-- "Database.DuckDB.Simple.ToField". Make a value with 'sizedArray' or
+-- 'sizedArrayFromList'.
+newtype SizedArray (n :: Nat) a = SizedArray (Array Int a)
+  deriving stock (Eq, Ord, Show, Functor, Foldable, Traversable)
+
+-- | Make a t'SizedArray' from an 'Array' with any bounds. The result is
+-- 'Nothing' when the array does not have exactly @n@ values. The result has
+-- the values in their order, with the bounds @(0, n - 1)@.
+sizedArray :: forall n a. (KnownNat n) => Array Int a -> Maybe (SizedArray n a)
+sizedArray values
+  | toInteger count == natVal (Proxy @n) = Just (SizedArray (listArray (0, count - 1) (elems values)))
+  | otherwise = Nothing
+  where
+    count = rangeSize (bounds values)
+
+-- | Make a t'SizedArray' from a list. The result is 'Nothing' when the list
+-- does not have exactly @n@ values. The count is checked before the 'Array'
+-- is built, and the check reads at most @n + 1@ elements.
+-- A size above @maxBound :: Int@ gives 'Nothing' without reading the list.
+sizedArrayFromList :: forall n a. (KnownNat n) => [a] -> Maybe (SizedArray n a)
+sizedArrayFromList values
+  | size > toInteger (maxBound :: Int) = Nothing
+  | hasSize size values = Just (SizedArray (listArray (0, fromInteger size - 1) values))
+  | otherwise = Nothing
+  where
+    size = natVal (Proxy @n)
+    hasSize 0 [] = True
+    hasSize 0 (_ : _) = False
+    hasSize _ [] = False
+    hasSize remaining (_ : rest) = hasSize (remaining - 1) rest
+
+-- | Give the 'Array' of a t'SizedArray', with the bounds @(0, n - 1)@.
+sizedArrayToArray :: SizedArray n a -> Array Int a
+sizedArrayToArray (SizedArray values) = values
+
 -- | Match signed values without narrowing to the machine word size.
 pattern FieldInt :: Int64 -> FieldValue
 pattern FieldInt i <- (fieldValueToInt -> Just i)
@@ -290,13 +345,47 @@ fieldValueToWord (FieldWord32 i) = Just (fromIntegral i)
 fieldValueToWord (FieldWord64 i) = Just i
 fieldValueToWord _ = Nothing
 
--- | Metadata for a single column in a row.
+-- | Metadata for a single column in a row. The SQL type is an explicit
+-- conversion, so a field has no equality or display instance.
 data Field = Field
   { fieldName :: Text
   , fieldIndex :: Int
   , fieldValue :: FieldValue
+  , fieldType :: Conversion LogicalTypeRep
+  -- ^ Read the SQL type, with each alias. VARIANT means that the type of the
+  -- stored value decides. See Note [Column types].
   }
-  deriving (Eq, Show)
+
+{- Note [Column types]
+~~~~~~~~~~~~~~~~~~~~~~
+fieldType reads the SQL type of a Field, with each alias (see
+Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep"). Each place that
+makes a Field supplies a conversion:
+
+- A result column. The query result owns its native logical type. A query
+  parser runs before this metadata scope closes. A cursor retains its scope
+  until exhaustion, reset, or statement closure.
+- A callback argument. The callback owns its native logical type. Its scope
+  closes when the callback invocation returns.
+- A LIST or ARRAY element, or a MAP key or value. The reader maps the type
+  projection over the parent's conversion with listElementType or mapEntryTypes.
+- A synthetic field made from a FieldValue alone. Its conversion returns VARIANT.
+
+VARIANT means that the stored value determines its type. An element of a
+VARIANT column also has type VARIANT. The fieldType action converts no type
+tree or ENUM dictionary until requested. Structured value readers can also
+build type trees. See Note [Type trees] in
+"Database.DuckDB.Simple.Materialize".
+
+The scope caches successful type reads. An interrupted read can retry while
+the scope remains open. Closure releases native types and clears the cache.
+An escaped native conversion raises SQLError with the message
+"duckdb-simple: field type scope is closed", including a cached conversion.
+A LogicalTypeRep snapshot already returned to the caller is pure and remains
+valid after closure. Completed conversion diagnostics are also pure. The
+library resolves them before closing the scope. See Note [Conversion effects]
+in "Database.DuckDB.Simple.Conversion".
+-}
 
 -- | Exception thrown if conversion from a SQL value to a Haskell
 -- value fails.
@@ -347,10 +436,9 @@ renderResultError = \case
 
 -- | Parser used by @FromField@ instances and utilities such as
 -- @Database.DuckDB.Simple.FromRow.fieldWith@. The supplied @Field@ contains
--- column metadata and an already-decoded @FieldValue@; callers should return
--- @Ok@ on success or @Errors@ (typically wrapping a @ResultError@) when the
--- conversion fails.
-type FieldParser a = Field -> Ok a
+-- column metadata and an already-decoded @FieldValue@. Use 'pure' for success
+-- or 'returnError' for a conversion failure.
+type FieldParser a = Field -> Conversion a
 
 -- | Types that can be constructed from a DuckDB column. Each instance says
 -- which SQL types it reads. See Note [Reads of another SQL type].
@@ -379,10 +467,11 @@ them.
 The instances do not read a pair whose cast needs data that the decoded value
 does not have, or whose value the library cannot give exactly. A read of such a
 pair raises Incompatible, as for each other pair that an instance does not
-read. The error names the SQL type of the decoded value, which is not always
-the name that typeof gives: a TIMESTAMP_S, TIMESTAMP_MS, or TIMESTAMP_NS value
-is TIMESTAMP, a TIMESTAMPTZ_NS value is TIMESTAMPTZ, a VARIANT value has the
-type of its payload, and the error of a String names Text. These pairs are:
+read. The error names the SQL type of the column in the text of DuckDB
+(fieldTypeName), for example TIMESTAMP_NS or DECIMAL(18,3). For a column of the
+type VARIANT, it names the type of the stored value in the same text
+(fieldValueTypeName), and the error of a String names Text. Error diagnostics
+read type metadata only when the final conversion fails. These pairs are:
 
 - UTCTime from TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP_NS, and DATE, and
   LocalTime from TIMESTAMPTZ and TIMESTAMPTZ_NS. These casts use the TimeZone
@@ -406,9 +495,9 @@ type of its payload, and the error of a String names Text. These pairs are:
   VARIANT, or keys out of ascending order), a FieldEnum, a FieldMap, a
   FieldUnion, or a GEOMETRY with a CRS, at any depth. The cast to VARIANT gives
   another value. Write c::VARIANT. A VARIANT column decodes only to values of
-  the VARIANT shape. FromField does not know the SQL type of a column, so the
-  one known difference stays: a JSON column reads as its text, as a VARCHAR
-  column does, where c::VARIANT gives the parsed value. The bind side
+  the VARIANT shape. A JSON type at any depth raises Incompatible, because
+  DuckDB parses its text when it casts to VARIANT. Write c::VARIANT for the
+  parsed value. The bind side
   (variantPayloadType in "Database.DuckDB.Simple.ToField") accepts more: it
   binds a FieldArray and a FieldTuple as a VARIANT list, and the fields of each
   FieldStruct as VARIANT values.
@@ -426,13 +515,13 @@ See Note [DECIMAL as DOUBLE and FLOAT] for the floating-point value of a DECIMAL
 
 -- | Reads each SQL type, and does not convert the value.
 instance FromField FieldValue where
-  fromField Field{fieldValue} = Ok fieldValue
+  fromField Field{fieldValue} = pure fieldValue
 
 -- | Reads GEOMETRY, with its CRS.
 instance FromField RawGeometry where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldGeometry value -> Ok value
+      FieldGeometry value -> pure value
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f "expected GEOMETRY"
 
@@ -448,7 +537,7 @@ instance FromField G.Geometry where
 instance FromField (StructValue FieldValue) where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldStruct structVal -> Ok structVal
+      FieldStruct structVal -> pure structVal
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f "expected STRUCT"
 
@@ -456,7 +545,7 @@ instance FromField (StructValue FieldValue) where
 instance FromField (UnionValue FieldValue) where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldUnion unionVal -> Ok unionVal
+      FieldUnion unionVal -> pure unionVal
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f "expected UNION"
 
@@ -467,9 +556,9 @@ instance FromField UUID.UUID where
     case fieldValue of
       FieldText t ->
         case UUID.fromText t of
-          Just uuid -> Ok uuid
+          Just uuid -> pure uuid
           Nothing -> returnError ConversionFailed f "invalid UUID format"
-      FieldUUID uuid -> Ok uuid
+      FieldUUID uuid -> pure uuid
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
@@ -477,7 +566,7 @@ instance FromField UUID.UUID where
 instance FromField (TupleValue FieldValue) where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldTuple tuple -> Ok tuple
+      FieldTuple tuple -> pure tuple
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f "expected TUPLE"
 
@@ -486,8 +575,8 @@ instance FromField (TupleValue FieldValue) where
 instance FromField Bool where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldBool b -> Ok b
-      FieldInt i -> Ok (i /= 0)
+      FieldBool b -> pure b
+      FieldInt i -> pure (i /= 0)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
@@ -507,7 +596,7 @@ instance FromField Int8 where
 instance FromField Int64 where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldInt i -> Ok i
+      FieldInt i -> pure i
       FieldHugeInt value -> boundedFromInteger f value
       FieldUHugeInt value -> boundedFromInteger f value
       FieldNull -> returnError UnexpectedNull f ""
@@ -550,11 +639,11 @@ instance FromField Int where
 instance FromField Integer where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldInt i -> Ok (fromIntegral i)
-      FieldWord w -> Ok (fromIntegral w)
-      FieldBigNum (BigNum big) -> Ok big
-      FieldHugeInt value -> Ok value
-      FieldUHugeInt value -> Ok value
+      FieldInt i -> pure (fromIntegral i)
+      FieldWord w -> pure (fromIntegral w)
+      FieldBigNum (BigNum big) -> pure big
+      FieldHugeInt value -> pure value
+      FieldUHugeInt value -> pure value
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
@@ -565,18 +654,18 @@ instance FromField Natural where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldInt i
-        | i >= 0 -> Ok (fromIntegral i)
+        | i >= 0 -> pure (fromIntegral i)
         | otherwise ->
             returnError ConversionFailed f "negative value cannot be converted to Natural"
-      FieldWord w -> Ok (fromIntegral w)
+      FieldWord w -> pure (fromIntegral w)
       FieldHugeInt value
-        | value >= 0 -> Ok (fromIntegral value)
+        | value >= 0 -> pure (fromIntegral value)
         | otherwise ->
             returnError ConversionFailed f "negative value cannot be converted to Natural"
-      FieldUHugeInt value -> Ok (fromIntegral value)
+      FieldUHugeInt value -> pure (fromIntegral value)
       FieldBigNum (BigNum big) ->
         if big >= 0
-          then Ok $ fromIntegral big
+          then pure $ fromIntegral big
           else returnError ConversionFailed f "negative value cannot be converted to Natural"
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
@@ -588,10 +677,10 @@ instance FromField Word64 where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldInt i
-        | i >= 0 -> Ok (fromIntegral i)
+        | i >= 0 -> pure (fromIntegral i)
         | otherwise ->
             returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-      FieldWord w -> Ok w
+      FieldWord w -> pure w
       FieldHugeInt value
         | value >= 0 -> boundedFromInteger f value
         | otherwise ->
@@ -681,10 +770,10 @@ instance FromField Word where
 instance FromField Double where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldDouble d -> Ok d
-      FieldFloat value -> Ok (float2Double value)
-      FieldInt i -> Ok (fromIntegral i)
-      FieldDecimal value -> Ok (decimalToDouble value)
+      FieldDouble d -> pure d
+      FieldFloat value -> pure (float2Double value)
+      FieldInt i -> pure (fromIntegral i)
+      FieldDecimal value -> pure (decimalToDouble value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
@@ -699,14 +788,13 @@ instance FromField Float where
       -- in the same way. As seen in CI, the DuckDB 2.0.0 build for macOS on
       -- Apple Silicon rounds some BIGINT values above 2^53 two times in its
       -- cast to FLOAT, and the library gives the nearest value there.
-      FieldInt i -> Ok (int2Float (fromIntegral i))
-      FieldDecimal value -> Ok (decimalToFloat value)
-      _ -> case (fromField field :: Ok Double) of
-        Errors err -> Errors err
-        Ok d
-          | not (isInfinite d || isNaN d) && isInfinite (double2Float d) ->
-              returnError ConversionFailed field "floating-point value out of bounds"
-          | otherwise -> Ok (double2Float d)
+      FieldInt i -> pure (int2Float (fromIntegral i))
+      FieldDecimal value -> pure (decimalToFloat value)
+      _ -> do
+        d <- fromField field :: Conversion Double
+        if not (isInfinite d || isNaN d) && isInfinite (double2Float d)
+          then returnError ConversionFailed field "floating-point value out of bounds"
+          else pure (double2Float d)
 
 {- Note [DECIMAL as DOUBLE and FLOAT]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -792,10 +880,10 @@ hugeIntToDouble value
 instance FromField Text where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldText t -> Ok t
-      FieldInt i -> Ok (Text.pack (show i))
-      FieldBool b -> Ok (if b then Text.pack "true" else Text.pack "false")
-      FieldEnum _ label -> Ok label
+      FieldText t -> pure t
+      FieldInt i -> pure (Text.pack (show i))
+      FieldBool b -> pure (if b then Text.pack "true" else Text.pack "false")
+      FieldEnum _ label -> pure label
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
@@ -809,9 +897,9 @@ instance FromField String where
 instance FromField BS.ByteString where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldBlob bs -> Ok bs
-      FieldGeometry RawGeometry{rawGeometryWKB} -> Ok rawGeometryWKB
-      FieldBit (BitString _ bits) -> Ok bits
+      FieldBlob bs -> pure bs
+      FieldGeometry RawGeometry{rawGeometryWKB} -> pure rawGeometryWKB
+      FieldBit (BitString _ bits) -> pure bits
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
@@ -819,7 +907,7 @@ instance FromField BS.ByteString where
 instance FromField BitString where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldBit b -> Ok b
+      FieldBit b -> pure b
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
@@ -827,7 +915,7 @@ instance FromField BitString where
 instance FromField BigNum where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldBigNum big -> Ok big
+      FieldBigNum big -> pure big
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
@@ -835,45 +923,45 @@ instance FromField BigNum where
 instance {-# OVERLAPPABLE #-} (Typeable a, FromField a) => FromField [a] where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldList entries ->
-        traverse (uncurry parseElement) (zip [0 :: Int ..] entries)
-      FieldArray arr ->
-        traverse (uncurry parseElement) (assocs arr)
+      FieldList entries -> traverse fromField (elementFields f (zip [0 ..] entries))
+      FieldArray arr -> traverse fromField (elementFields f (assocs arr))
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
-    where
-      parseElement idx value =
-        fromField
-          Field
-            { fieldName = fieldNameWithIndex idx
-            , fieldIndex = fieldIndex f
-            , fieldValue = value
-            }
-      fieldNameWithIndex idx =
-        let base = fieldName f
-            idxText = Text.pack (show idx)
-        in  base <> Text.pack "[" <> idxText <> Text.pack "]"
 
--- | Reads ARRAY. Each element reads as @a@.
-instance (Typeable a, FromField a) => FromField (Array Int a) where
+-- | Give the fields of the elements of a LIST or an ARRAY field, from the index
+-- and the value of each element. An element has the name @name[index]@ and the
+-- element type of the field.
+elementFields :: Field -> [(Int, FieldValue)] -> [Field]
+elementFields f = map element
+  where
+    element (idx, value) =
+      Field
+        { fieldName = fieldName f <> Text.pack "[" <> Text.pack (show idx) <> Text.pack "]"
+        , fieldIndex = fieldIndex f
+        , fieldValue = value
+        , fieldType = elementType
+        }
+    -- The elements share the parent type conversion.
+    elementType = listElementType <$> fieldType f
+
+-- | Reads ARRAY and LIST, as a list does. A size @n@ with no DuckDB ARRAY type
+-- or a value with another count raises 'Incompatible'. See Note [Sized arrays] in
+-- "Database.DuckDB.Simple.ToField".
+instance (KnownNat n, Typeable a, FromField a) => FromField (SizedArray n a) where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldArray arr -> do
-        converted <- traverse (traverseElement arr) (range (bounds arr))
-        pure (listArray (bounds arr) converted)
+      FieldList entries -> sized (zip [0 ..] entries)
+      FieldArray arr -> sized (assocs arr)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
     where
-      traverseElement arr idx =
-        fromField
-          Field
-            { fieldName = fieldNameWithIndex idx
-            , fieldIndex = fieldIndex f
-            , fieldValue = arr ! idx
-            }
-      fieldNameWithIndex idx =
-        let idxText = Text.pack (show idx)
-        in  fieldName f <> Text.pack "[" <> idxText <> Text.pack "]"
+      size = natVal (Proxy @n)
+      sized elements
+        | Just reason <- arraySizeReason size = returnError Incompatible f reason
+        | toInteger count == size = SizedArray . listArray (0, count - 1) <$> traverse fromField (elementFields f elements)
+        | otherwise = returnError Incompatible f (Text.pack ("the value has " <> show count <> " elements"))
+        where
+          count = length elements
 
 -- | Reads MAP. Each key reads as @k@, and each value reads as @v@.
 instance (Ord k, Typeable k, Typeable v, FromField k, FromField v) => FromField (Map k v) where
@@ -890,6 +978,7 @@ instance (Ord k, Typeable k, Typeable v, FromField k, FromField v) => FromField 
               { fieldName = fieldName f <> suffix idx ".key"
               , fieldIndex = fieldIndex f
               , fieldValue = keyValue
+              , fieldType = keyType
               }
         value <-
           fromField
@@ -897,8 +986,12 @@ instance (Ord k, Typeable k, Typeable v, FromField k, FromField v) => FromField 
               { fieldName = fieldName f <> suffix idx ".value"
               , fieldIndex = fieldIndex f
               , fieldValue = valValue
+              , fieldType = valueType
               }
         pure (key, value)
+      entryTypes = mapEntryTypes <$> fieldType f
+      keyType = fst <$> entryTypes
+      valueType = snd <$> entryTypes
       suffix idx label =
         let idxText = Text.pack (show idx)
         in  Text.pack "[" <> idxText <> Text.pack "]" <> Text.pack label
@@ -907,7 +1000,7 @@ instance (Ord k, Typeable k, Typeable v, FromField k, FromField v) => FromField 
 instance FromField DecimalValue where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldDecimal dec -> Ok dec
+      FieldDecimal dec -> pure dec
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
@@ -978,9 +1071,9 @@ instance FromField Day where
 instance FromField (Unbounded Day) where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldDate day -> Ok day
+      FieldDate day -> pure day
       FieldTimestamp timestamp -> case timestampDate timestamp of
-        Just day -> Ok day
+        Just day -> pure day
         Nothing -> returnError ConversionFailed f "timestamp is outside the range of a DATE cast"
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
@@ -991,7 +1084,7 @@ instance FromField (Unbounded Day) where
 instance FromField TimeOfDay where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldTime tod -> Ok tod
+      FieldTime tod -> pure tod
       FieldTimestamp (Finite timestamp)
         | Nothing <- localTimeMicros timestamp ->
             returnError ConversionFailed f "timestamp is outside the range of a TIME cast"
@@ -1003,7 +1096,7 @@ instance FromField TimeOfDay where
 instance FromField TimeWithZone where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldTimeTZ tz -> Ok tz
+      FieldTimeTZ tz -> pure tz
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
@@ -1026,9 +1119,9 @@ instance FromField LocalTime where
 instance FromField (Unbounded LocalTime) where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldTimestamp ts -> Ok ts
+      FieldTimestamp ts -> pure ts
       FieldDate day -> case dateTimestamp day of
-        Just timestamp -> Ok timestamp
+        Just timestamp -> pure timestamp
         Nothing -> returnError ConversionFailed f "date is outside the TIMESTAMP range"
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
@@ -1037,7 +1130,7 @@ instance FromField (Unbounded LocalTime) where
 instance FromField IntervalValue where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldInterval interval -> Ok interval
+      FieldInterval interval -> pure interval
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
@@ -1054,78 +1147,93 @@ instance FromField UTCTime where
 instance FromField (Unbounded UTCTime) where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldTimestampTZ utcTime -> Ok utcTime
+      FieldTimestampTZ utcTime -> pure utcTime
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
 -- | Reject infinity when the requested Haskell type holds only finite values.
-finiteField :: (Typeable a) => Field -> Unbounded a -> Ok a
-finiteField _ (Finite value) = Ok value
+finiteField :: (Typeable a) => Field -> Unbounded a -> Conversion a
+finiteField _ (Finite value) = pure value
 finiteField field _ = returnError ConversionFailed field "infinity requires an Unbounded date or timestamp"
 
 -- | Reads NULL as Nothing, and each other value as @a@.
 instance (FromField a) => FromField (Maybe a) where
-  fromField Field{fieldValue = FieldNull} = Ok Nothing
+  fromField Field{fieldValue = FieldNull} = pure Nothing
   fromField field = Just <$> fromField field
 
 -- | Helper for bounded integral conversions.
-boundedIntegral :: forall a. (Integral a, Bounded a, Typeable a) => Field -> Int64 -> Ok a
+boundedIntegral :: forall a. (Integral a, Bounded a, Typeable a) => Field -> Int64 -> Conversion a
 boundedIntegral f = boundedFromInteger f . toInteger
 
-boundedFromInteger :: forall a. (Integral a, Bounded a, Typeable a) => Field -> Integer -> Ok a
+boundedFromInteger :: forall a. (Integral a, Bounded a, Typeable a) => Field -> Integer -> Conversion a
 boundedFromInteger f@Field{} value
   | value < toInteger (minBound :: a) =
       returnError ConversionFailed f "integer value out of bounds"
   | value > toInteger (maxBound :: a) =
       returnError ConversionFailed f "integer value out of bounds"
-  | otherwise = Ok (fromInteger value)
+  | otherwise = pure (fromInteger value)
 
--- | Helper to construct a ResultError with field context.
--- based on postgresql-simple's implementation
-returnError :: forall b. (Typeable b) => (Text -> Text -> Text -> Text -> ResultError) -> Field -> Text -> Ok b
-returnError mkError Field{fieldValue, fieldName} msg =
-  Errors
-    [ SomeException $
-        mkError
-          (fieldValueTypeName fieldValue)
-          fieldName
-          (Text.pack $ show (typeRep (Proxy @b)))
-          msg
-    ]
+-- | Construct a conversion failure with field context when diagnostics are needed.
+-- See Note [Conversion effects] in "Database.DuckDB.Simple.Conversion".
+returnError :: forall b. (Typeable b) => (Text -> Text -> Text -> Text -> ResultError) -> Field -> Text -> Conversion b
+returnError mkError Field{fieldValue, fieldName, fieldType} msg =
+  conversionErrorWith $ do
+    logical <- fieldType
+    pure $
+      mkError
+        (fieldTypeName logical fieldValue)
+        fieldName
+        (Text.pack $ show (typeRep (Proxy @b)))
+        msg
 
+-- | The SQL type name of a field in an error: the text of its type, or the type
+-- of the stored value when the type is VARIANT. See
+-- Note [Reads of another SQL type].
+fieldTypeName :: LogicalTypeRep -> FieldValue -> Text
+fieldTypeName logical value = case aliasBase logical of
+  LogicalTypeScalar LogicalTypeIdVariant -> fieldValueTypeName value
+  _ -> logicalTypeSQL logical
+
+-- | The SQL type name of a decoded value, in the type text of DuckDB
+-- (logicalTypeSQL), for example TIMESTAMP WITH TIME ZONE or DECIMAL(18,3). A
+-- value that does not hold its full type (a LIST, an ARRAY, a MAP, an ENUM, a
+-- STRUCT, a TUPLE, or a UNION) gives the name of its kind. See
+-- Note [Reads of another SQL type].
 fieldValueTypeName :: FieldValue -> Text
 fieldValueTypeName = \case
-  FieldNull -> "NULL"
-  FieldInt8{} -> "TINYINT"
-  FieldInt16{} -> "SMALLINT"
-  FieldInt32{} -> "INTEGER"
-  FieldInt64{} -> "BIGINT"
-  FieldWord8{} -> "UTINYINT"
-  FieldWord16{} -> "USMALLINT"
-  FieldWord32{} -> "UINTEGER"
-  FieldWord64{} -> "UBIGINT"
-  FieldFloat{} -> "FLOAT"
-  FieldDouble{} -> "DOUBLE"
-  FieldText{} -> "VARCHAR"
-  FieldBool{} -> "BOOLEAN"
-  FieldBlob{} -> "BLOB"
-  FieldGeometry{} -> "GEOMETRY"
-  FieldDate{} -> "DATE"
-  FieldTime{} -> "TIME"
-  FieldTimestamp{} -> "TIMESTAMP"
-  FieldInterval{} -> "INTERVAL"
-  FieldHugeInt{} -> "HUGEINT"
-  FieldUHugeInt{} -> "UHUGEINT"
-  FieldDecimal{} -> "DECIMAL"
-  FieldTimestampTZ{} -> "TIMESTAMPTZ"
-  FieldTimeTZ{} -> "TIMETZ"
-  FieldBit{} -> "BIT"
-  FieldBigNum{} -> "BIGNUM"
+  FieldNull -> scalar LogicalTypeIdSQLNull
+  FieldInt8{} -> scalar LogicalTypeIdTinyInt
+  FieldInt16{} -> scalar LogicalTypeIdSmallInt
+  FieldInt32{} -> scalar LogicalTypeIdInteger
+  FieldInt64{} -> scalar LogicalTypeIdBigInt
+  FieldWord8{} -> scalar LogicalTypeIdUTinyInt
+  FieldWord16{} -> scalar LogicalTypeIdUSmallInt
+  FieldWord32{} -> scalar LogicalTypeIdUInteger
+  FieldWord64{} -> scalar LogicalTypeIdUBigInt
+  FieldFloat{} -> scalar LogicalTypeIdFloat
+  FieldDouble{} -> scalar LogicalTypeIdDouble
+  FieldText{} -> scalar LogicalTypeIdVarchar
+  FieldBool{} -> scalar LogicalTypeIdBoolean
+  FieldBlob{} -> scalar LogicalTypeIdBlob
+  FieldGeometry RawGeometry{rawGeometryCRS} -> logicalTypeSQL (LogicalTypeGeometry rawGeometryCRS)
+  FieldDate{} -> scalar LogicalTypeIdDate
+  FieldTime{} -> scalar LogicalTypeIdTime
+  FieldTimestamp{} -> scalar LogicalTypeIdTimestamp
+  FieldInterval{} -> scalar LogicalTypeIdInterval
+  FieldHugeInt{} -> scalar LogicalTypeIdHugeInt
+  FieldUHugeInt{} -> scalar LogicalTypeIdUHugeInt
+  FieldDecimal DecimalValue{decimalWidth, decimalScale} -> logicalTypeSQL (LogicalTypeDecimal decimalWidth decimalScale)
+  FieldTimestampTZ{} -> scalar LogicalTypeIdTimestampTz
+  FieldTimeTZ{} -> scalar LogicalTypeIdTimeTz
+  FieldBit{} -> scalar LogicalTypeIdBit
+  FieldBigNum{} -> scalar LogicalTypeIdBigNum
   FieldEnum{} -> "ENUM"
   FieldArray{} -> "ARRAY"
   FieldList{} -> "LIST"
   FieldMap{} -> "MAP"
-  FieldUUID{} -> "UUID"
+  FieldUUID{} -> scalar LogicalTypeIdUUID
   FieldStruct{} -> "STRUCT"
   FieldTuple{} -> "TUPLE"
   FieldUnion{} -> "UNION"
+  where
+    scalar = logicalTypeSQL . LogicalTypeScalar

@@ -20,7 +20,7 @@ import qualified Data.Text as Text
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Data.Time.LocalTime (LocalTime, localTimeToUTC, utc)
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (FieldValue (..), StructField (..), StructValue (..))
+import Database.DuckDB.Simple.FromField (BigNum (..), FieldValue (..), StructField (..), StructValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..))
 import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Clock (getMonotonicTimeNSec)
@@ -74,9 +74,10 @@ main = do
             [Only values] <- query_ conn (collectionQuery "list(i::BIGNUM)") :: IO [Only [Integer]]
             collectionChecksum count values
           "array-bignum" -> do
-            [Only values] <-
-              query_ conn (collectionQuery ("list(i::BIGNUM)::BIGNUM[" <> Text.pack (show count) <> "]")) :: IO [Only (Array Int Integer)]
-            collectionChecksum count values
+            -- The array size comes from the command line, so read its FieldValue.
+            [Only (FieldArray values)] <-
+              query_ conn (collectionQuery ("list(i::BIGNUM)::BIGNUM[" <> Text.pack (show count) <> "]")) :: IO [Only FieldValue]
+            collectionChecksum count [value | FieldBigNum (BigNum value) <- elems values]
           "map-bignum" -> do
             [Only values] <- query_ conn (collectionQuery "map(list(i::BIGINT), list(i::BIGNUM))") :: IO [Only (Map.Map Int64 Integer)]
             collectionChecksum count values

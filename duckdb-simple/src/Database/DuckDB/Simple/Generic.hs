@@ -76,6 +76,7 @@
 module Database.DuckDB.Simple.Generic (
   -- * Field-level primitives
   DuckValue (..),
+  typedFromField,
   GToField (),
   GFromField (),
 
@@ -90,14 +91,14 @@ module Database.DuckDB.Simple.Generic (
   ViaDuckDB (..),
 ) where
 
-import Control.Exception (displayException)
+import Control.Exception (toException)
 import Control.Monad (unless)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List (intercalate, stripPrefix)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -107,6 +108,12 @@ import Data.Time.LocalTime (LocalTime, TimeOfDay)
 import Data.Typeable (Typeable)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
+import Database.DuckDB.Simple.Conversion (
+  Conversion,
+  conversionError,
+  mapConversionErrors,
+  mapConversionErrorsWith,
+ )
 import Database.DuckDB.Simple.Element (containsType, valueTypeName)
 import Database.DuckDB.Simple.FromField (
   Field (..),
@@ -114,8 +121,12 @@ import Database.DuckDB.Simple.FromField (
   FromField (..),
   IntervalValue (..),
   ResultError (..),
+  SizedArray,
   TimeWithZone (..),
+  fieldTypeName,
   returnError,
+  sizedArrayFromList,
+  sizedArrayToArray,
  )
 import Database.DuckDB.Simple.Internal (duckDBTypeToName)
 import Database.DuckDB.Simple.LogicalRep (
@@ -125,13 +136,15 @@ import Database.DuckDB.Simple.LogicalRep (
   TypeDeclaration (..),
   UnionMemberType (..),
   UnionValue (..),
+  listElementType,
+  mapEntryTypes,
  )
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..), ToField (..))
 import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Generics
+import GHC.TypeLits (KnownNat, natVal)
 import Numeric.Natural (Natural)
 
 --------------------------------------------------------------------------------
@@ -147,44 +160,78 @@ import Numeric.Natural (Natural)
 --
 -- The primitive instances define the scalar representations for generic
 -- conversion. The default decoder uses the @FromField@ instance of the type.
+-- See Note [Generic decoding].
 class DuckValue a where
+  -- | Encode a field value.
   duckToField :: a -> FieldValue
-  duckFromField :: FieldValue -> Either String a
+
+  -- | Decode a field value. Run it with @runConversion@.
+  duckFromField :: FieldValue -> Conversion a
+
+  -- | Give the SQL type used to encode the field.
   duckLogicalType :: Proxy a -> LogicalTypeRep
 
-  default duckFromField :: (FromField a, Show a) => FieldValue -> Either String a
-  duckFromField fv =
-    case fromField Field{fieldName = Text.empty, fieldIndex = 0, fieldValue = fv} of
-      Ok x -> Right x
-      Errors errs -> Left (intercalate "; " (map exceptionText errs))
+  -- | Decode a value with the SQL type of its place, for example the type of a
+  -- field of a STRUCT or of an element of a LIST. The default runs
+  -- 'duckFromField' and ignores the supplied type. An instance that reads
+  -- through 'FromField' can use
+  -- 'typedFromField', so that 'fieldType' returns the type. See
+  -- Note [Column types] in "Database.DuckDB.Simple.FromField".
+  duckFromTypedField :: LogicalTypeRep -> FieldValue -> Conversion a
+  duckFromTypedField _ = duckFromField
+
+  default duckFromField :: (FromField a) => FieldValue -> Conversion a
+  duckFromField = typedFromField (LogicalTypeScalar LogicalTypeIdVariant)
+
+{- Note [Generic decoding]
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+Generic decoding uses Conversion because a FromField instance can request SQL
+metadata. Encoding and logical type declarations remain pure. Error context is
+added only when a conversion's failure is selected. A discarded Alternative
+branch does not request metadata for its diagnostic.
+-}
+
+-- | Decode a value through 'FromField', with a t'Field' of the given SQL type.
+-- See Note [Generic decoding] and Note [Column types] in
+-- "Database.DuckDB.Simple.FromField".
+typedFromField :: (FromField a) => LogicalTypeRep -> FieldValue -> Conversion a
+typedFromField logical fv =
+  fromField Field{fieldName = Text.empty, fieldIndex = 0, fieldValue = fv, fieldType = pure logical}
 
 instance DuckValue Variant where
   duckToField = variantPayload
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdVariant
+  duckFromTypedField = typedFromField
 
 instance DuckValue Bool where
   duckToField = FieldBool
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdBoolean
+  duckFromTypedField = typedFromField
 
 instance DuckValue Int where
   duckToField = FieldInt64 . fromIntegral
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdBigInt
+  duckFromTypedField = typedFromField
 
 instance DuckValue Int8 where
   duckToField = FieldInt8
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdTinyInt
+  duckFromTypedField = typedFromField
 
 instance DuckValue Int16 where
   duckToField = FieldInt16
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdSmallInt
+  duckFromTypedField = typedFromField
 
 instance DuckValue Int32 where
   duckToField = FieldInt32
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdInteger
+  duckFromTypedField = typedFromField
 
 instance DuckValue Int64 where
   duckToField = FieldInt64
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdBigInt
+  duckFromTypedField = typedFromField
 
 -- | A field of a generic record has the type HUGEINT. A value outside that range
 -- raises an error. A top-level parameter of this type also binds as HUGEINT
@@ -193,6 +240,7 @@ instance DuckValue Int64 where
 instance DuckValue Integer where
   duckToField = FieldHugeInt
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdHugeInt
+  duckFromTypedField = typedFromField
 
 -- | A field of a generic record has the type UHUGEINT. A value outside that range
 -- raises an error. A top-level parameter of this type binds as HUGEINT when the
@@ -201,94 +249,117 @@ instance DuckValue Integer where
 instance DuckValue Natural where
   duckToField = FieldUHugeInt . toInteger
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUHugeInt
+  duckFromTypedField = typedFromField
 
 instance DuckValue Word where
   duckToField = FieldWord64 . fromIntegral
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUBigInt
+  duckFromTypedField = typedFromField
 
 instance DuckValue Word8 where
   duckToField = FieldWord8
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUTinyInt
+  duckFromTypedField = typedFromField
 
 instance DuckValue Word16 where
   duckToField = FieldWord16
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUSmallInt
+  duckFromTypedField = typedFromField
 
 instance DuckValue Word32 where
   duckToField = FieldWord32
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUInteger
+  duckFromTypedField = typedFromField
 
 instance DuckValue Word64 where
   duckToField = FieldWord64
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUBigInt
+  duckFromTypedField = typedFromField
 
 instance DuckValue Float where
   duckToField = FieldFloat
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdFloat
+  duckFromTypedField = typedFromField
 
 instance DuckValue Double where
   duckToField = FieldDouble
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdDouble
+  duckFromTypedField = typedFromField
 
 instance DuckValue Text where
   duckToField = FieldText
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdVarchar
+  duckFromTypedField = typedFromField
 
 instance DuckValue String where
   duckToField = FieldText . Text.pack
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdVarchar
   duckFromField fv = Text.unpack <$> duckFromField fv
+  duckFromTypedField logical fv = Text.unpack <$> duckFromTypedField logical fv
 
 instance DuckValue BS.ByteString where
   duckToField = FieldBlob
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdBlob
+  duckFromTypedField = typedFromField
 
 instance DuckValue Day where
   duckToField = FieldDate . Finite
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdDate
+  duckFromTypedField = typedFromField
 
 instance DuckValue TimeOfDay where
   duckToField = FieldTime
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdTime
+  duckFromTypedField = typedFromField
 
 instance DuckValue LocalTime where
   duckToField = FieldTimestamp . Finite
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdTimestamp
+  duckFromTypedField = typedFromField
 
 instance DuckValue UTCTime where
   duckToField = FieldTimestampTZ . Finite
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdTimestampTz
+  duckFromTypedField = typedFromField
 
 instance DuckValue (Unbounded Day) where
   duckToField = FieldDate
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdDate
+  duckFromTypedField = typedFromField
 
 instance DuckValue (Unbounded LocalTime) where
   duckToField = FieldTimestamp
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdTimestamp
+  duckFromTypedField = typedFromField
 
 instance DuckValue (Unbounded UTCTime) where
   duckToField = FieldTimestampTZ
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdTimestampTz
+  duckFromTypedField = typedFromField
 
 instance DuckValue UUID.UUID where
   duckToField = FieldUUID
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUUID
+  duckFromTypedField = typedFromField
 
 instance DuckValue IntervalValue where
   duckToField = FieldInterval
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdInterval
+  duckFromTypedField = typedFromField
 
 instance DuckValue TimeWithZone where
   duckToField = FieldTimeTZ
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdTimeTz
+  duckFromTypedField = typedFromField
 
 instance (DuckValue a) => DuckValue (Maybe a) where
   duckToField (Just x) = duckToField x
   duckToField Nothing = FieldNull
   duckLogicalType _ = duckLogicalType (Proxy @a)
-  duckFromField FieldNull = Right Nothing
+  duckFromField FieldNull = pure Nothing
   duckFromField other = Just <$> duckFromField other
+  duckFromTypedField _ FieldNull = pure Nothing
+  duckFromTypedField logical other = Just <$> duckFromTypedField logical other
 
 -- | List values encode as DuckDB LIST (variable-length). A field reads a LIST
 -- and an ARRAY, as the top-level @FromField@ instance of a list does. 'String'
@@ -296,30 +367,37 @@ instance (DuckValue a) => DuckValue (Maybe a) where
 instance {-# OVERLAPPABLE #-} (DuckValue a) => DuckValue [a] where
   duckToField xs = FieldList (map duckToField xs)
   duckLogicalType _ = LogicalTypeList (duckLogicalType (Proxy @a))
-  duckFromField (FieldList fvs) = traverse duckFromField fvs
-  duckFromField (FieldArray arr) = traverse duckFromField (elems arr)
-  duckFromField other = unexpectedValue "LIST or ARRAY" other
+  duckFromField = duckFromTypedField (LogicalTypeScalar LogicalTypeIdVariant)
+  duckFromTypedField logical (FieldList fvs) = traverse (duckFromTypedField (listElementType logical)) fvs
+  duckFromTypedField logical (FieldArray arr) = traverse (duckFromTypedField (listElementType logical)) (elems arr)
+  duckFromTypedField logical other = unexpectedTypedValue logical "LIST or ARRAY" other
 
--- | Array values encode as DuckDB ARRAY values. A type has no size, so the
--- instance declares the size 0. When a generic record binds, the value of an
--- Array field gives the size. DuckDB rejects an ARRAY without elements. DuckDB
--- also rejects the declared size 0 in these cases: an Array field with the value
--- Nothing, a LIST, ARRAY, or MAP field with an Array in its element, key, or
--- value type (also when the field has no elements), and each constructor of a
--- sum type that has an Array field. The error is "ARRAY type size must be at
--- least 1".
-instance (DuckValue a) => DuckValue (Array Int a) where
-  duckToField arr =
-    let values = elems arr
-        (low, high) = (0, length values - 1)
-    in  FieldArray (listArray (low, high) (map duckToField values))
-  duckLogicalType _ = LogicalTypeArray (duckLogicalType (Proxy @a)) 0
-  duckFromField (FieldArray arr) = do
-    let values = elems arr
-    decoded <- traverse duckFromField values
-    let (low, high) = (0, length decoded - 1)
-    pure (listArray (low, high) decoded)
-  duckFromField other = unexpectedValue "ARRAY" other
+-- | A 'SizedArray' field is an ARRAY of size @n@. It reads an ARRAY and a LIST of
+-- @n@ elements, as the 'FromField' instance does. See Note [Sized arrays] in
+-- "Database.DuckDB.Simple.ToField".
+instance (KnownNat n, DuckValue a) => DuckValue (SizedArray n a) where
+  duckToField values = FieldArray (fmap duckToField (sizedArrayToArray values))
+
+  -- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Native".
+  duckLogicalType _ = LogicalTypeArray (duckLogicalType (Proxy @a)) (fromInteger (min (natVal (Proxy @n)) (toInteger (maxBound :: Word64))))
+  duckFromField = duckFromTypedField (LogicalTypeScalar LogicalTypeIdVariant)
+  duckFromTypedField logical value = case value of
+    FieldArray arr -> sized (elems arr)
+    FieldList entries -> sized entries
+    other -> unexpectedTypedValue logical "ARRAY" other
+    where
+      size = natVal (Proxy @n)
+      sized entries
+        | Just reason <- arraySizeReason size = conversionError (sizeError reason)
+        | otherwise = case sizedArrayFromList entries of
+            Nothing -> conversionError (sizeError (Text.pack ("the value has " <> show (length entries) <> " elements")))
+            Just values -> traverse (duckFromTypedField (listElementType logical)) values
+      sizeError reason =
+        Incompatible
+          (fieldTypeName logical value)
+          Text.empty
+          (Text.pack ("SizedArray " <> show size))
+          reason
 
 -- | Map values encode as DuckDB MAP.
 instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
@@ -330,21 +408,28 @@ instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
     LogicalTypeMap
       (duckLogicalType (Proxy @k))
       (duckLogicalType (Proxy @v))
-  duckFromField (FieldMap pairs) = do
+  duckFromField = duckFromTypedField (LogicalTypeScalar LogicalTypeIdVariant)
+  duckFromTypedField logical (FieldMap pairs) = do
     decodedPairs <- traverse decodePair pairs
     pure (Map.fromList decodedPairs)
     where
+      (keyType, valueType) = mapEntryTypes logical
       decodePair (kfv, vfv) = do
-        k <- duckFromField kfv
-        v <- duckFromField vfv
+        k <- duckFromTypedField keyType kfv
+        v <- duckFromTypedField valueType vfv
         pure (k, v)
-  duckFromField other = unexpectedValue "MAP" other
+  duckFromTypedField logical other = unexpectedTypedValue logical "MAP" other
 
 -- | The error of a decoder that does not read a value. The text has the form of
 -- each other read error: it names the SQL type of the value, not the value,
 -- because a value can be large.
-unexpectedValue :: String -> FieldValue -> Either String a
-unexpectedValue expected value = Left (displayException (Incompatible (valueTypeName value) Text.empty (Text.pack expected) Text.empty))
+unexpectedValue :: String -> FieldValue -> Conversion a
+unexpectedValue expected value = conversionError (Incompatible (valueTypeName value) Text.empty (Text.pack expected) Text.empty)
+
+-- | The error of a decoder that cannot read a value with the given SQL type.
+-- It names the type as 'returnError' does.
+unexpectedTypedValue :: LogicalTypeRep -> String -> FieldValue -> Conversion a
+unexpectedTypedValue logical expected value = conversionError (Incompatible (fieldTypeName logical value) Text.empty (Text.pack expected) Text.empty)
 
 --------------------------------------------------------------------------------
 -- Generic machinery
@@ -369,8 +454,9 @@ genericToFieldValue = encodedValue . gToField . from
 genericLogicalType :: forall a. (Generic a, GToField (Rep a)) => Proxy a -> LogicalTypeRep
 genericLogicalType _ = gLogicalType (Proxy @(Rep a ()))
 
--- | Decode a DuckDB @FieldValue@ back into a Haskell value using its generic representation.
-genericFromFieldValue :: forall a. (Generic a, GFromField (Rep a)) => FieldValue -> Either String a
+-- | Decode a DuckDB @FieldValue@ with its generic representation. Run the
+-- result with @runConversion@. See Note [Generic decoding].
+genericFromFieldValue :: forall a. (Generic a, GFromField (Rep a)) => FieldValue -> Conversion a
 genericFromFieldValue fv = to <$> gFromField fv
 
 -- | Extract the STRUCT encoding when the value produces one.
@@ -545,7 +631,7 @@ toMaybe name
 class GSum f where
   gSumMembers :: Proxy (f p) -> [UnionMemberType]
   gSumEncode :: f p -> (Int, FieldValue)
-  gSumDecode :: Int -> FieldValue -> Either String (f p)
+  gSumDecode :: Int -> FieldValue -> Conversion (f p)
 
 instance (GSum a, GSum b) => GSum (a :+: b) where
   gSumMembers _ = gSumMembers (Proxy @(a _)) ++ gSumMembers (Proxy @(b _))
@@ -581,54 +667,65 @@ instance (Constructor c, GStruct f, GStructDecode f) => GSum (M1 C c f) where
         indexMap = Map.fromList (zip names [0 ..])
     in  (0, FieldStruct StructValue{structValueFields = valueArray, structValueTypes = typeArray, structValueIndex = indexMap})
   gSumDecode idx payload
-    | idx /= 0 = Left ("duckdb-simple: union tag mismatch (expected 0, got " <> show idx <> ")")
+    | idx /= 0 = decodingError ("duckdb-simple: union tag mismatch (expected 0, got " <> show idx <> ")")
     | otherwise =
         case payload of
           -- Version 0.3 wrote this payload. See Note [Types without fields].
           FieldNull -> M1 . fst <$> gStructDecodeList (Proxy @(f _)) []
           FieldStruct structVal -> do
-            ordered <- orderStructFields (gStructTypes (Proxy @(f _))) structVal
+            ordered <- either decodingError pure (orderStructFields (gStructTypes (Proxy @(f _))) structVal)
             M1 <$> gStructDecodeStruct (Proxy @(f _)) ordered
           other -> unexpectedValue "STRUCT for a member of a sum type" other
 
 -- | Match decoded fields to their selector names before product decoding.
 orderStructFields :: [FieldComponent LogicalTypeRep] -> StructValue FieldValue -> Either String (StructValue FieldValue)
-orderStructFields components sv = do
-  let names = resolveNames (zip [0 ..] (map fcName components))
-      fields = elems (structValueFields sv)
-      byName = Map.fromList [(structFieldName field, field) | field <- fields]
-  unless (length fields <= length names) $
-    Left "duckdb-simple: extra fields when decoding struct"
-  unless (length fields == length names && Map.size byName == length names) $
-    Left "duckdb-simple: struct field names or count mismatch"
-  ordered <-
-    traverse (\name -> maybe (Left ("duckdb-simple: missing struct field " <> Text.unpack name)) Right (Map.lookup name byName)) names
-  pure sv{structValueFields = listArray (0, length ordered - 1) ordered}
+orderStructFields components sv
+  -- The fields have the order of the selectors, so the names are unique.
+  | map structFieldName fields == names = Right sv
+  | otherwise = reorder
+  where
+    names = resolveNames (zip [0 ..] (map fcName components))
+    fields = elems (structValueFields sv)
+    reorder = do
+      let byName = Map.fromList [(structFieldName field, field) | field <- fields]
+      unless (length fields <= length names) $
+        Left "duckdb-simple: extra fields when decoding struct"
+      unless (length fields == length names && Map.size byName == length names) $
+        Left "duckdb-simple: struct field names or count mismatch"
+      ordered <-
+        traverse (\name -> maybe (Left ("duckdb-simple: missing struct field " <> Text.unpack name)) Right (Map.lookup name byName)) names
+      -- The types keep the order of the fields. See Note [Column types] in
+      -- "Database.DuckDB.Simple.FromField".
+      let typeByName = Map.fromList [(structFieldName field, field) | field <- elems (structValueTypes sv)]
+          variant name = StructField name (LogicalTypeScalar LogicalTypeIdVariant)
+          orderedTypes = [fromMaybe (variant name) (Map.lookup name typeByName) | name <- names]
+      pure
+        sv{structValueFields = listArray (0, length ordered - 1) ordered, structValueTypes = listArray (0, length orderedTypes - 1) orderedTypes}
 
 --------------------------------------------------------------------------------
 -- GStructDecode: inverse of GStruct for decoding
 
 -- | Inverse of @GStruct@: decode struct payloads back into a generic product.
 class GStructDecode f where
-  gStructDecodeStruct :: Proxy (f p) -> StructValue FieldValue -> Either String (f p)
+  gStructDecodeStruct :: Proxy (f p) -> StructValue FieldValue -> Conversion (f p)
 
   -- | Consume a prefix of fields from left to right while decoding, returning
-  --     the reconstructed value and any remaining fields.
-  gStructDecodeList :: Proxy (f p) -> [FieldValue] -> Either String (f p, [FieldValue])
+  --     the reconstructed value and any remaining fields. Each field has its
+  --     type and its value.
+  gStructDecodeList :: Proxy (f p) -> [(LogicalTypeRep, FieldValue)] -> Conversion (f p, [(LogicalTypeRep, FieldValue)])
 
 instance GStructDecode U1 where
   gStructDecodeStruct _ structVal =
     if null (elems (structValueFields structVal))
-      then Right U1
-      else Left ("duckdb-simple: expected empty struct, but got " <> show (length (elems (structValueFields structVal))) <> " field(s)")
-  gStructDecodeList _ xs = Right (U1, xs)
+      then pure U1
+      else decodingError ("duckdb-simple: expected empty struct, but got " <> show (length (elems (structValueFields structVal))) <> " field(s)")
+  gStructDecodeList _ xs = pure (U1, xs)
 
 instance (GStructDecode a, GStructDecode b) => GStructDecode (a :*: b) where
   gStructDecodeStruct proxy structVal = do
-    let values = map structFieldValue (elems (structValueFields structVal))
-    (decoded, rest) <- gStructDecodeList proxy values
+    (decoded, rest) <- gStructDecodeList proxy (typedFields structVal)
     unless (null rest) $
-      Left ("duckdb-simple: extra " <> show (length rest) <> " field(s) when decoding struct (too many fields provided)")
+      decodingError ("duckdb-simple: extra " <> show (length rest) <> " field(s) when decoding struct (too many fields provided)")
     pure decoded
   gStructDecodeList _ xs = do
     (leftVal, rest) <- gStructDecodeList (Proxy @(a _)) xs
@@ -637,24 +734,45 @@ instance (GStructDecode a, GStructDecode b) => GStructDecode (a :*: b) where
 
 instance (Selector s, DuckValue a) => GStructDecode (M1 S s (K1 i a)) where
   gStructDecodeStruct _ structVal =
-    case map structFieldValue (elems (structValueFields structVal)) of
-      [fv] -> M1 . K1 <$> namedField (selName (undefined :: M1 S s (K1 i a) ())) (duckFromField fv)
-      [] -> Left "duckdb-simple: missing struct field (expected 1, got 0)"
-      xs -> Left ("duckdb-simple: expected single field struct, but got " <> show (length xs) <> " fields")
+    case typedFields structVal of
+      [(logical, fv)] -> M1 . K1 <$> namedField (selName (undefined :: M1 S s (K1 i a) ())) (duckFromTypedField logical fv)
+      [] -> decodingError "duckdb-simple: missing struct field (expected 1, got 0)"
+      xs -> decodingError ("duckdb-simple: expected single field struct, but got " <> show (length xs) <> " fields")
 
-  gStructDecodeList _ [] = Left "duckdb-simple: missing struct field (expected field but list is empty)"
-  gStructDecodeList _ (fv : rest) = do
-    val <- namedField (selName (undefined :: M1 S s (K1 i a) ())) (duckFromField fv)
+  gStructDecodeList _ [] = decodingError "duckdb-simple: missing struct field (expected field but list is empty)"
+  gStructDecodeList _ ((logical, fv) : rest) = do
+    val <- namedField (selName (undefined :: M1 S s (K1 i a) ())) (duckFromTypedField logical fv)
     pure (M1 (K1 val), rest)
 
+-- | The type and the value of each field of a STRUCT value, in order. A field
+-- with no type in the value has the type VARIANT. See Note [Column types] in
+-- "Database.DuckDB.Simple.FromField".
+typedFields :: StructValue FieldValue -> [(LogicalTypeRep, FieldValue)]
+typedFields StructValue{structValueFields, structValueTypes} =
+  zip
+    (map structFieldValue (elems structValueTypes) <> repeat (LogicalTypeScalar LogicalTypeIdVariant))
+    (map structFieldValue (elems structValueFields))
+
 -- | Name the record field in the error of its decoder, after the prefix of the
--- library. A positional field has no name.
-namedField :: String -> Either String a -> Either String a
+-- library. A positional field has no name. See Note [Generic decoding].
+namedField :: String -> Conversion a -> Conversion a
 namedField name
   | null name = id
-  | otherwise = either (Left . (("duckdb-simple: field " <> name <> ": ") <>) . withoutPrefix) Right
+  | otherwise = mapConversionErrors \errors ->
+      [ toException
+          ( ConversionFailed
+              Text.empty
+              Text.empty
+              Text.empty
+              (Text.pack ("duckdb-simple: field " <> name <> ": " <> withoutPrefix (intercalate "; " (map exceptionText errors))))
+          )
+      ]
   where
     withoutPrefix message = fromMaybe message (stripPrefix "duckdb-simple: " message)
+
+-- | Fail a generic decoder with the supplied diagnostic text.
+decodingError :: String -> Conversion a
+decodingError = conversionError . ConversionFailed Text.empty Text.empty Text.empty . Text.pack
 
 instance (GStructDecode f) => GStructDecode (M1 C c f) where
   gStructDecodeStruct _ structVal = M1 <$> gStructDecodeStruct (Proxy @(f _)) structVal
@@ -668,20 +786,20 @@ instance (GStructDecode f) => GStructDecode (M1 C c f) where
 -- | Generic decoding entry point mirroring @GToField@. This is used both by
 -- @genericFromFieldValue@ and the @ViaDuckDB@ deriving helper.
 class GFromField f where
-  gFromField :: FieldValue -> Either String (f p)
+  gFromField :: FieldValue -> Conversion (f p)
 
 instance (GFromField' (IsSum f) f) => GFromField f where
   gFromField = gFromField' (Proxy @(IsSum f))
 
 class GFromField' (isSum :: Bool) f where
-  gFromField' :: Proxy isSum -> FieldValue -> Either String (f p)
+  gFromField' :: Proxy isSum -> FieldValue -> Conversion (f p)
 
 instance (GStruct f, GStructDecode f) => GFromField' 'False (M1 D meta (M1 C c f)) where
   gFromField' _ = \case
     -- Version 0.3 wrote this value. See Note [Types without fields].
     FieldNull -> M1 . M1 . fst <$> gStructDecodeList (Proxy @(f _)) []
     FieldStruct sv -> do
-      ordered <- orderStructFields (gStructTypes (Proxy @(f _))) sv
+      ordered <- either decodingError pure (orderStructFields (gStructTypes (Proxy @(f _))) sv)
       M1 . M1 <$> gStructDecodeStruct (Proxy @(f _)) ordered
     other -> unexpectedValue "STRUCT for a product type" other
 
@@ -691,40 +809,37 @@ instance (GSum f) => GFromField' 'True (M1 D meta f) where
       let actualMembers = elems (unionValueMembers uv)
           actualIndex = fromIntegral (unionValueIndex uv)
       unless (actualIndex < length actualMembers) $
-        Left "duckdb-simple: union tag out of range"
+        decodingError "duckdb-simple: union tag out of range"
       unless (unionMemberName (actualMembers !! actualIndex) == unionValueLabel uv) $
-        Left "duckdb-simple: union tag and member name mismatch"
+        decodingError "duckdb-simple: union tag and member name mismatch"
       let members = gSumMembers (Proxy @(f _))
           indexed = zip [0 ..] members
           matching = [idx | (idx, member) <- indexed, unionMemberName member == unionValueLabel uv]
       case matching of
         [idx] -> M1 <$> gSumDecode idx (unionValuePayload uv)
-        _ -> Left "duckdb-simple: unknown union member name"
+        _ -> decodingError "duckdb-simple: unknown union member name"
     other -> unexpectedValue "UNION for a sum type" other
 
 instance GFromField' 'False (M1 D meta U1) where
-  gFromField' _ _ = Right (M1 U1)
+  gFromField' _ _ = pure (M1 U1)
 
 --------------------------------------------------------------------------------
 -- ViaDuckDB instances
 
 -- | The deriving-via version of @DuckDBColumnType@. The text is the bare name
 -- of the generic logical type, for diagnostics. The declaration is the
--- structured generic logical type. Each field type comes from 'DuckValue'. A
--- type with an 'Array' field has no declaration, because its ARRAY type has the
--- size 0. See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
+-- structured generic logical type. Each field type comes from 'DuckValue'.
+-- See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
+-- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Native".
 instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
   duckdbTypeDeclaration _
-    | hasUnsizedArray rep =
-        Left
-          ( Text.pack
-              ( "an Array field has no size, so its ARRAY type has no declaration. Use a field of a newtype of the Array"
-                  <> " with a DuckValue instance that gives the size, or a list field, which is a LIST."
-              )
-          )
-    | otherwise = Right (StructuredType rep)
+    | containsType invalidArray logical =
+        Left (Text.pack ("a generic field has no ARRAY type, because a DuckDB ARRAY must have 1 to " <> show maxArraySize <> " elements"))
+    | otherwise = Right (StructuredType logical)
     where
-      rep = genericLogicalType (Proxy @a)
+      logical = genericLogicalType (Proxy @a)
+      invalidArray (LogicalTypeArray _ size) = isJust (arraySizeReason (toInteger size))
+      invalidArray _ = False
   duckdbColumnTypeFor _ =
     case genericLogicalType (Proxy @a) of
       LogicalTypeStruct{} -> Text.pack "STRUCT"
@@ -738,6 +853,7 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
       LogicalTypeEnum{} -> Text.pack "ENUM"
       LogicalTypeGeometry{} -> Text.pack "GEOMETRY"
       LogicalTypeCollatedVarchar{} -> Text.pack "VARCHAR"
+      LogicalTypeAlias name _ -> name
 
 -- | Deriving-via @ToField@ instance. A sum type binds as a UNION and a product
 -- type as a STRUCT, through the @ToField@ instances of those values. A product
@@ -747,13 +863,6 @@ instance (Generic a, GToField (Rep a)) => ToField (ViaDuckDB a) where
   toField (ViaDuckDB x) = case gToField (from x) of
     EncodedUnion unionVal -> toField unionVal
     EncodedStruct structVal -> toField structVal
-
--- | Test whether a type is or contains an ARRAY type of the size 0. The
--- 'DuckValue' instance of 'Array' declares that size.
-hasUnsizedArray :: LogicalTypeRep -> Bool
-hasUnsizedArray = containsType \case
-  LogicalTypeArray _ size -> size == 0
-  _ -> False
 
 -- | Deriving-via @ToDuckValue@ instance. A sum type gives a UNION value and a
 -- product type a STRUCT value, through the @ToDuckValue@ instances of those
@@ -765,10 +874,9 @@ instance (Generic a, GToField (Rep a)) => ToDuckValue (ViaDuckDB a) where
 
 -- | Deriving-via @FromField@ instance. It reads a STRUCT for a product type and
 -- a UNION for a sum type. Convert decoder errors to @ResultError@ with
--- @returnError@.
+-- @returnError@. See Note [Generic decoding].
 instance (Generic a, GFromField (Rep a), Typeable a) => FromField (ViaDuckDB a) where
   fromField f@Field{fieldValue} =
-    case genericFromFieldValue fieldValue of
-      Right value -> pure (ViaDuckDB value)
-      Left err ->
-        returnError ConversionFailed f (Text.pack err)
+    mapConversionErrorsWith
+      (\errors -> [] <$ returnError @(ViaDuckDB a) ConversionFailed f (Text.pack (intercalate "; " (map exceptionText errors))))
+      (ViaDuckDB <$> genericFromFieldValue fieldValue)

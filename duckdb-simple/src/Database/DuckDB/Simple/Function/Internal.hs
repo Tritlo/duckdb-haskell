@@ -37,7 +37,6 @@ import Control.Exception (
 import Control.Monad (forM, forM_, when)
 import Data.Bits (clearBit, setBit)
 import Data.Int (Int16, Int32, Int64, Int8)
-import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -58,16 +57,18 @@ import Database.DuckDB.Simple.Callback (
   withRegistrationFactory,
   withTarget,
  )
+import Database.DuckDB.Simple.Conversion (runConversion)
 import Database.DuckDB.Simple.Element (vectorElementType)
 import Database.DuckDB.Simple.FromField (
   Field,
   FromField (..),
  )
-import Database.DuckDB.Simple.Internal (duckDBTypeToName)
-import Database.DuckDB.Simple.LogicalRep (TypeDeclaration)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), TypeDeclaration, logicalTypeSQL)
+import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
+import Database.DuckDB.Simple.TypeScope (TypeScope, withTypeScope)
 import Database.DuckDB.Simple.Typed (argumentName, checkArgumentType, conversionMessage, prepareArgumentReader, rowDeclarations)
 import Database.DuckDB.Simple.V2.Registration (withTypeDeclaration)
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
@@ -247,7 +248,7 @@ instance {-# OVERLAPPABLE #-} (FromField a, DuckDBColumnType a, Function r) => F
   applyFunction [] _ =
     throwInternalError (Text.pack "insufficient arguments supplied")
   applyFunction (field : rest) fn =
-    case fromField field of
+    runConversion (fromField field) >>= \case
       Errors err -> throwIO (argumentConversionError err)
       Ok value -> applyFunction rest (fn value)
 
@@ -341,7 +342,7 @@ scalarFunctionHandler casts fn info context err = runCallback err (executeScalar
 -- | Run one call of a scalar function.
 executeScalarFunction
   :: forall f. (Function f) => Maybe DuckDBV2FactoryHandle -> f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()
-executeScalarFunction casts fn info context = withContextFactory context \contextFactory -> do
+executeScalarFunction casts fn info context = withTypeScope \scope -> withContextFactory context \contextFactory -> do
   let expected = length (argumentTypes (Proxy @f))
   columnCount <- allocaArray 4 $ \counts -> do
     checked (c_duckdb_v2_scalar_function_exec_get_arg_count info counts (advancePtr counts 1) (advancePtr counts 2) (advancePtr counts 3))
@@ -350,7 +351,7 @@ executeScalarFunction casts fn info context = withContextFactory context \contex
     throwInternalError (Text.pack ("function expected " <> show expected <> " arguments but received " <> show columnCount))
   rawRowCount <- output (c_duckdb_v2_scalar_function_exec_get_row_count info)
   let rowCount = fromIntegral rawRowCount :: Int
-  readers <- mapM (makeColumnReader (fromMaybe contextFactory casts) info) [0 .. expected - 1]
+  readers <- mapM (makeColumnReader scope (callbackReadFactory casts contextFactory) info) [0 .. expected - 1]
   rows <- forM [0 .. rowCount - 1] $ \row -> forM readers ($ row)
   results <- mapM (`applyFunction` fn) rows
   outVec <- output (c_duckdb_v2_scalar_function_exec_get_result info)
@@ -382,10 +383,10 @@ scalarFunctionInitHandler initState info _context err = runCallback err do
 
 -- | Prepare the reader of one argument. A GEOMETRY value reads with the
 -- factory, at each depth of the type.
-makeColumnReader :: DuckDBV2FactoryHandle -> DuckDBV2ScalarFunctionExecInfoHandle -> Int -> IO (Int -> IO Field)
-makeColumnReader factory info columnIndex =
+makeColumnReader :: TypeScope -> ReadFactory -> DuckDBV2ScalarFunctionExecInfoHandle -> Int -> IO (Int -> IO Field)
+makeColumnReader scope factory info columnIndex =
   output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex))
-    >>= prepareArgumentReader (Just factory) columnIndex
+    >>= prepareArgumentReader scope (Just factory) columnIndex
 
 -- | Write the results of one call to the result vector. Set the size, then
 -- flatten, then read the pointers. A row of a result that is not raw borrows
@@ -455,8 +456,8 @@ writeScalarValue factory vector vectorType dataPtr validityPtr idx = \case
       markValid validityPtr idx
       pokeElemOff (castPtr dataPtr) idx value
     expect expected = when (vectorType /= expected) do
-      actualName <- duckDBTypeToName <$> logicalTypeIdFromNative vectorType
-      expectedName <- duckDBTypeToName <$> logicalTypeIdFromNative expected
+      actualName <- logicalTypeSQL . LogicalTypeScalar <$> logicalTypeIdFromNative vectorType
+      expectedName <- logicalTypeSQL . LogicalTypeScalar <$> logicalTypeIdFromNative expected
       throwInternalError ("the result vector has the type " <> actualName <> ", but the result value has the type " <> expectedName)
 
 -- | Write a VARCHAR value at a row of a flat vector without a factory. A value

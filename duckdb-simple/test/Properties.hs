@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -12,7 +13,7 @@
 module Properties (roundTripTests) where
 
 import Control.Monad (forM)
-import Data.Array (Array, elems, listArray)
+import Data.Array (elems, listArray)
 import Data.Bits (clearBit)
 import qualified Data.ByteString as BS
 import Data.Fixed (Fixed (MkFixed))
@@ -28,7 +29,7 @@ import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime, utc
 import Data.UUID (UUID)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.Simple (Connection, close, open, query)
+import Database.DuckDB.Simple (Connection, SizedArray, close, open, query)
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
   BitString (..),
@@ -64,6 +65,7 @@ import Test.QuickCheck (
  )
 import Test.Tasty (TestTree, testGroup, withResource)
 import Test.Tasty.QuickCheck (testProperty)
+import TestUtils (sized)
 
 data SomeRoundTrip
   = forall a.
@@ -136,7 +138,7 @@ specs =
   , SomeRoundTrip "LocalTime" (Proxy @LocalTime) genLocalTime shrinkLocalTime
   , SomeRoundTrip "UTCTime" (Proxy @UTCTime) genUTCTime shrinkUTCTime
   , SomeRoundTrip "Maybe Int" (Proxy @(Maybe Int)) genMaybeInt shrinkMaybeInt
-  , SomeRoundTrip "nonempty Array Int Int" (Proxy @(Array Int Int)) genIntArray shrinkIntArray
+  , SomeRoundTrip "SizedArray 4 Int" (Proxy @(SizedArray 4 Int)) genIntArray shrinkNone
   , SomeRoundTrip "StructValue FieldValue" (Proxy @(StructValue FieldValue)) genStructValue shrinkStructValue
   , SomeRoundTrip "UnionValue FieldValue" (Proxy @(UnionValue FieldValue)) genUnionValue shrinkNone
   ]
@@ -357,19 +359,8 @@ shrinkUTCTime (UTCTime day diff) =
       , ps `mod` 1000000 == 0
       ]
 
-genIntArray :: Gen (Array Int Int)
-genIntArray = do
-  size <- chooseInt (1, 32)
-  values <- vectorOf size genBounded
-  pure (listArray (0, size - 1) values)
-
-shrinkIntArray :: Array Int Int -> [Array Int Int]
-shrinkIntArray arr =
-  let values = elems arr
-  in  [ listArray (0, length xs - 1) xs
-      | xs <- shrink values
-      , not (null xs)
-      ]
+genIntArray :: Gen (SizedArray 4 Int)
+genIntArray = sized <$> vectorOf 4 genBounded
 
 genStructValue :: Gen (StructValue FieldValue)
 genStructValue = do

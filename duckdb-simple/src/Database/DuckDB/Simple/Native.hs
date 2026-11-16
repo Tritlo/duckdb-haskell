@@ -30,6 +30,9 @@ module Database.DuckDB.Simple.Native (
   LogicalTypeId (..),
   logicalTypeIdToNative,
   logicalTypeIdFromNative,
+  logicalTypeIdName,
+  arraySizeReason,
+  maxArraySize,
   FileFlag (..),
   fileFlagToNative,
   checked,
@@ -42,6 +45,7 @@ module Database.DuckDB.Simple.Native (
   releaseItems,
   withCreatedValues,
   withOwnedVector,
+  withDefaultCastVector,
   nullHandle,
   indices,
   withText,
@@ -70,7 +74,7 @@ module Database.DuckDB.Simple.Native (
 
 import Control.Applicative ((<|>))
 import Control.Exception (Exception (..), SomeException (..), bracket, evaluate, finally, mask_, onException, throwIO, try)
-import Control.Monad (foldM, mfilter, unless, when, (<$!>))
+import Control.Monad (foldM, forM_, mfilter, unless, when, (<$!>))
 import qualified Data.ByteString as BS
 import Data.Char (isAsciiUpper, toLower)
 import Data.Coerce (Coercible, coerce)
@@ -89,6 +93,35 @@ import Foreign.Marshal.Array (withArray)
 import Foreign.Marshal.Utils (fillBytes, with, withMany)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable, peek, poke, sizeOf)
+
+-- | The largest size of a DuckDB ARRAY: @ArrayType::MAX_ARRAY_SIZE@ in
+-- @src/include/duckdb/common/types.hpp@ of DuckDB 2.0.0. See
+-- Note [Sized ARRAY bounds].
+maxArraySize :: Int
+maxArraySize = 100000
+
+-- | Give the reason why a size has no DuckDB ARRAY type, or 'Nothing' for a
+-- valid size. See Note [Sized ARRAY bounds].
+arraySizeReason :: Integer -> Maybe Text
+arraySizeReason size
+  | size < 1 = Just "a DuckDB ARRAY has at least one element"
+  | size > toInteger maxArraySize = Just ("a DuckDB ARRAY has at most " <> Text.pack (show maxArraySize) <> " elements")
+  | otherwise = Nothing
+
+{- Note [Sized ARRAY bounds]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A DuckDB ARRAY has 1 to maxArraySize elements. Its value API does not check
+this limit, so both logical type construction and value binding must check
+the size. Generic declarations check each ARRAY, also below an alias or a
+container. A non-NULL SizedArray read also checks the size before it counts
+or converts the elements.
+
+SizedArray has a type-level Nat, but LogicalTypeArray stores a Word64. The
+generic logical type saturates a Nat above maxBound Word64 to that bound.
+This is an invalid-size sentinel. It cannot wrap into a valid size, and the
+declaration and native construction checks reject it. No pure conversion
+throws an exception.
+-}
 
 -- | SQL text encoded as UTF-8 when it is sent to DuckDB.
 newtype Query = Query {fromQuery :: Text}
@@ -312,7 +345,7 @@ keeps a frame for each element or row adds those retained frames to this work.
 Thus a loop whose steps make native calls keeps a constant stack. The rule
 applies to a loop over the rows of a chunk, over the chunks of a result, and
 over a list of native items. It applies also when only some steps make a native
-call, as in the row loop of collectStreamRows in
+call, as in the row loop of withStreamRows in
 "Database.DuckDB.Simple.Result".
 
 The code uses these forms:
@@ -331,7 +364,7 @@ The code uses these forms:
 
 - A loop that reads the elements from the last to the first, and puts each
   element in front of the list. The list then needs no reverse (the row loop of
-  collectStreamRows).
+  withStreamRows).
 
 These loops keep a frame for each element, and they stay as they are, because
 the list is short in practice or the operation is rare:
@@ -394,6 +427,26 @@ withOwnedVector factory logicalType action =
   with logicalType $ \types ->
     bracket (output (c_duckdb_v2_data_chunk_create factory (ConstPtr types) 1)) (destroy c_duckdb_v2_data_chunk_destroy) $ \chunk ->
       output (c_duckdb_v2_data_chunk_get_vector chunk 0) >>= action
+
+-- | Cast values with the default cast of DuckDB. The function makes a new
+-- vector of the type with the given number of rows (withOwnedVector). For each
+-- row, the writer gives a borrowed value to its second argument, and
+-- duckdb_v2_vector_set_value writes the value to the row. The header says that
+-- this call casts "through the non-strict default cast". Then the action reads
+-- the vector. See Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize".
+withDefaultCastVector
+  :: DuckDBV2FactoryHandle
+  -> DuckDBV2LogicalTypeHandle
+  -> DuckDBIdx
+  -> (DuckDBIdx -> (DuckDBV2ValueHandle -> IO ()) -> IO ())
+  -> (DuckDBV2VectorHandle -> IO a)
+  -> IO a
+withDefaultCastVector factory logicalType count writeRow action =
+  withOwnedVector factory logicalType $ \vector -> do
+    checked (c_duckdb_v2_vector_set_size vector count)
+    forM_ (indices count) $ \row -> writeRow row (checked . c_duckdb_v2_vector_set_value vector row)
+    action vector
 
 -- | List the indices below a native count without unsigned underflow.
 indices :: DuckDBIdx -> [DuckDBIdx]
@@ -842,6 +895,56 @@ logicalTypeIdFromNative = \case
   DuckDBV2LogicalTypeIdVariant -> pure LogicalTypeIdVariant
   DuckDBV2LogicalTypeIdTuple -> pure LogicalTypeIdTuple
   DuckDBV2LogicalTypeId value -> throwUnknownNative "logical type id" value
+
+-- | The name of a type id in DuckDB 2.0.0. duckdb_v2_logical_type_get_name
+-- gives this name for a type with no alias. See Note [Type aliases] in
+-- "Database.DuckDB.Simple.LogicalRep".
+logicalTypeIdName :: LogicalTypeId -> Text
+logicalTypeIdName = \case
+  LogicalTypeIdInvalid -> "INVALID"
+  LogicalTypeIdSQLNull -> "NULL"
+  LogicalTypeIdUnknown -> "UNKNOWN"
+  LogicalTypeIdAny -> "ANY"
+  LogicalTypeIdType -> "TYPE"
+  LogicalTypeIdBoolean -> "BOOLEAN"
+  LogicalTypeIdTinyInt -> "TINYINT"
+  LogicalTypeIdSmallInt -> "SMALLINT"
+  LogicalTypeIdInteger -> "INTEGER"
+  LogicalTypeIdBigInt -> "BIGINT"
+  LogicalTypeIdDate -> "DATE"
+  LogicalTypeIdTime -> "TIME"
+  LogicalTypeIdTimestampSec -> "TIMESTAMP_S"
+  LogicalTypeIdTimestampMs -> "TIMESTAMP_MS"
+  LogicalTypeIdTimestamp -> "TIMESTAMP"
+  LogicalTypeIdTimestampNs -> "TIMESTAMP_NS"
+  LogicalTypeIdDecimal -> "DECIMAL"
+  LogicalTypeIdFloat -> "FLOAT"
+  LogicalTypeIdDouble -> "DOUBLE"
+  LogicalTypeIdVarchar -> "VARCHAR"
+  LogicalTypeIdBlob -> "BLOB"
+  LogicalTypeIdInterval -> "INTERVAL"
+  LogicalTypeIdUTinyInt -> "UTINYINT"
+  LogicalTypeIdUSmallInt -> "USMALLINT"
+  LogicalTypeIdUInteger -> "UINTEGER"
+  LogicalTypeIdUBigInt -> "UBIGINT"
+  LogicalTypeIdTimestampTz -> "TIMESTAMP WITH TIME ZONE"
+  LogicalTypeIdTimestampTzNs -> "TIMESTAMPTZ_NS"
+  LogicalTypeIdTimeTz -> "TIME WITH TIME ZONE"
+  LogicalTypeIdTimeNs -> "TIME_NS"
+  LogicalTypeIdBit -> "BIT"
+  LogicalTypeIdBigNum -> "BIGNUM"
+  LogicalTypeIdUHugeInt -> "UHUGEINT"
+  LogicalTypeIdHugeInt -> "HUGEINT"
+  LogicalTypeIdUUID -> "UUID"
+  LogicalTypeIdGeometry -> "GEOMETRY"
+  LogicalTypeIdStruct -> "STRUCT"
+  LogicalTypeIdList -> "LIST"
+  LogicalTypeIdMap -> "MAP"
+  LogicalTypeIdEnum -> "ENUM"
+  LogicalTypeIdUnion -> "UNION"
+  LogicalTypeIdArray -> "ARRAY"
+  LogicalTypeIdVariant -> "VARIANT"
+  LogicalTypeIdTuple -> "TUPLE"
 
 -- | A behaviour of a file open. The flags are not a bitmask. Each flag in the
 -- list adds one behaviour.

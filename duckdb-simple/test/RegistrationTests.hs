@@ -1,4 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -11,7 +13,7 @@ module RegistrationTests (registrationTests) where
 
 import Control.Exception (bracket, evaluate, throwIO, try)
 import Control.Monad (forM, forM_, void, when)
-import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import Data.Maybe (isNothing)
 import Data.Proxy (Proxy (..))
@@ -20,9 +22,10 @@ import qualified Data.Text as Text
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple hiding (bind, execute)
 import Database.DuckDB.Simple.FromField (FieldValue (..))
+import Database.DuckDB.Simple.Generic (DuckValue (..), ViaDuckDB (..))
 import Database.DuckDB.Simple.Internal (withBytes, withConnectionFactory, withConnectionHandle)
 import qualified Database.DuckDB.Simple.Logging as Logging
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructValue, UnionValue)
 import qualified Database.DuckDB.Simple.QueryMetrics as Metrics
 import qualified Database.DuckDB.Simple.V2.FunctionDocs as Docs
 import qualified Database.DuckDB.Simple.V2.Logging as V2Logging
@@ -32,6 +35,7 @@ import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 import Foreign.Ptr (castPtr, freeHaskellFunPtr, nullPtr)
 import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff)
+import GHC.Generics (Generic)
 import HsBindgen.Runtime.Marshal (staticSizeOf)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 import System.Mem (performMajorGC)
@@ -53,6 +57,7 @@ registrationTests =
     , testCase "aggregate grouped and window execution" testAggregate
     , testCase "table state and typed default parameter" testTable
     , testCase "custom type and normal and try cast" testCast
+    , testCase "a composite value with a member of a custom type binds with no registered cast" testCastAliasMembers
     , testCase "a second cast for the same pair of types has no effect" testCastSecond
     , testGroup "a failed cast gives a Mismatch Type error and keeps the database usable" $
         [testCase (castPairName castPair) (testCastFailureCode castPair) | castPair <- castFailurePairs]
@@ -316,6 +321,46 @@ testCast = withConnection ":memory:" \connection -> do
   seen <- readIORef modes
   assertBool "normal cast" (DuckDBV2CastModeNormal `elem` seen)
   assertBool "try cast" (DuckDBV2CastModeTry `elem` seen)
+
+-- | A BIGINT of the custom type member_shifted, as a record field.
+newtype Shifted = Shifted Int64
+
+instance DuckValue Shifted where
+  duckToField (Shifted value) = FieldInt64 value
+  duckFromField = fmap Shifted . duckFromField
+  duckLogicalType _ = LogicalTypeAlias "member_shifted" (LogicalTypeScalar LogicalTypeIdBigInt)
+
+-- | A record with a field of the custom type member_shifted.
+newtype Holder = Holder {held :: Shifted}
+  deriving (Generic)
+  deriving (ToField) via (ViaDuckDB Holder)
+
+-- | A STRUCT value and a UNION value with a member of a registered custom type
+-- bind again with no run of the registered cast from the base type, and so
+-- does a record whose field declares that type. The library writes these
+-- values with the default cast of DuckDB. See
+-- Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize".
+testCastAliasMembers :: Assertion
+testCastAliasMembers = withConnection ":memory:" \connection -> do
+  R.registerCustomType connection "member_shifted" bigint
+  calls <- newIORef (0 :: Int)
+  R.registerCast connection bigint (R.TypeExpression "member_shifted") Nothing \info _ -> do
+    modifyIORef' calls (+ 1)
+    count <- R.output (c_duckdb_v2_cast_function_exec_get_row_count info)
+    values <- R.output (c_duckdb_v2_cast_function_exec_get_input info) >>= readIntegers (fromIntegral count)
+    result <- R.output (c_duckdb_v2_cast_function_exec_get_output info)
+    writeIntegers result (map (+ 100) values)
+  [(struct, union)] <-
+    query_ connection "SELECT {'v': 7::BIGINT::member_shifted}, union_value(v := 7::BIGINT::member_shifted)"
+      :: IO [(StructValue FieldValue, UnionValue FieldValue)]
+  readIORef calls >>= assertBool "the query runs the registered cast" . (> 0)
+  writeIORef calls 0
+  query connection "SELECT (?).v::BIGINT, union_extract(?, 'v')::BIGINT, (?).held::BIGINT" (struct, union, Holder (Shifted 7))
+    >>= (@?= [(107 :: Int64, 107 :: Int64, 7 :: Int64)])
+  query connection "SELECT typeof(?), typeof(?), typeof(?)" (struct, union, Holder (Shifted 7))
+    >>= (@?= [("STRUCT(v member_shifted)" :: Text, "UNION(v member_shifted)" :: Text, "STRUCT(held member_shifted)" :: Text)])
+  readIORef calls >>= (@?= 0)
 
 -- | A pair of types for 'testCastFailureCode': the setup, the source type, the
 -- target type, a constant of the source type, and a column of the source type

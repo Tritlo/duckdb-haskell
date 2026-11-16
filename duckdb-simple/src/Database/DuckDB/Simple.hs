@@ -76,6 +76,9 @@ module Database.DuckDB.Simple (
   ResultError (..),
   FieldParser,
   FromField (..),
+  Conversion,
+  runConversion,
+  liftConversion,
   FromRow (..),
   RowParser,
   field,
@@ -88,6 +91,10 @@ module Database.DuckDB.Simple (
   NamedParam (..),
   DuckDBColumnType (..),
   duckdbColumnType,
+  SizedArray,
+  sizedArray,
+  sizedArrayFromList,
+  sizedArrayToArray,
   Null (..),
   Only (..),
   (:.) (..),
@@ -117,7 +124,17 @@ import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.DuckDB.Simple.FromField (Field (..), FieldParser, FromField (..), ResultError (..))
+import Database.DuckDB.Simple.Conversion (Conversion, liftConversion, runConversion)
+import Database.DuckDB.Simple.FromField (
+  Field (..),
+  FieldParser,
+  FromField (..),
+  ResultError (..),
+  SizedArray,
+  sizedArray,
+  sizedArrayFromList,
+  sizedArrayToArray,
+ )
 import Database.DuckDB.Simple.FromRow (FromRow (..), RowParser, field, fieldWith, numFieldsRemaining, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Function (
   Aggregate (..),
@@ -131,7 +148,7 @@ import Database.DuckDB.Simple.Function (
  )
 import Database.DuckDB.Simple.Internal
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.Result (collectRows, resetStatementStream)
+import Database.DuckDB.Simple.Result (resetStatementStream, withRows)
 import qualified Database.DuckDB.Simple.Result as Result
 import Database.DuckDB.Simple.ToField (
   DuckDBColumnType (..),
@@ -465,14 +482,14 @@ queryWith :: (ToRow q) => RowParser r -> Connection -> Query -> q -> IO [r]
 queryWith parser conn queryText params =
   withStatement conn queryText \stmt -> do
     bind stmt (toRow params)
-    collectRows stmt >>= convertRowsWith parser queryText
+    withRows stmt (convertRowsWith parser queryText)
 
 -- | Run a query that uses named parameters and decode all rows eagerly.
 queryNamed :: (FromRow r) => Connection -> Query -> [NamedParam] -> IO [r]
 queryNamed conn queryText params =
   withStatement conn queryText \stmt -> do
     bindNamed stmt params
-    collectRows stmt >>= convertRows queryText
+    withRows stmt (convertRows queryText)
 
 -- | Run a query without supplying parameters and decode all rows eagerly.
 query_ :: (FromRow r) => Connection -> Query -> IO [r]
@@ -484,7 +501,7 @@ queryWith_ parser conn queryText =
   withAdHocStatement
     conn
     queryText
-    (\parsed -> Result.collectParsedRows conn queryText parsed >>= convertRowsWith parser queryText)
+    (\parsed -> Result.withParsedRows conn queryText parsed (convertRowsWith parser queryText))
     (pure [])
 
 -- | Execute preceding statements before returning the final statement's result.
@@ -609,6 +626,6 @@ convertRows = convertRowsWith fromRow
 
 convertRowsWith :: RowParser r -> Query -> [[Field]] -> IO [r]
 convertRowsWith parser queryText rows =
-  case traverse (parseRow parser) rows of
+  runConversion (traverse (parseRow parser) rows) >>= \case
     Errors err -> throwIO (rowErrorsToSqlError queryText err)
     Ok ok -> pure ok

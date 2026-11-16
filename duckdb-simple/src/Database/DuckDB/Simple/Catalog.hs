@@ -53,7 +53,9 @@ data TableDescription = TableDescription
   }
   deriving (Eq, Show)
 
--- | A copied column description. Native handles remain inside the call.
+-- | A copied column description. Native handles remain inside the call. The
+-- column type keeps the alias of DuckDB at each depth, for example JSON. See
+-- Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
 data ColumnDescription = ColumnDescription
   { columnDescriptionName :: Text
   , columnDescriptionType :: LogicalTypeRep

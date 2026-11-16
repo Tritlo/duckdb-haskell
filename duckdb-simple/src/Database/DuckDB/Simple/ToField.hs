@@ -1914,7 +1914,9 @@ variantPayloadType value = case value of
   FieldTimestamp (Finite LocalTime{localTimeOfDay})
     | hasSubMicroseconds localTimeOfDay && fitsNanoseconds value -> scalar LogicalTypeIdTimestampNs
   FieldTimestamp{} -> scalar LogicalTypeIdTimestamp
-  FieldTimestampTZ instant -> scalar (variantUtcTimestampType instant)
+  FieldTimestampTZ (Finite instant)
+    | hasSubMicroseconds (localTimeOfDay (utcToLocalTime utc instant)) && fitsNanoseconds value -> scalar LogicalTypeIdTimestampTzNs
+  FieldTimestampTZ{} -> scalar LogicalTypeIdTimestampTz
   FieldTimeTZ{} -> scalar LogicalTypeIdTimeTz
   FieldInterval{} -> scalar LogicalTypeIdInterval
   FieldBigNum{} -> scalar LogicalTypeIdBigNum
@@ -1940,14 +1942,6 @@ variantPayloadType value = case value of
   where
     variant = LogicalTypeScalar LogicalTypeIdVariant
     scalar dtype = pure (LogicalTypeScalar dtype, value)
-
--- | Choose nanosecond storage for a precise UTC VARIANT payload that fits the
--- range of TIMESTAMPTZ_NS. See Note [Nanosecond parameters].
-variantUtcTimestampType :: UTCTimestamp -> LogicalTypeId
-variantUtcTimestampType (Finite instant)
-  | hasSubMicroseconds (localTimeOfDay (utcToLocalTime utc instant)) && fitsNanoseconds (FieldTimestampTZ (Finite instant)) =
-      LogicalTypeIdTimestampTzNs
-variantUtcTimestampType _ = LogicalTypeIdTimestampTz
 
 instance ToDuckValue Null where
   toDuckValue factory _ = nullDuckValue factory

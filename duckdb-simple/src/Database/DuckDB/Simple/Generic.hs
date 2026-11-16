@@ -694,12 +694,11 @@ instance GStructDecode U1 where
   gStructDecodeList _ xs = Right (U1, xs)
 
 instance (GStructDecode a, GStructDecode b) => GStructDecode (a :*: b) where
-  gStructDecodeStruct _ structVal = do
-    (leftVal, rest) <- gStructDecodeList (Proxy @(a _)) (typedFields structVal)
-    (rightVal, rest') <- gStructDecodeList (Proxy @(b _)) rest
-    unless (null rest') $
-      Left ("duckdb-simple: extra " <> show (length rest') <> " field(s) when decoding struct (too many fields provided)")
-    pure (leftVal :*: rightVal)
+  gStructDecodeStruct proxy structVal = do
+    (decoded, rest) <- gStructDecodeList proxy (typedFields structVal)
+    unless (null rest) $
+      Left ("duckdb-simple: extra " <> show (length rest) <> " field(s) when decoding struct (too many fields provided)")
+    pure decoded
   gStructDecodeList _ xs = do
     (leftVal, rest) <- gStructDecodeList (Proxy @(a _)) xs
     (rightVal, rest') <- gStructDecodeList (Proxy @(b _)) rest

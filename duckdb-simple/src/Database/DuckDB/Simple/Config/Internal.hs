@@ -15,8 +15,7 @@ module Database.DuckDB.Simple.Config.Internal (
 ) where
 
 import Control.Exception (bracket)
-import Control.Monad (when)
-import Data.Maybe (isJust)
+import Control.Monad (forM_, when)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (targetCastFactory)
@@ -62,18 +61,22 @@ registerCustomOptionOn target option = do
     throwInvalidArgument "custom option name must be nonempty and must not contain NUL"
   -- The update function reads no VARIANT. Thus reject such a type before the
   -- registration.
-  when (isJust (customOptionUpdate option)) $
-    withRegistrationFactory target \factory ->
-      withTypeDeclaration factory (customOptionType option) (checkArgumentType True (customOptionName option) "the update function")
-  casts <- targetCastFactory target
+  update <-
+    traverse
+      ( \callback -> do
+          withRegistrationFactory target \factory ->
+            withTypeDeclaration factory (customOptionType option) (checkArgumentType True (customOptionName option) "the update function")
+          casts <- targetCastFactory target
+          pure (updateWithValue casts callback)
+      )
+      (customOptionUpdate option)
   registerCustomOptionWith
     target
     ( \handle -> withRegistrationFactory target \factory -> do
         withIdentifier (customOptionName option) $ checked . c_duckdb_v2_custom_option_set_name handle
         withTypeDeclaration factory (customOptionType option) $ checked . c_duckdb_v2_custom_option_set_type handle
-        case customOptionDefault option of
-          Nothing -> pure ()
-          Just (DefaultValue make) -> bracket (make factory) (destroy c_duckdb_v2_value_destroy) \native -> checked (c_duckdb_v2_custom_option_set_default_value handle native)
+        forM_ (customOptionDefault option) \(DefaultValue make) ->
+          bracket (make factory) destroyValue \native -> checked (c_duckdb_v2_custom_option_set_default_value handle native)
         withText (customOptionDescription option) $ checked . c_duckdb_v2_custom_option_set_description handle
         mapM_
           ( \scope ->
@@ -83,14 +86,14 @@ registerCustomOptionOn target option = do
           [SettingScopeGlobal, SettingScopeSession]
         checked (c_duckdb_v2_custom_option_set_default_scope handle (settingScopeToNative (customOptionDefaultScope option)))
     )
-    (updateWithValue casts <$> customOptionUpdate option)
+    update
 
 -- | Copy the new value of an option update. Then give it to the update function.
 updateWithValue :: Maybe DuckDBV2FactoryHandle -> (FieldValue -> IO ()) -> ContextCallback DuckDBV2CustomOptionUpdateInfoHandle
 updateWithValue casts update info context = withContextFactory context \factory ->
   bracket
     (output (c_duckdb_v2_custom_option_update_get_value info))
-    (destroy c_duckdb_v2_value_destroy)
+    destroyValue
     (materializeValue unexpectedVariant (callbackReadFactory casts factory))
     >>= update
 

@@ -358,9 +358,7 @@ instance {-# OVERLAPPABLE #-} (DuckValue a) => DuckValue [a] where
 -- @n@ elements, as the 'FromField' instance does. See Note [Sized arrays] in
 -- "Database.DuckDB.Simple.ToField".
 instance (KnownNat n, DuckValue a) => DuckValue (SizedArray n a) where
-  duckToField values = FieldArray (listArray (0, length list - 1) list)
-    where
-      list = map duckToField (elems (sizedArrayToArray values))
+  duckToField values = FieldArray (fmap duckToField (sizedArrayToArray values))
 
   -- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Element".
   duckLogicalType _ = LogicalTypeArray (duckLogicalType (Proxy @a)) (fromInteger (min (natVal (Proxy @n)) (toInteger (maxBound :: Word64))))

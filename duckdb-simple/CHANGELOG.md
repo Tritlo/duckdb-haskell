@@ -67,6 +67,11 @@ for the upgrade instructions.
   and result functions. DuckDB gives the finalize callback no factory, so the
   result type must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT,
   DOUBLE, or VARCHAR.
+- Add `V2.Registration.registerAggregateFunctionWithCleanup` for cleanup
+  owned by an aggregate's native callback resources. A typed extension
+  aggregate creates a metadata helper only when needed. It shares the helper
+  across queries until the last native callback owner releases it. The helper
+  has no background worker pool.
 - `createTableFunction` registers a Haskell function that gives the rows of a
   table function as a list. DuckDB reads the list one chunk at a time. It reads
   only the columns that the query uses, and the first column for a query such

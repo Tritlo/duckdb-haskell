@@ -35,7 +35,7 @@ and remains valid after closure.
 Only internal native operations run while the scope is locked. The type and
 factory acquisition actions must not run user code. The factory owner must
 outlive the scope. The factory is acquired only for an uncached read; an
-extension aggregate can initialize its bind-owned helper at that point.
+extension aggregate can initialize its registration-owned helper at that point.
 logicalTypeToRep reads type ids, names, and parameters, and compares temporary
 alias copies. These operations do not run SQL or callbacks. A failed or
 interrupted read leaves the native type available for another attempt. Only

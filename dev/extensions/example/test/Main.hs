@@ -175,13 +175,27 @@ tests paths =
           paths
           [ "SELECT 'base', haskell_argument_type(1::INTEGER);"
           , "SELECT 'alias', haskell_canonical_argument_type(haskell_canonical_bigint(1::INTEGER));"
+          , "SELECT 'fresh', haskell_canonical_argument_type(haskell_canonical_bigint(2::INTEGER));"
+          , "PREPARE metadata_reuse AS SELECT 'prepared', haskell_canonical_argument_type(haskell_canonical_bigint(i)) FROM range(4097) AS t(i);"
+          , "EXECUTE metadata_reuse;"
+          , "EXECUTE metadata_reuse;"
+          , "DEALLOCATE metadata_reuse;"
           , "SELECT 'chunks', haskell_canonical_argument_type(haskell_canonical_bigint(i)) FROM range(10000) AS t(i);"
+          , "SELECT haskell_canonical_argument_type(haskell_canonical_bigint(value)) FROM (VALUES (9223372036854775807::BIGINT), (1::BIGINT)) AS t(value);"
+          , "SELECT 'recovered', haskell_canonical_argument_type(haskell_canonical_bigint(7));"
+          , "SET threads=4;"
+          , "SELECT 'call_sites', haskell_canonical_argument_type(haskell_canonical_bigint(i)), haskell_canonical_argument_type(haskell_canonical_bigint(i+1)) FROM range(100000) AS t(i);"
           ]
           [ ["base", "1"]
           , ["alias", "1"]
+          , ["fresh", "2"]
+          , ["prepared", "8390656"]
+          , ["prepared", "8390656"]
           , ["chunks", "49995000"]
+          , ["recovered", "7"]
+          , ["call_sites", "4999950000", "5000050000"]
           ]
-          []
+          ["haskell_canonical_argument_type: BIGINT overflow"]
     , testCase "table function" $
         checkProcess
           paths

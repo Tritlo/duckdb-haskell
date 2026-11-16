@@ -1636,6 +1636,12 @@ DuckDB threads wait for each other only when they change the same stripe.
 for each aggregate that `createAggregate` registers through the connection.
 The default is `defaultAggregateStripes`, 64. No result depends on the number.
 
+A typed aggregate in a loadable extension creates a helper instance on its
+first metadata read. The registration shares that instance across queries
+until the last native callback owner releases it. The helper uses `threads=1`
+and `async_threads=0`, with no background worker pool. A connection aggregate
+uses its existing instance.
+
 `createTableFunction` registers a table function that gives its rows as a
 list. DuckDB reads only the columns that the query uses, also in `WHERE` and
 `ORDER BY`. For a query that uses no column, such as `SELECT count(*)`, DuckDB

@@ -11,7 +11,7 @@
 -- Description : Native integration checks for managed V2 registration.
 module RegistrationTests (registrationTests) where
 
-import Control.Exception (bracket, evaluate, throwIO, try)
+import Control.Exception (IOException, bracket, evaluate, throwIO, try)
 import Control.Monad (forM, forM_, void, when)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
@@ -55,6 +55,7 @@ registrationTests =
     , testCase "pragma names must be nonempty and must not contain NUL" testPragmaNames
     , testCase "query metric snapshots copy values and survive later queries" testMetrics
     , testCase "aggregate grouped and window execution" testAggregate
+    , testCase "aggregate registration cleanup follows callback ownership" testAggregateCleanup
     , testCase "table state and typed default parameter" testTable
     , testCase "custom type and normal and try cast" testCast
     , testCase "a composite value with a member of a custom type binds with no registered cast" testCastAliasMembers
@@ -274,6 +275,44 @@ testAggregate = withConnection ":memory:" \connection -> do
     >>= (@?= map Only ([18, 22, 26] :: [Int64]))
   query_ connection "SELECT managed_sum(i::BIGINT) OVER () FROM range(4096) t(i) LIMIT 1" >>= (@?= [Only (8386560 :: Int64)])
   readIORef destroyed >>= assertBool "aggregate state destruction ran" . (> 0)
+
+-- | Keep registration resources across queries and prepared statements. Release
+-- them once when the database closes, or when configuration fails.
+testAggregateCleanup :: Assertion
+testAggregateCleanup = do
+  released <- newIORef ([] :: [Text])
+  let release name = atomicModifyIORef' released \names -> (name : names, ())
+  withConnection ":memory:" \connection -> do
+    let target = R.ConnectionTarget connection
+    R.withRegistrationFactory target \factory -> do
+      let configure name function = do
+            R.withIdentifier name (R.checked . c_duckdb_v2_aggregate_function_set_name function)
+            signature <- R.output (c_duckdb_v2_aggregate_function_get_signature function)
+            R.configureFunctionSignature factory (scalarSignature [R.parameter "value" bigint]) signature
+      R.registerAggregateFunctionWithCleanup target (release "used") (configure "managed_owned_sum") sumCallbacks
+      R.registerAggregateFunctionWithCleanup target (release "unused") (configure "managed_unused_sum") sumCallbacks
+      failed <-
+        try
+          ( R.registerAggregateFunctionWithCleanup
+              target
+              (release "failed")
+              (\_ -> throwIO (userError "aggregate configuration failed"))
+              sumCallbacks
+          )
+      case failed of
+        Left (_ :: IOException) -> pure ()
+        Right () -> assertFailure "aggregate configuration must fail"
+    readIORef released >>= (@?= ["failed"])
+    forM_ [1 .. 3 :: Int] \_ ->
+      query_ connection "SELECT managed_owned_sum(i) FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
+    withStatement connection "SELECT managed_owned_sum(i) FROM range(10) t(i)" \statement -> do
+      nextRow statement >>= (@?= Just (Only (45 :: Int64)))
+      void (executeStatement statement)
+      nextRow statement >>= (@?= Just (Only (45 :: Int64)))
+    readIORef released >>= (@?= ["failed"])
+  names <- readIORef released
+  forM_ ["used", "unused", "failed"] \name ->
+    assertEqual ("cleanup count for " <> Text.unpack name) 1 (length (filter (== name) names))
 
 tableDefinition :: R.TableCallbacks
 tableDefinition = (R.tableCallbacks bind execute){R.tableInitGlobalCallback = Just initialize}

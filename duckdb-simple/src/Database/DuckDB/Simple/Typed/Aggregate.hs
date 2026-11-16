@@ -19,7 +19,7 @@ module Database.DuckDB.Simple.Typed.Aggregate (
   createAggregateOn,
 ) where
 
-import Control.Concurrent.MVar (MVar, modifyMVarMasked, newMVar, putMVar, takeMVar)
+import Control.Concurrent.MVar (MVar, modifyMVarMasked, newMVar)
 import Control.Exception (bracketOnError, evaluate, finally, mask_, onException, throwIO)
 import Control.Monad (forM_, unless, when)
 import Data.Array (Array, elems, listArray, (!))
@@ -58,7 +58,7 @@ import Database.DuckDB.Simple.V2.Registration (
   aggregateCallbacks,
   configureFunctionSignature,
   parameter,
-  registerAggregateFunctionWith,
+  registerAggregateFunctionWithCleanup,
   withRegistrationFactory,
   withTypeDeclaration,
  )
@@ -188,13 +188,6 @@ The destructor of the table reads all stripes (releaseStateTable).
 -- destroy. See Note [Aggregate state life cycle].
 type StateTable = Array Int (IORef IntSet.IntSet)
 
--- | The live group states and the optional metadata helper of one call site.
--- See Note [Aggregate metadata factory].
-data AggregateBinding = AggregateBinding
-  { bindingStates :: StateTable
-  , bindingFactory :: MVar (Maybe (DuckDBV2FactoryHandle, IO ()))
-  }
-
 {- Note [Aggregate metadata factory]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 An extension aggregate's update callback has no context or instance factory.
@@ -204,27 +197,36 @@ casts the arguments after bind.
 
 A metadata read needs a factory to test aliases with a canonical type name.
 create_type_with_alias works through any factory and does not use a catalog.
-Thus the first metadata read creates an empty helper instance with one thread.
-The bind data owns its environment and instance, and later updates reuse its
-factory. A decoder that reads no metadata creates no helper. The helper holds
-no managed connection or instance from the caller.
+The first metadata read creates an empty helper instance with threads=1 and
+async_threads=0. The threads setting limits the execution pool to one thread.
+The async_threads setting disables the separate asynchronous worker pool.
+One MVar serializes creation. The registration owns its environment and
+instance, and all call sites reuse its factory. A decoder that reads no
+metadata creates no helper. A connection registration uses its existing
+instance factory instead.
 
-The bind-data owner outlives the update callbacks. Its destructor releases the
-helper after the remaining group states. See Note [Aggregate state life cycle].
-The metadata conversion destroys each temporary alias before it returns. Thus
-no temporary alias outlives its source type or the caller's database.
+registerAggregateFunctionWithCleanup attaches the helper's cleanup to the
+native callback owner. DuckDB keeps that owner in the aggregate function's
+shared extra function info (CV2AggregateFunctionInfo). Bound and executing
+functions keep the function alive, including after catalog replacement or
+removal. The cleanup runs after the last owner releases the callbacks. It
+detaches the cached helper before it destroys the instance and environment.
+The helper holds no managed connection or instance from the caller.
+
+The metadata conversion destroys each temporary alias before it returns.
+Thus no temporary alias outlives its source type or the caller's database.
 -}
 
 -- | Acquire the factory of the helper on the first metadata demand.
 -- A failed acquisition leaves the cache empty. See Note [Aggregate metadata factory].
-bindingMetadataFactory :: AggregateBinding -> IO DuckDBV2FactoryHandle
-bindingMetadataFactory AggregateBinding{bindingFactory} = modifyMVarMasked bindingFactory \case
+registrationMetadataFactory :: MVar (Maybe (DuckDBV2FactoryHandle, IO ())) -> IO DuckDBV2FactoryHandle
+registrationMetadataFactory cache = modifyMVarMasked cache \case
   Just owned@(factory, _) -> pure (Just owned, factory)
   Nothing ->
     bracketOnError (output c_duckdb_v2_environment_create) (destroy c_duckdb_v2_environment_destroy) \environment ->
       bracketOnError
-        ( withTextArray ["threads"] \names -> withTextArray ["1"] \values ->
-            output (c_duckdb_v2_instance_create_with_options environment (ConstPtr names) (ConstPtr values) 1)
+        ( withTextArray ["threads", "async_threads"] \names -> withTextArray ["1", "0"] \values ->
+            output (c_duckdb_v2_instance_create_with_options environment (ConstPtr names) (ConstPtr values) 2)
         )
         (destroy c_duckdb_v2_instance_destroy)
         \instanceHandle -> do
@@ -232,11 +234,11 @@ bindingMetadataFactory AggregateBinding{bindingFactory} = modifyMVarMasked bindi
           let release = destroy c_duckdb_v2_instance_destroy instanceHandle `finally` destroy c_duckdb_v2_environment_destroy environment
           pure (Just (factory, release), factory)
 
--- | Release the metadata helper after the last callback of the call site.
-closeBindingFactory :: AggregateBinding -> IO ()
-closeBindingFactory AggregateBinding{bindingFactory} = mask_ do
-  owned <- takeMVar bindingFactory
-  maybe (pure ()) snd owned `finally` putMVar bindingFactory Nothing
+-- | Release the metadata helper after the last callback owner is released.
+closeMetadataFactory :: MVar (Maybe (DuckDBV2FactoryHandle, IO ())) -> IO ()
+closeMetadataFactory cache = mask_ do
+  owned <- modifyMVarMasked cache (\owned -> pure (Nothing, owned))
+  maybe (pure ()) snd owned
 
 -- | The stripe that holds a key. In GHC 9.14 the key of a stable pointer is
 -- one more than its index in the stable pointer table of the runtime
@@ -291,6 +293,11 @@ createAggregateOn target name aggregate = do
   stripes <- evaluate case target of
     ConnectionTarget connection -> connectionAggregateStripes (connectionOptions connection)
     ExtensionTarget{} -> defaultAggregateStripes
+  (metadataFactory, closeMetadata) <- case casts of
+    Just factory -> pure (pure factory, pure ())
+    Nothing -> do
+      cache <- newMVar Nothing
+      pure (registrationMetadataFactory cache, closeMetadataFactory cache)
   let parameters =
         [ (parameter (argumentName index) argumentType){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
         | (index, argumentType) <- zip [0 ..] argumentTypes
@@ -299,7 +306,7 @@ createAggregateOn target name aggregate = do
         ( aggregateCallbacks
             setStateSize
             (initializeStates aggregate)
-            (updateStates casts name aggregate (length columnTypes))
+            (updateStates metadataFactory casts name aggregate (length columnTypes))
             (combineStates aggregate)
             (finalizeStates aggregate toRaw)
         )
@@ -311,7 +318,7 @@ createAggregateOn target name aggregate = do
     -- a factory. Thus reject such a type before the registration.
     forM_ (zip [0 ..] argumentTypes) \(index, argumentType) ->
       withTypeDeclaration factory argumentType (checkArgumentType (isJust casts) name ("argument " <> argumentName index))
-    registerAggregateFunctionWith target (configure parameters resultType factory) callbacks
+    registerAggregateFunctionWithCleanup target closeMetadata (configure parameters resultType factory) callbacks
   where
     columnTypes = rowColumnDeclarations (Proxy @args)
     configure parameters resultType factory function = do
@@ -329,27 +336,22 @@ createAggregateOn target name aggregate = do
 setStateSize :: DuckDBV2AggregateFunctionSizeInfoHandle -> IO ()
 setStateSize info = checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (staticSizeOf (Proxy @(Ptr ())))))
 
--- | Make an empty state table with the given number of stripes and transfer its
--- owner to the bind data of the call site. See Note [Aggregate state life cycle],
--- Note [State table stripes], and Note [Aggregate metadata factory].
+-- | Make an empty state table with the given number of stripes and transfer it
+-- to the bind data of the call site. See Note [Aggregate state life cycle] and
+-- Note [State table stripes].
 bindStateTable :: Int -> BindCallback DuckDBV2AggregateFunctionBindInfoHandle
 bindStateTable count input _ _ = mask_ do
   stripes <- mapM (const (newIORef IntSet.empty)) [1 .. count]
   -- Build the array here, so that no callback thread evaluates it.
   table <- evaluate (listArray (0, count - 1) stripes :: StateTable)
-  binding <- AggregateBinding table <$> newMVar Nothing
-  stable <- newStablePtr binding
+  stable <- newStablePtr table
   attachOpaque (c_duckdb_v2_function_bind_set_bind_data input) (castPtr (castStablePtrToPtr stable)) stateTableDestructor
     `onException` freeStablePtr stable
 
 -- | Read the state table from the bind data. Without bind data, give 'Nothing'.
 -- See Note [Aggregate state life cycle].
 readStateTable :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO (Maybe StateTable)
-readStateTable getter = fmap bindingStates <$> readAggregateBinding getter
-
--- | Read the bind-data owner shared by the callbacks of one call site.
-readAggregateBinding :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO (Maybe AggregateBinding)
-readAggregateBinding getter = do
+readStateTable getter = do
   raw <- output getter
   if raw == nullPtr then pure Nothing else Just <$> deRefStablePtr (castPtrToStablePtr (castPtr raw))
 
@@ -376,13 +378,14 @@ initializeStates Aggregate{aggregateInitial} info = do
 -- 'targetCastFactory'. See Note [Aggregate state life cycle].
 updateStates
   :: (FromRow args)
-  => Maybe DuckDBV2FactoryHandle -> Text -> Aggregate state args result -> Int -> DuckDBV2AggregateFunctionUpdateInfoHandle -> IO ()
-updateStates casts name Aggregate{aggregateStep} columns info = withTypeScope \scope -> do
-  let metadataFactory = case casts of
-        Just factory -> pure factory
-        Nothing -> do
-          binding <- readAggregateBinding (c_duckdb_v2_aggregate_function_update_get_bind_data info)
-          maybe (throwInternalError "aggregate metadata has no bind data") bindingMetadataFactory binding
+  => IO DuckDBV2FactoryHandle
+  -> Maybe DuckDBV2FactoryHandle
+  -> Text
+  -> Aggregate state args result
+  -> Int
+  -> DuckDBV2AggregateFunctionUpdateInfoHandle
+  -> IO ()
+updateStates metadataFactory casts name Aggregate{aggregateStep} columns info = withTypeScope \scope -> do
   count <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_update_get_row_count info)
   states <- output (c_duckdb_v2_aggregate_function_update_get_states info)
   readers <-
@@ -474,21 +477,17 @@ stableKey = fromIntegral . ptrToIntPtr . castStablePtrToPtr
 stableFromKey :: Int -> StablePtr a
 stableFromKey = castPtrToStablePtr . intPtrToPtr . fromIntegral
 
--- | Free the remaining group states, close the metadata helper, and free the owner.
+-- | Free the remaining group states and the state table owner.
 -- DuckDB calls this when it drops the bind data of a call site. See
 -- Note [Aggregate state life cycle], and Note [Callback ownership] in
 -- "Database.DuckDB.Simple.Callback" for the rules of a destructor.
 releaseStateTable :: Ptr Void -> IO ()
 releaseStateTable raw =
   mask_ $ ignoreCallbackExceptions $ unless (raw == nullPtr) do
-    let stable = castPtrToStablePtr (castPtr raw) :: StablePtr AggregateBinding
+    let stable = castPtrToStablePtr (castPtr raw) :: StablePtr StateTable
     ( do
-        binding <- deRefStablePtr stable
-        ( do
-            remaining <- IntSet.unions <$> mapM readIORef (elems (bindingStates binding))
-            forM_ (IntSet.toList remaining) (freeStablePtr . stableFromKey)
-          )
-          `finally` closeBindingFactory binding
+        remaining <- deRefStablePtr stable >>= fmap IntSet.unions . mapM readIORef . elems
+        forM_ (IntSet.toList remaining) (freeStablePtr . stableFromKey)
       )
       `finally` freeStablePtr stable
 

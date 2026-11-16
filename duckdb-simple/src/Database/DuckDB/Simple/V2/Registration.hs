@@ -93,6 +93,7 @@ module Database.DuckDB.Simple.V2.Registration (
   registerScalarFunctionWith,
   registerAggregateFunction,
   registerAggregateFunctionWith,
+  registerAggregateFunctionWithCleanup,
   registerTableFunction,
   registerTableFunctionWith,
   registerCast,
@@ -140,6 +141,7 @@ import Database.DuckDB.Simple.Callback (
   targetConfig,
   transferCallbackState,
   withCallbackResources,
+  withCallbackResourcesFinally,
   withRegistrationFactory,
   withTarget,
  )
@@ -428,7 +430,19 @@ registerAggregateFunction connection name signature properties callbacks = do
 -- | Configure and register a managed aggregate function on a connection or extension.
 -- The configuration action borrows the builder. Do not set callbacks or user data.
 registerAggregateFunctionWith :: RegistrationTarget -> (DuckDBV2AggregateFunctionHandle -> IO ()) -> AggregateCallbacks -> IO ()
-registerAggregateFunctionWith target configure callbacks =
+registerAggregateFunctionWith target = registerAggregateFunctionWithCleanup target (pure ())
+
+-- | Register an aggregate with cleanup owned by its native callback resources.
+-- Acquire resources for this cleanup only from the callbacks. Native builder
+-- acquisition can fail before setup of callback resources starts. Cleanup runs
+-- if that setup fails. After attachment, it runs when the last native
+-- callback owner is released, including after a failed configuration or
+-- registration. Cleanup exceptions are contained. Cleanup must not use a
+-- borrowed registration context. The configuration action must not set callbacks
+-- or user data.
+registerAggregateFunctionWithCleanup
+  :: RegistrationTarget -> IO () -> (DuckDBV2AggregateFunctionHandle -> IO ()) -> AggregateCallbacks -> IO ()
+registerAggregateFunctionWithCleanup target cleanup configure callbacks =
   withTarget
     target
     c_duckdb_v2_aggregate_function_create
@@ -436,8 +450,9 @@ registerAggregateFunctionWith target configure callbacks =
     c_duckdb_v2_connection_register_aggregate_function
     c_duckdb_v2_extension_register_aggregate_function
     \function register ->
-      withCallbackResources
+      withCallbackResourcesFinally
         (targetConfig target)
+        cleanup
         ( \allocate ->
             installAll
               [ installOptional (aggregateBindCallback callbacks) $ \callback ->

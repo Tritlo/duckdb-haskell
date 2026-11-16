@@ -5,7 +5,8 @@
 -- Description : Entry point and typed registrations for a loadable Haskell extension.
 --
 -- A loadable extension is a shared library that DuckDB loads into its own process with @LOAD@. DuckDB calls the
--- entry point of the extension one time in each process. A second @LOAD@ of the same name does not call it again.
+-- entry point of the extension one time in each database instance. A second @LOAD@ of the same name in that
+-- instance does not call it again.
 -- The entry point registers SQL objects, and DuckDB keeps them in the database after the entry point returns. This
 -- module gives the entry point and the typed registrations of "Database.DuckDB.Simple.Function" and of the other
 -- typed modules for an extension.

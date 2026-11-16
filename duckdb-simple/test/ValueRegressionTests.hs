@@ -1621,6 +1621,10 @@ valueRegressionTests =
         assertIncompatible conn "1.5::DECIMAL(18,3)" () "DECIMAL(18,3)" (Proxy @Text) "Text"
         assertIncompatible conn "(1.5::DECIMAL(18,3))::VARIANT" () "DECIMAL(18,3)" (Proxy @Text) "Text"
         assertIncompatible conn "(TIMESTAMPTZ '2024-01-02 03:04:05+00')::VARIANT" () "TIMESTAMP WITH TIME ZONE" (Proxy @Text) "Text"
+    , testCase "logicalTypeSQL quotes an empty named STRUCT field" $ do
+        let integer = LogicalTypeScalar LogicalTypeIdInteger
+            rep = LogicalTypeStruct (listArray (0, 1) [StructField "" integer, StructField "normal" integer])
+        logicalTypeSQL rep @?= "STRUCT(\"\" INTEGER, normal INTEGER)"
     , testCase "a user FromField checks the type of a column, an element, a MAP key and value, and a record field" $ withConnection ":memory:" \conn -> do
         query_ conn "SELECT 1.25::DECIMAL(9,2), TIMESTAMP_NS '2024-01-02 03:04:05.123456789', [1, 2, 3]::INTEGER[3], '{\"a\": 1}'::JSON"
           >>= (@?= [(Checked "decimal", Checked "timestamp_ns", Checked "array", Checked "json")])

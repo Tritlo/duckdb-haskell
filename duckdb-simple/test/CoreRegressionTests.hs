@@ -7,9 +7,9 @@
 -- Description : Regression tests for result metadata, cursor state, and handle lifetime.
 module CoreRegressionTests (coreRegressionTests) where
 
-import Control.Concurrent (forkFinally, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
+import Control.Concurrent (forkFinally, killThread, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
 import Control.Exception (IOException, SomeException, bracket, finally, throwIO, try)
-import Control.Monad (forM_, replicateM, replicateM_, void, when)
+import Control.Monad (forM_, forever, replicateM, replicateM_, void, when)
 import Data.Either (partitionEithers)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
@@ -37,6 +37,7 @@ import Database.DuckDB.Simple.Internal (
  )
 import qualified Database.DuckDB.Simple.Internal as Internal
 import qualified Database.DuckDB.Simple.Logging as Logging
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import Database.DuckDB.Simple.Registration (
   Replacement (..),
@@ -480,6 +481,19 @@ coreRegressionTests =
         createFunction conn "gc_identity" (\(n :: Int64) -> performMajorGC >> pure n)
         rows <- query_ conn "SELECT gc_identity(i) FROM range(10) t(i)"
         rows @?= map Only ([0 .. 9] :: [Int64])
+    , testCase "GC during the last statement use keeps cached schemas alive" $
+        withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn -> do
+          let name = Text.replicate 4096 "x"
+              sql = Query ("SELECT 1 AS \"" <> name <> "\"")
+              collectGarbage = forever (performMajorGC >> threadDelay 1000)
+          done <- newEmptyMVar
+          -- A bracket around each statement would keep it alive after the read.
+          bracket (forkFinally collectGarbage (putMVar done)) (\worker -> killThread worker >> void (readMVar done)) $ \_ ->
+            replicateM_ 100 $ do
+              (openStatement conn sql >>= columnCount) >>= (@?= 1)
+              (openStatement conn sql >>= \stmt -> columnName stmt 0) >>= (@?= name)
+              (openStatement conn "SELECT ?::BIGINT" >>= \stmt -> Internal.preparedParameterType stmt 1)
+                >>= (@?= Just (LogicalTypeScalar Internal.LogicalTypeIdBigInt))
     , testCase "a prepare of no statement or of two statements raises its error" $ withConnection ":memory:" $ \conn ->
         forM_
           [ ("", "duckdb-simple: SQL query contains no statement")

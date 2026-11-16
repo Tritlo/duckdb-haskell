@@ -15,12 +15,12 @@
   needs the address of a C function, and a loadable extension has no DuckDB
   symbol to take the address of. Each function calls DuckDB through the same
   path as the bindings.
-- DuckDB 2.0.0 plans a cast between some pairs of types as a cast that cannot
-  fail, also a registered cast, for example a cast from INTEGER to VARCHAR. If
+- DuckDB 2.0.0 plans casts between some pairs of types as casts that cannot
+  fail. This includes registered casts, for example from INTEGER to VARCHAR. If
   a registered cast reports an error for such a pair with an Invalid Input, Out
   of Range, or Conversion code, or with a code that DuckDB does not map, for
-  example `DUCKDB_V2_ERROR_API`, DuckDB gives an INTERNAL error, and during the
-  execution of a query it then invalidates the database. A V1 cast cannot
+  example `DUCKDB_V2_ERROR_API`, DuckDB gives an INTERNAL error. During query
+  execution, that error invalidates the database. A V1 cast cannot
   choose the code of its error. A V2 cast can report
   `DUCKDB_V2_ERROR_TYPE_MISMATCH`. The other codes that keep their type and the
   database, and that abort an explicit transaction under each transaction

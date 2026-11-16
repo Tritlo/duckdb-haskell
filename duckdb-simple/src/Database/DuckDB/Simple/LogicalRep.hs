@@ -89,7 +89,7 @@ for an alias. These places keep the alias:
   aliasBase. Thus a value that the library reads and binds again keeps its
   type, for example STRUCT(k JSON).
 
-Compare a type with an alias to another type with withoutAliases.
+Use withoutAliases to compare base types.
 -}
 
 -- | Replace each alias with its base type, at each depth. See
@@ -151,7 +151,7 @@ These rules follow LogicalType::ToString of DuckDB 2.0.0:
   in any case (KeywordHelper::RequiresQuotes). The keywords are the 502 names
   of duckdb_keywords() of DuckDB 2.0.0.
 
-A case compares the text with duckdb_v2_logical_type_to_text for one type of
+A test case compares the text with duckdb_v2_logical_type_to_text for one type of
 each kind and for a STRUCT with each keyword as a field name.
 -}
 
@@ -182,7 +182,9 @@ logicalTypeSQL = \case
       | needsQuotes name = quoted '"' name
       | otherwise = name
     needsQuotes name =
-      not (and (zipWith plain [0 :: Int ..] (Text.unpack name))) || Set.member (Text.toLower name) duckDBKeywords
+      Text.null name
+        || not (and (zipWith plain [0 :: Int ..] (Text.unpack name)))
+        || Set.member (Text.toLower name) duckDBKeywords
     plain index char = isAsciiLower char || isAsciiUpper char || char == '_' || (index > 0 && isDigit char)
 
 -- | The keywords of DuckDB 2.0.0, from duckdb_keywords(). A field name that is

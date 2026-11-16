@@ -5,8 +5,8 @@
 - Target DuckDB 2.0 with `duckdb-ffi` 2.0.0.x. The backend uses the
   generated V2 C API. Upstream marks the V2 API as unstable ("The C API v2 is
   not yet stable. Its interface may change in upcoming releases."), so this
-  release requires exactly DuckDB 2.0.0, and the `duckdb-ffi` release for a
-  later DuckDB version is outside the dependency bound. Creating an
+  release requires exactly DuckDB 2.0.0. The dependency bound excludes a
+  `duckdb-ffi` release for a later DuckDB version. Creating an
   environment raises `SQLError` for another library version. Use the earlier
   release with DuckDB 1.5.
 - Require `base` 4.18 or later, that is GHC 9.6 or later. Version 0.3 accepted
@@ -19,20 +19,20 @@
   without the prefix of its type, and `Nothing` for an error of the library.
   Code that builds or matches an `SQLError` by position does not compile. See
   MIGRATION.md.
-- An `SQLError` with a type that leaves a Haskell callback keeps its type. The
-  outer statement fails with that type, and its text has one prefix, for example
+- An `SQLError` with a type keeps that type when it leaves a Haskell callback.
+  The outer statement fails with that type, and its text has one prefix, for example
   `Conversion Error: ...` for a failed query in a scalar function. A failed cast
   gives `ErrorTypeMismatch`. Sixteen types give `ErrorInputInvalid` and the text
-  `Invalid Input Error: ` followed by the message of the exception, as an
-  `SQLError` with no type and each other exception do. The section "Errors" of
-  README.md lists them and the reasons. When an error of a callback fails a
-  statement in an explicit transaction, DuckDB invalidates that transaction, and
+  `Invalid Input Error: ` followed by the exception message. An `SQLError`
+  with no type and each other exception give the same result. The "Errors"
+  section of README.md lists those types and the reasons. When a callback error
+  fails a statement in an explicit transaction, DuckDB invalidates that transaction, and
   COMMIT then stores none of its rows, also under the DuckDB setting
   `SYNTACTIC_ERRORS_DO_NOT_INVALIDATE`.
 - Add shared environments and instances, attachment management, option
   discovery, table descriptions, SQL tokenization, and positioned file I/O.
-- `listConfigFlags` takes a `Connection`, and it lists the options of the
-  database of that connection, also its custom options. See MIGRATION.md.
+- `listConfigFlags` takes a `Connection`. It lists that connection's database
+  options, including custom options. See MIGRATION.md.
 - `deleteFunction` reads the name with the rules of DuckDB for a qualified
   name, so a part in double quotes can contain a dot. See MIGRATION.md.
 - `ConfigValue.configValueText` is `Maybe Text`, and `Nothing` for an option
@@ -130,8 +130,8 @@
   `registerCopyFromFunction`, `registerCopyFunction`,
   `registerPragmaFunction`, and `registerCustomOption`. A COPY TO function of
   an extension cannot read a VARIANT column.
-- A typed registration costs more for each row than raw vector access. Use the
-  V2 modules for speed. Use them also for projection and filter pushdown,
+- A typed registration has more overhead for each row than raw vector access.
+  Use the V2 modules for speed, projection and filter pushdown,
   parallel table scans, and scalar functions with a bind callback or variadic
   parameters.
 - Add `SettingScope`, `LogLevel`, `LogScope`, `TokenType`, `MacroFunctionType`,
@@ -157,6 +157,14 @@
   which writes a message through the context of a native callback.
   `Database.DuckDB.Simple.V2.LogicalRep` has `logicalTypeToRep`,
   `logicalTypeFromRep`, `logicalTypeFromRepWith`, and `destroyLogicalType`.
+- Keep statements alive while reading cached schemas for column metadata and
+  parameter types. `Internal.withStatementSchemas` scopes these borrowed handles.
+- Release acquired native handles if evaluation of a lazy input list fails.
+- Mask native parameter cleanup so cancellation cannot skip releases.
+- Read LIST, ARRAY, and MAP elements with a constant stack. Keep native reads in
+  element order.
+- Read VARIANT metadata from its result vector. Construct VARIANT types by name.
+  Read singleton INT64 and UINT64 cast payloads with native getters.
 - `Database.DuckDB.Simple.Internal` changes. It re-exports the native helper
   layer. It no longer exports `toSQLError`, `fetchPrepareError`,
   `fetchResultError`, `throwResultError`, `mkExecuteError`,
@@ -298,9 +306,10 @@
   on the new connection, so the default list runs no query. The connection keeps
   each type, and a bind copies it. A name that DuckDB drops, for example a blank
   name, fails the open.
-- A UNION parameter is built in a one-row UNION vector, because the V2 API has
-  no constructor for a UNION value; this needs flat child vectors, which DuckDB
-  2.0.0 gives a new vector, but its header does not state it.
+- The library builds a UNION parameter in a one-row UNION vector, because the
+  V2 API has no UNION value constructor. This requires flat child vectors.
+  DuckDB 2.0.0 supplies them in a new vector, but its header does not guarantee
+  this.
 - A STRUCT, TUPLE, or UNION parameter binds a `FieldGeometry` value as a
   GEOMETRY with the same WKB bytes and CRS, through DuckDB's cast from BLOB.
   A value whose CRS is not the CRS of its declared type raises `SQLError` with

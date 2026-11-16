@@ -203,9 +203,10 @@ scalar functions, the aggregate step and combine, the table function, the
 cast, the replacement scan, COPY TO, COPY FROM, and the file readers. After
 each error, a valid statement runs in the same process. `TRY_CAST` keeps the
 NULL that the cast callback writes before it reports the error. One case runs
-a second `LOAD` in the same process. DuckDB records the extension name at the
-first `LOAD` and skips a later `LOAD` of the same name, so the entrypoint runs
-once in each process.
+a second `LOAD` in the same database instance. DuckDB records the extension
+name in that instance and skips a later `LOAD` of the same name. Another case
+opens a new instance in the same CLI process and loads the extension there.
+The entrypoint runs for each instance. The RTS stays initialized between loads.
 The suite does not link DuckDB. Each CLI process must finish in 60 seconds,
 including process exit and output collection. A timeout kills and reaps the
 CLI child.

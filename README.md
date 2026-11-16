@@ -98,9 +98,10 @@ When building this repository, you can also pass `-fsystemlib` and
 `--extra-lib-dirs=/absolute/path/to/duckdb` on the command line.
 Supplying `extra-lib-dirs` also skips the download without the flag.
 
-The supplied library must be a DuckDB 2.0.x release. The V2 API, and
-`duckdb-simple` 1.0, which uses it, require exactly DuckDB 2.0.0. In Nix builds and shells, Setup uses Cabal and Nix to
-find the library and skips the download.
+The supplied library must be a DuckDB 2.0.x release. The V2 API requires exactly
+DuckDB 2.0.0. `duckdb-simple` 1.0 uses V2 and has the same requirement.
+In Nix builds and shells, Setup uses Cabal and Nix to find the library and skips
+the download.
 
 `duckdb-ffi` builds on Linux and macOS on x86_64 and aarch64. The generated ABI
 checks reject other platforms. The automatic download supports glibc Linux and
@@ -123,15 +124,15 @@ and `FromField` for result conversion.
   `fold_`, and `nextRow`.
 - Decode signed and unsigned integers, HUGEINT/UHUGEINT, decimals, intervals,
   date and time values, enums, bit strings, blobs, and bignums.
-- Support for positional (`?`) and named (`$name`) parameters, with detailed
-  diagnostics when placeholders and bindings disagree.
+- Bind positional (`?`) and named (`$name`) parameters. Errors describe
+  differences between placeholders and bindings.
 - Map product types to query results and parameter lists with `FromRow` and
   `ToRow`, including generic deriving.
-- Scalar function registration via `Database.DuckDB.Simple.Function`, allowing
-  Haskell code (including `Maybe`-returning and `IO` actions) to be invoked
-  directly from SQL expressions.
-- Transaction helper `withTransaction` and statement metadata utilities
-  `columnCount` and `columnName`.
+- Register scalar functions with `Database.DuckDB.Simple.Function`. SQL
+  expressions can call Haskell functions, including functions that return
+  `Maybe` values or run `IO` actions.
+- Use `withTransaction` for transactions and `columnCount` and `columnName`
+  for statement metadata.
 
 See [duckdb-simple/README.md](duckdb-simple/README.md) for a step-by-step guide,
 extended examples, and notes on streaming behaviour and user-defined

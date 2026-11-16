@@ -83,7 +83,8 @@
   from a list, and `sizedArrayToArray` gives the `Array`. It binds as an ARRAY
   of size `n`, a typed registration declares that type, also for a field of a
   record through `ViaDuckDB`, and it reads an ARRAY and a LIST of `n` elements.
-  A value of another length raises `Incompatible`. `Array Int a` has no
+  A value of another length gives an `Incompatible` conversion error,
+  reported as `SQLError` by the query APIs. `Array Int a` has no
   `ToField`, `FromField`, `DuckDBColumnType`, `ToDuckValue`, or `DuckValue`
   instance. A list reads an ARRAY of each size, and a `FieldArray` is an ARRAY
   value that a program builds at run time. See MIGRATION.md.

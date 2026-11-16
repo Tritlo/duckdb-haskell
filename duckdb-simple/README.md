@@ -421,12 +421,12 @@ Notes:
    binds as an ARRAY of size `n`, and a typed registration declares that type
    in each position, also as a field of a record through `ViaDuckDB`. It reads
    an ARRAY and a LIST of `n` elements, as the cast of DuckDB to the ARRAY
-   does, and a value of another length raises a `ResultError` that names the
-   column type, the `SizedArray` type, and the length. In a typed
-   registration, DuckDB rejects an ARRAY of another size when it binds the
-   call. It casts a LIST of the same length to the ARRAY with no error, by its
-   own implicit cast, and a LIST of another length raises an `SQLError` when
-   the statement runs. Use one type for each need:
+   does. A query that reads a value of another length raises an `SQLError`.
+   Its message names the column type, the `SizedArray` type, and the length.
+   In a typed registration, DuckDB rejects an ARRAY of another size when it
+   binds the call. It casts a LIST of the same length to the ARRAY with no
+   error, by its own implicit cast, and a LIST of another length raises an
+   `SQLError` when the statement runs. Use one type for each need:
    - An ARRAY of a fixed size: a `SizedArray n a`.
    - An ARRAY of a size that varies: a list. A list reads an ARRAY of each
      size, and DuckDB casts a bound list to an ARRAY column of the same
@@ -899,9 +899,9 @@ Use separate parameters when one expression requires microseconds and another
 requires nanoseconds.
 
 A date or a timestamp outside the range of DuckDB raises an `SQLError` of the
-type `ErrorTypeConversion` when it binds, also as an element of a list, an
-`Array`, or a `Map`, inside a STRUCT, a TUPLE, or a UNION, and in a VARIANT. For
-a `Day`, that range is the range of DATE, from -5877641-06-25 to 5881580-07-10.
+type `ErrorTypeConversion` when it binds, also as an element of a list, a
+`SizedArray`, or a `Map`, inside a STRUCT, a TUPLE, or a UNION, and in a VARIANT.
+For a `Day`, that range is the range of DATE, from -5877641-06-25 to 5881580-07-10.
 For a `LocalTime` or a `UTCTime` (in UTC), it is the range of TIMESTAMP,
 TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS, from -290308-12-22 00:00:00 to
 294247-01-10 04:00:54.775806. The dates are in the notation of `Data.Time`. A

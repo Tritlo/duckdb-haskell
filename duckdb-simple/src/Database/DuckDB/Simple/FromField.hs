@@ -1,5 +1,8 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -33,6 +36,9 @@ module Database.DuckDB.Simple.FromField (
   TimeWithZone (..),
   timeWithZone,
   timeWithZoneZone,
+  SizedArray,
+  sizedArray,
+  sizedArrayToList,
   ResultError (..),
   FieldParser,
   FromField (..),
@@ -81,6 +87,7 @@ import Database.DuckDB.Simple.Ok
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import GHC.Float (double2Float, float2Double, int2Double, int2Float, rationalToDouble, rationalToFloat, word2Double)
 import GHC.Num.Integer (integerFromWordList)
+import GHC.TypeLits (KnownNat, Nat, natVal)
 import Numeric.Natural (Natural)
 
 -- | Internal representation of a column value.
@@ -266,6 +273,24 @@ timeWithZone time zone = TimeWithZone time (fromIntegral (timeZoneMinutes zone) 
 -- name.
 timeWithZoneZone :: TimeWithZone -> TimeZone
 timeWithZoneZone value = minutesToTimeZone (fromIntegral (timeWithZoneOffsetSeconds value `quot` 60))
+
+-- | A list of exactly @n@ values. A parameter of this type binds as the ARRAY
+-- type @T[n]@, and a typed registration declares that type. See
+-- Note [Sized arrays] in "Database.DuckDB.Simple.ToField". Make a value with
+-- 'sizedArray'.
+newtype SizedArray (n :: Nat) a = SizedArray [a]
+  deriving stock (Eq, Ord, Show, Functor, Foldable, Traversable)
+
+-- | Make a 'SizedArray' from a list. The result is 'Nothing' when the list
+-- does not have exactly @n@ values.
+sizedArray :: forall n a. (KnownNat n) => [a] -> Maybe (SizedArray n a)
+sizedArray values
+  | toInteger (length values) == natVal (Proxy @n) = Just (SizedArray values)
+  | otherwise = Nothing
+
+-- | Give the values of a 'SizedArray' in their order.
+sizedArrayToList :: SizedArray n a -> [a]
+sizedArrayToList (SizedArray values) = values
 
 -- | Match signed values without narrowing to the machine word size.
 pattern FieldInt :: Int64 -> FieldValue

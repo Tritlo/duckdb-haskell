@@ -91,6 +91,10 @@ module Database.DuckDB.Simple (
   NamedParam (..),
   DuckDBColumnType (..),
   duckdbColumnType,
+  SizedArray,
+  sizedArray,
+  sizedArrayFromList,
+  sizedArrayToArray,
   Null (..),
   Only (..),
   (:.) (..),
@@ -121,7 +125,16 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Conversion (Conversion, liftConversion, runConversion)
-import Database.DuckDB.Simple.FromField (Field (..), FieldParser, FromField (..), ResultError (..))
+import Database.DuckDB.Simple.FromField (
+  Field (..),
+  FieldParser,
+  FromField (..),
+  ResultError (..),
+  SizedArray,
+  sizedArray,
+  sizedArrayFromList,
+  sizedArrayToArray,
+ )
 import Database.DuckDB.Simple.FromRow (FromRow (..), RowParser, field, fieldWith, numFieldsRemaining, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Function (
   Aggregate (..),

@@ -63,7 +63,9 @@ import Database.DuckDB.Simple.FromField (
   DecimalValue (..),
   FieldValue (..),
   IntervalValue (..),
+  SizedArray,
   TimeWithZone (..),
+  sizedArrayToArray,
  )
 import Database.DuckDB.Simple.Geometry (RawGeometry (..))
 import Database.DuckDB.Simple.Internal (
@@ -104,6 +106,7 @@ import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek)
 import GHC.Exts (Ptr (..))
 import GHC.Num.Integer (integerLog2, integerToAddr)
+import GHC.TypeLits (KnownNat, natVal)
 import Numeric.Natural (Natural)
 
 -- | Represents a named parameter binding using the @:=@ operator.
@@ -180,16 +183,16 @@ Unbounded forms, with this rule:
   discards the digits below one microsecond, as the SQL literal does.
 - The binding discards the digits below one nanosecond in each case.
 
-A value in an Array, a list, a Map, a STRUCT, a TUPLE, or a UNION parameter
+A value in a SizedArray, a list, a Map, a STRUCT, a TUPLE, or a UNION parameter
 follows the type of its leaf in the target: timestampTypeForTarget gives a
 nanosecond type to a TIME, TIMESTAMP, or TIMESTAMPTZ leaf of a nanosecond
 target leaf. These parameters read the parameter type for each value. A
 VARIANT leaf does not give a nanosecond type: bindElement gives an element of
 a VARIANT list or map no target, and timestampTypeForTarget has no VARIANT
-case. A list, an Array, or a Map for a VARIANT parameter has no element type
-in the target (collectionChildType and mapPartTypes give Nothing), so its
+case. A list, a SizedArray, or a Map for a VARIANT parameter has no element
+type in the target (collectionChildType and mapPartTypes give Nothing), so its
 time elements also get the microsecond value. One LIST has one element type
-for all its elements. For a Haskell list, an Array, or a Map of TimeOfDay,
+for all its elements. For a Haskell list, a SizedArray, or a Map of TimeOfDay,
 LocalTime, or UTCTime values, withElementType declares the microsecond type of
 the element, for example TIMESTAMP for a LocalTime, so a nanosecond element
 would be cast to that type, and the cast rounds. A FieldList or a FieldMap
@@ -220,7 +223,7 @@ would round or raise an error in some of them.
   type cuts the digits.
 
 - A LocalTime for a TIMESTAMP_NS parameter, or for the TIMESTAMP_NS elements
-  of an Array, a list, or a Map, is in one of three zones:
+  of a SizedArray, a list, or a Map, is in one of three zones:
   * In the range of TIMESTAMP_NS (about the years 1677 to 2262): no error.
   * Outside the range, when DuckDB also cannot cast the microsecond value to
     TIMESTAMP_NS (outsideNanosecondRange): the value binds as a microsecond
@@ -240,7 +243,7 @@ would round or raise an error in some of them.
     the range has no such zone, because the microsecond value is cut toward
     the earlier time.
   A UTCTime for a TIMESTAMPTZ_NS parameter, or for the TIMESTAMPTZ_NS elements
-  of an Array, a list, or a Map, is in the same three zones, on its instant in
+  of a SizedArray, a list, or a Map, is in the same three zones, on its instant in
   UTC. Each leaf of a STRUCT, TUPLE, or UNION outside the range gets the error
   of the encoder, because in TRY_CAST DuckDB keeps the other leaves of a
   microsecond value with their digits cut.
@@ -418,20 +421,16 @@ why the type has no declaration.
 - Integer and Natural give HUGEINT and UHUGEINT, but their text is BIGNUM.
   See Note [Integer parameters].
 - ViaDuckDB gives the structured type of the record or the sum type
-  (genericLogicalType in "Database.DuckDB.Simple.Generic"). A type with an
-  Array field gives Left: the DuckValue instance of Array declares an ARRAY
-  of the size 0, and DuckDB rejects that size. A field of a newtype whose
-  DuckValue instance gives the size declares that ARRAY.
+  (genericLogicalType in "Database.DuckDB.Simple.Generic"). A SizedArray
+  field, or a field of a newtype whose DuckValue instance gives the size,
+  declares an ARRAY.
 - Maybe a has the declaration of a.
 - A list gives a LIST (listDeclaration): the text T[] for the element text T,
   or a structured LIST for a structured element type.
-- An Array gives Left. A DuckDB ARRAY type has a size, and the Haskell type
-  has none. DuckDB 2.0.0 has no declaration for an ARRAY of each size: it
-  does not parse the type text T[ANY], and it rejects an ARRAY of the size 0
-  ("ARRAY type size must be at least 1"). A newtype of the Array with the
-  type text of one size, for example BIGINT[3], declares that ARRAY. DuckDB
-  then rejects an ARRAY of another size when it binds the call (a Binder
-  Error). It casts a LIST of the same length to the ARRAY with no error,
+- A SizedArray gives the ARRAY of its size (arrayDeclaration, see
+  Note [Sized arrays]). A newtype with the type text of one size, for example
+  BIGINT[3], also declares that ARRAY. DuckDB then rejects an ARRAY of another
+  size when it binds the call (a Binder Error). It casts a LIST of the same length to the ARRAY with no error,
   because the cast from LIST to ARRAY is implicit in DuckDB. A LIST of
   another length raises the conversion error of DuckDB when the statement
   runs.
@@ -451,13 +450,13 @@ A registration raises the Left text as an SQLError before it registers the
 SQL object. For a parameter with no known type, a LIST or a MAP value with no
 element that is not NULL takes its element type from a structured declaration
 (withElementType). See Note [Element types of a list]. The ToDuckValue
-instances of a list, an Array, and a Map give the structured declaration of
+instances of a list, a SizedArray, and a Map give the structured declaration of
 the element as its target (declaredTarget).
 -}
 
 -- | Types that map to a concrete DuckDB column type when used with @ToField@.
--- A newtype with its own instance gives its own type text, for example
--- @BIGINT[3]@ for a newtype of an 'Array' of three 'Int64' values.
+-- A newtype with its own instance gives its own type text. A 'SizedArray' gives the
+-- text of its ARRAY type, for example @BIGINT[3]@ for @SizedArray 3 Int64@.
 -- See Note [Type declarations].
 class DuckDBColumnType a where
   -- | The DuckDB type text of @a@.
@@ -465,14 +464,7 @@ class DuckDBColumnType a where
 
   -- | The SQL type that a typed registration declares for @a@, or the reason
   -- why @a@ has no declaration. The default is the text of
-  -- 'duckdbColumnTypeFor'. An 'Array' has no declaration, because its type has
-  -- no size. Thus an 'Array' argument or result of
-  -- 'Database.DuckDB.Simple.Function.createFunction' or
-  -- 'Database.DuckDB.Simple.Function.createAggregate', and an 'Array'
-  -- parameter or column of 'Database.DuckDB.Simple.Function.createTableFunction',
-  -- also inside a @Maybe@, a list, or a 'Map.Map', raise an error at
-  -- registration. Use a list for a LIST, or a newtype of the 'Array' whose
-  -- 'duckdbColumnTypeFor' gives the size, for example @BIGINT[3]@, for an
+  -- 'duckdbColumnTypeFor'. A list declares a LIST, and a 'SizedArray' an
   -- ARRAY. See Note [Type declarations].
   duckdbTypeDeclaration :: Proxy a -> Either Text TypeDeclaration
   duckdbTypeDeclaration proxy = Right (TypeExpression (duckdbColumnTypeFor proxy))
@@ -614,7 +606,7 @@ integerBinding binds an Integer or a Natural parameter with this rule:
     in SELECT ?, binds as a BIGNUM. A cast that DuckDB adds later can still
     have the defects above.
   - A BigNum always binds as a BIGNUM.
-  - An Array or a list of Integer values for a target with no known type, or
+  - A SizedArray or a list of Integer values for a target with no known type, or
     for a target with an element type that is not an integer type or a DECIMAL
     type, has BIGNUM elements. A cast that DuckDB adds later can still have
     the defects above.
@@ -640,7 +632,7 @@ integerBinding binds an Integer or a Natural parameter with this rule:
   Integer and UHUGEINT for Natural, as for a field of a generic record (the
   DuckValue instances in "Database.DuckDB.Simple.Generic"). Thus a column, an
   argument, and a result of a typed registration have the type of the field.
-  The ToDuckValue instances of a list, an Array, and a Map give the
+  The ToDuckValue instances of a list, a SizedArray, and a Map give the
   declaration of the element as its target, so a list of Integer values in a
   typed row has HUGEINT elements. See Note [Type declarations].
 
@@ -651,7 +643,7 @@ integerBinding binds an Integer or a Natural parameter with this rule:
   value type, withElementType declares that type in place of BIGNUM. Each
   Integer element is a HUGEINT or a UHUGEINT value, so DuckDB checks the range
   of the cast of each element. For example, [5, -6] for a UBIGINT[2] column
-  raises an error. An Array or a list of BigNum values also takes the element
+  raises an error. A SizedArray or a list of BigNum values also takes the element
   type of the target, but each element is a BIGNUM value. DuckDB casts each
   element with the casts from BIGNUM, so the result for BigNum elements does
   not improve. For each other target, and for a parameter with no known type,
@@ -857,16 +849,18 @@ instance ToField BS.ByteString where
       ("<blob length=" <> show (BS.length bs) <> ">")
       (\factory -> toDuckValue factory bs)
 
-instance (DuckDBColumnType a, ToField a) => ToField (Array Int a) where
-  toField arr =
+-- | Bind a 'SizedArray' as an ARRAY of size @n@. Each element takes the
+-- element type of the parameter as its target. See Note [Sized arrays].
+instance (DuckDBColumnType a, ToField a) => ToField (SizedArray n a) where
+  toField values =
     targetValueBinding
-      ("<array length=" <> show (length (elems arr)) <> ">")
+      ("<array length=" <> show (length values) <> ">")
       \builder readTarget -> do
         target <- readTarget
         let childTarget = collectionChildType target
-        arrayDuckValue builder childTarget (bindElement builder childTarget) arr
+        arrayDuckValue builder childTarget (bindElement builder childTarget) (elems (sizedArrayToArray values))
 
--- | Bind a list as a LIST value with the element rules of an 'Array'. An empty
+-- | Bind a list as a LIST value with the element rules of a 'SizedArray'. An empty
 -- list binds as an empty LIST of the element type. When the element type has
 -- no type name, an empty list takes the element type of the parameter, or the
 -- type NULL for a parameter with no known type, as the SQL literal [] does.
@@ -967,7 +961,7 @@ instance ToField FieldValue where
     FieldBigNum v -> toField v
     FieldEnum _ label -> toField label
     FieldArray items
-      | null items -> valueBinding (show value) (const emptyArrayError)
+      | Just failure <- arraySizeError (length items) -> valueBinding (show value) (const failure)
       | otherwise -> fieldValueSequence "FieldArray" c_duckdb_v2_value_create_array (elems items)
     FieldList items -> fieldValueSequence "FieldList" c_duckdb_v2_value_create_list items
     FieldMap pairs -> fieldValueMap pairs
@@ -1137,15 +1131,56 @@ instance (DuckDBColumnType a) => DuckDBColumnType (Maybe a) where
   duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a)
   duckdbTypeDeclaration _ = duckdbTypeDeclaration (Proxy @a)
 
--- | The type text is the LIST text of the element type. An 'Array' has no
--- declaration, because its type has no size. See Note [Type declarations].
-instance (DuckDBColumnType a) => DuckDBColumnType (Array Int a) where
-  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a) <> Text.pack "[]"
-  duckdbTypeDeclaration _ =
-    Left
-      ( "an Array has no size, so its ARRAY type has no declaration. Use a newtype of the Array with a DuckDBColumnType"
-          <> " instance that gives the size, for example BIGINT[3], or a list, which is a LIST."
-      )
+-- | The type text is @T[n]@, and the declaration is the ARRAY type of size @n@.
+-- See Note [Sized arrays].
+instance (KnownNat n, DuckDBColumnType a) => DuckDBColumnType (SizedArray n a) where
+  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a) <> Text.pack ("[" <> show (natVal (Proxy @n)) <> "]")
+  duckdbTypeDeclaration _ = case arraySizeReason size of
+    Just reason -> Left ("a SizedArray of size " <> Text.pack (show size) <> " has no ARRAY type, because " <> reason)
+    Nothing -> arrayDeclaration size <$> duckdbTypeDeclaration (Proxy @a)
+    where
+      size = natVal (Proxy @n)
+
+{- Note [Sized arrays]
+~~~~~~~~~~~~~~~~~~~~~~
+A DuckDB ARRAY type has a size, for example BIGINT[3]. SizedArray n a is the
+Haskell type of T[n]: its type text is T[n], and a typed registration declares
+the ARRAY type of size n. A SizedArray holds an Array Int a with the bounds
+(0, n - 1). sizedArray takes an Array with any bounds and stores its elements
+with these bounds, so the derived Eq and Ord compare the elements only. It is
+the one Haskell type of an ARRAY. For an ARRAY
+of a size that varies, a list reads an ARRAY of each size, and DuckDB casts a
+bound list to an ARRAY column of the same length. A FieldArray is an ARRAY
+value that a program builds at run time.
+
+- Binds. A SizedArray binds as an ARRAY of size n. Each element takes the
+  element type of the parameter as its target, and the element type of the
+  value follows Note [Element types of a list].
+- Reads. A SizedArray reads an ARRAY and a LIST, as a list does, and the
+  value must have n elements. The cast of DuckDB from a LIST or an ARRAY to
+  T[n] gives the same value, or an error for another length, so this is a
+  read by the rule of Note [Reads of another SQL type] in
+  "Database.DuckDB.Simple.FromField". The check uses the length of the
+  decoded value and not the column type, so it is the same for a LIST column,
+  an ARRAY column of another size, and a VARIANT. A value of another length
+  raises Incompatible, which names the column type and the SizedArray type.
+- Sizes. A DuckDB ARRAY has 1 to 100000 elements (maxArraySize). DuckDB
+  rejects the SQL type T[0] and a larger type, for example with "ARRAY type
+  size must be at most 100000". The value API of DuckDB 2.0.0 does not check
+  the largest size, so a parameter of a larger ARRAY would bind a value that
+  the SQL of DuckDB cannot write. Thus the library checks both sizes, as an
+  input check: the declaration of a SizedArray of another size gives Left,
+  and the bind of a SizedArray or a FieldArray of another size raises an
+  SQLError of the type ErrorInputInvalid (arraySizeError).
+- Fields. A SizedArray field of a generic record declares the ARRAY of size
+  n through its DuckValue instance, and reads as a SizedArray does.
+-}
+
+-- | Declare an ARRAY of a size with the declaration of its element type. See
+-- Note [Sized arrays].
+arrayDeclaration :: Integer -> TypeDeclaration -> TypeDeclaration
+arrayDeclaration size (TypeExpression element) = TypeExpression (element <> Text.pack ("[" <> show size <> "]"))
+arrayDeclaration size (StructuredType element) = StructuredType (LogicalTypeArray element (fromInteger size))
 
 -- | See Note [Type declarations].
 instance (DuckDBColumnType k, DuckDBColumnType v) => DuckDBColumnType (Map.Map k v) where
@@ -1269,26 +1304,33 @@ utcTimestampDuckValue factory value =
   encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value
     >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_tz factory encoded))
 
--- | Construct an ARRAY value. An empty array raises t'SQLError'. See
--- 'withElementType' for the element type.
+-- | Construct an ARRAY value. An array with no element or with more elements
+-- than DuckDB permits raises t'SQLError'. See 'withElementType' for the element
+-- type.
 arrayDuckValue
   :: forall a
    . (DuckDBColumnType a)
   => ValueBuilder
   -> Maybe LogicalTypeRep
   -> (a -> IO DuckDBV2ValueHandle)
-  -> Array Int a
+  -> [a]
   -> IO DuckDBV2ValueHandle
-arrayDuckValue builder target elementValue array = do
-  when (null (elems array)) emptyArrayError
-  sequenceDuckValue (withElementType (Proxy @a) builder target) c_duckdb_v2_value_create_array builder elementValue (elems array)
+arrayDuckValue builder target elementValue values = do
+  sequence_ (arraySizeError (length values))
+  sequenceDuckValue (withElementType (Proxy @a) builder target) c_duckdb_v2_value_create_array builder elementValue values
 
--- | Raise the error for an ARRAY parameter with no element. An 'Array' and a
--- 'FieldArray' raise this error.
-emptyArrayError :: IO a
-emptyArrayError =
-  throwInvalidArgument
-    "an empty ARRAY parameter is not possible, because a DuckDB ARRAY has at least one element; bind an empty list for an empty LIST"
+-- | Give the input error of an ARRAY parameter of a size that DuckDB does not
+-- have: no element, or more elements than DuckDB permits. A 'SizedArray' and a
+-- 'FieldArray' raise this error. See Note [Sized arrays].
+arraySizeError :: Int -> Maybe (IO a)
+arraySizeError count = case arraySizeReason (toInteger count) of
+  Nothing -> Nothing
+  Just reason ->
+    Just
+      ( throwInvalidArgument case count of
+          0 -> "an empty ARRAY parameter is not possible, because " <> reason <> "; bind an empty list for an empty LIST"
+          _ -> "an ARRAY parameter of " <> Text.pack (show count) <> " elements is not possible, because " <> reason <> "; bind a list for a LIST"
+      )
 
 -- | Construct a LIST value. An empty list is an empty LIST of the element type.
 -- See 'withElementType' for the element type.
@@ -1396,8 +1438,9 @@ constructor:
   the element type NULL. The SQL literals [] and MAP {} have the types
   "NULL"[] and MAP("NULL", "NULL"). The native constructor gives no type to an
   empty set (it raises "cannot resolve the element type of an empty set"), so
-  the library names the type NULL itself. An Array with no element raises an
-  error before this point, because a DuckDB ARRAY has at least one element.
+  the library names the type NULL itself. A SizedArray or a FieldArray with no
+  element raises an error before this point, because a DuckDB ARRAY has at
+  least one element.
 -}
 
 -- | Give the element type of the values of a LIST, an ARRAY, or one part of a
@@ -1628,9 +1671,10 @@ fieldValueWithTypeDuckValue builder@ValueBuilder{builderFactory = factory, build
   (LogicalTypeDecimal width scale, FieldDecimal decimal@DecimalValue{decimalWidth, decimalScale})
     | width == decimalWidth && scale == decimalScale -> decimalDuckValue factory decimal
   (LogicalTypeList child, FieldList values) -> sequenceValue c_duckdb_v2_value_create_list child values
-  -- The generic ARRAY type declares the size 0. The value then gives the size.
   (LogicalTypeArray child size, FieldArray array)
-    | size == 0 || fromIntegral (length (elems array)) == size -> sequenceValue c_duckdb_v2_value_create_array child (elems array)
+    | fromIntegral (length (elems array)) == size -> do
+        sequence_ (arraySizeError (length (elems array)))
+        sequenceValue c_duckdb_v2_value_create_array child (elems array)
   (LogicalTypeMap keyRep valueRep, FieldMap pairs) ->
     bracket (makeType keyRep) destroyLogicalType \keyType ->
       bracket (makeType valueRep) destroyLogicalType \valueType ->
@@ -1810,7 +1854,7 @@ value in SQL text:
   same rule.
 
 RawGeometry has no DuckDBColumnType instance and no ToDuckValue instance.
-Thus an Array or a list of raw geometries and a typed row cannot hold one. Their
+Thus a SizedArray or a list of raw geometries and a typed row cannot hold one. Their
 declared element type or column type would be GEOMETRY without a CRS, and
 DuckDB would remove the CRS of each value.
 
@@ -2082,12 +2126,6 @@ instance ToDuckValue (TupleValue FieldValue) where
 instance ToDuckValue (UnionValue FieldValue) where
   toDuckValue = unionValueDuckValue . plainBuilder
 
--- | Construct an array through the supplied factory with the element type of @a@.
--- A structured declaration of @a@ is the target of the elements. See
--- Note [Type declarations].
-instance (DuckDBColumnType a, ToDuckValue a) => ToDuckValue (Array Int a) where
-  toDuckValue factory = arrayDuckValue (plainBuilder factory) (declaredTarget (Proxy @a)) (toDuckValue factory)
-
 -- | Construct a MAP through the supplied factory with the key type of @k@ and
 -- the value type of @v@. The pairs go in ascending key order. A structured
 -- declaration of a part is its target. See Note [Type declarations].
@@ -2102,6 +2140,12 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToDuckValue k, ToDuckValue v) 
       . Map.toAscList
     where
       builder = plainBuilder factory
+
+-- | Construct an ARRAY of size @n@ through the supplied factory with the
+-- element type of @a@. A structured declaration of @a@ is the target of the
+-- elements. See Note [Sized arrays].
+instance (KnownNat n, DuckDBColumnType a, ToDuckValue a) => ToDuckValue (SizedArray n a) where
+  toDuckValue factory = arrayDuckValue (plainBuilder factory) (declaredTarget (Proxy @a)) (toDuckValue factory) . elems . sizedArrayToArray
 
 -- | Construct a LIST through the supplied factory with the element type of @a@.
 -- 'String' keeps its own instance. A structured declaration of @a@ is the

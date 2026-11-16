@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -15,11 +16,11 @@ module TypedRegistrationTests (typedRegistrationTests) where
 
 import Control.Exception (SomeException, bracket, displayException, throwIO, try)
 import Control.Monad (forM, forM_, void, when)
-import Data.Array (Array, elems, listArray)
+import Data.Array (listArray)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (fromJust, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
@@ -1251,26 +1252,15 @@ data Counts = Counts {signed :: Integer, unsigned :: Natural}
   deriving stock (Eq, Show, Generic)
   deriving (DuckDBColumnType, ToDuckValue, ToField, FromField) via (ViaDuckDB Counts)
 
--- | A record with an Array field. Its ARRAY type has no size.
-newtype Ranked = Ranked {ranks :: Array Int Int64}
-  deriving stock (Generic)
-  deriving (DuckDBColumnType, ToDuckValue) via (ViaDuckDB Ranked)
-
--- | An Array of three BIGINT values. Its type text gives the size.
-newtype Triple = Triple (Array Int Int64)
+-- | A list of three BIGINT values. Its type text gives the size.
+newtype Triple = Triple [Int64]
   deriving newtype (Eq, Show, FromField, ToField, ToDuckValue)
 
 instance DuckDBColumnType Triple where
   duckdbColumnTypeFor _ = "BIGINT[3]"
 
--- | A record field gives its size through the DuckValue instance.
-instance DuckValue Triple where
-  duckToField (Triple values) = duckToField values
-  duckFromField = fmap Triple . duckFromField
-  duckLogicalType _ = LogicalTypeArray (LogicalTypeScalar LogicalTypeIdBigInt) 3
-
 -- | A record with a field of a sized ARRAY type.
-newtype Boxed = Boxed {boxed :: Triple}
+newtype Boxed = Boxed {boxed :: SizedArray 3 Int64}
   deriving stock (Generic)
   deriving (DuckDBColumnType, ToDuckValue, FromField) via (ViaDuckDB Boxed)
 
@@ -1449,61 +1439,23 @@ testNoDeclaration = withConnection ":memory:" \conn -> do
           }
     )
   assertSqlError
-    "typed_ranked: column r: an Array field has no size, so its ARRAY type has no declaration. Use a field of a newtype"
-    (createTableFunction conn "typed_ranked" ["r"] \() -> pure ([] :: [Only Ranked]))
-  -- A bare Array has no declaration in each position, also inside a Maybe, a
-  -- list, or a Map.
-  let unsized = "an Array has no size, so its ARRAY type has no declaration. Use a newtype of the Array"
-  assertSqlError
-    ("typed_array_argument: argument arg0: " <> unsized)
-    (createFunction conn "typed_array_argument" \(_ :: Array Int Int64) -> True)
-  assertSqlError
-    ("typed_array_nested: argument arg0: " <> unsized)
-    (createFunction conn "typed_array_nested" \(_ :: Maybe [Array Int Int64]) -> True)
-  assertSqlError
-    ("typed_array_map: argument arg0: " <> unsized)
-    (createFunction conn "typed_array_map" \(_ :: Map.Map Text (Array Int Int64)) -> True)
-  assertSqlError
-    ("typed_array_key: argument arg0: " <> unsized)
-    (createFunction conn "typed_array_key" \(_ :: Map.Map (Array Int Int64) Text) -> True)
-  assertSqlError
-    ("typed_array_result: result: " <> unsized)
-    (createFunction conn "typed_array_result" \(x :: Int64) -> listArray (0, 0) [x] :: Array Int Int64)
-  assertSqlError
-    ("typed_array_count: argument arg0: " <> unsized)
-    ( createAggregate
-        conn
-        "typed_array_count"
-        Aggregate
-          { aggregateInitial = 0 :: Int64
-          , aggregateStep = \count (Only (_ :: Array Int Int64)) -> pure (count + 1)
-          , aggregateCombine = \a b -> pure (a + b)
-          , aggregateResult = pure
-          }
-    )
-  assertSqlError
-    ("typed_array_parameter: parameter arg0: " <> unsized)
-    (createTableFunction conn "typed_array_parameter" ["n"] \(Only (_ :: Array Int Int64)) -> pure [Only (1 :: Int64)])
-  assertSqlError
-    ("typed_array_column: column a: " <> unsized)
-    (createTableFunction conn "typed_array_column" ["a"] \() -> pure ([] :: [Only (Array Int Int64)]))
-  assertSqlError
     "typed_priced: column p: a MAP with the type text DECIMAL(18,3) and a structured type has no declaration"
     (createTableFunction conn "typed_priced" ["p"] \() -> pure ([] :: [Only (Map.Map Price Peak)]))
   query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'typed\\_%' ESCAPE '\\'" >>= (@?= [Only (0 :: Int64)])
 
--- | Use a newtype with a sized ARRAY type text in each position. DuckDB
--- rejects an ARRAY of another size when it binds the call, casts a LIST of
--- the same length to the ARRAY, and rejects a LIST of another length when the
--- statement runs. See Note [Type declarations] in
+-- | Use a SizedArray of size 3 in each position, and a newtype with a sized ARRAY type
+-- text as an argument. DuckDB rejects an ARRAY of another size when it binds
+-- the call, casts a LIST of the same length to the ARRAY, and rejects a LIST
+-- of another length when the statement runs. See Note [Sized arrays] in
 -- "Database.DuckDB.Simple.ToField".
 testSizedArray :: Assertion
 testSizedArray = withConnection ":memory:" \conn -> do
-  let total (Triple values) = sum (elems values)
-      triple x = Triple (listArray (0, 2) [x, x, x])
+  let total = sum :: SizedArray 3 Int64 -> Int64
+      triple x = fromJust (sizedArrayFromList @3 [x, x, x :: Int64])
   createFunction conn "sized_argument" total
-  createFunction conn "sized_maybe" (maybe (-1) total :: Maybe Triple -> Int64)
-  createFunction conn "sized_list" (sum . map total :: [Triple] -> Int64)
+  createFunction conn "sized_newtype" \(Triple values) -> sum values
+  createFunction conn "sized_maybe" (maybe (-1) total :: Maybe (SizedArray 3 Int64) -> Int64)
+  createFunction conn "sized_list" (sum . map total :: [SizedArray 3 Int64] -> Int64)
   createFunction conn "sized_record" \(Boxed values) -> total values
   createAggregate
     conn
@@ -1521,6 +1473,7 @@ testSizedArray = withConnection ":memory:" \conn -> do
   let positions :: [(String, Text -> Text, ErrorType)]
       positions =
         [ ("scalar argument", \v -> "SELECT sized_argument(" <> v <> ")", ErrorTypeConversion)
+        , ("newtype argument", \v -> "SELECT sized_newtype(" <> v <> ")", ErrorTypeConversion)
         , ("Maybe argument", \v -> "SELECT sized_maybe(" <> v <> ")", ErrorTypeConversion)
         , ("list argument", \v -> "SELECT sized_list([" <> v <> "])", ErrorTypeConversion)
         , ("record field", \v -> "SELECT sized_record({'boxed': " <> v <> "})", ErrorTypeConversion)
@@ -1546,23 +1499,28 @@ testSizedArray = withConnection ":memory:" \conn -> do
           (Left (err :: SQLError), Right _) -> assertFailure (name <> ": " <> show err)
   forM_ positions \(position, sql, lengthError) -> forM_ (values lengthError) \(label, value, expected) ->
     check (position <> ", " <> label) (query_ conn (Query (sql value))) expected
-  -- A bound Array binds as an ARRAY of its own size.
-  check "bound Array of 3" (query conn "SELECT sized_argument(?)" (Only (listArray (0, 2) [1, 2, 3] :: Array Int Int64))) (Right 6)
+  -- A bound SizedArray binds as an ARRAY of its size, and a FieldArray as an
+  -- ARRAY of its own size. DuckDB casts a bound list of the same length.
+  let fieldArray items = FieldArray (listArray (0, length items - 1) (map FieldInt64 items))
+  check "bound SizedArray of 3" (query conn "SELECT sized_argument(?)" (Only (triple 1))) (Right 3)
+  check "bound FieldArray of 3" (query conn "SELECT sized_argument(?)" (Only (fieldArray [1, 2, 3]))) (Right 6)
   check
-    "bound Array of 4"
-    (query conn "SELECT sized_argument(?)" (Only (listArray (0, 3) [1, 2, 3, 4] :: Array Int Int64)))
+    "bound FieldArray of 4"
+    (query conn "SELECT sized_argument(?)" (Only (fieldArray [1, 2, 3, 4])))
     (Left (ErrorQueryBinder, "No function matches"))
+  check "bound list of 3" (query conn "SELECT sized_argument(?)" (Only [1, 2, 3 :: Int64])) (Right 6)
   -- A result and a column of a table function are ARRAY values of the size.
   createFunction conn "sized_result" triple
   createTableFunction conn "sized_rows" ["t"] \(Only (x :: Int64)) -> pure [Only (triple x)]
   query_ conn "SELECT typeof(sized_result(1)), sized_result(1)::VARCHAR" >>= (@?= [("BIGINT[3]" :: Text, "[1, 1, 1]" :: Text)])
   query_ conn "SELECT typeof(t), t::VARCHAR FROM sized_rows(2)" >>= (@?= [("BIGINT[3]" :: Text, "[2, 2, 2]" :: Text)])
-  -- A result of another size raises the cast error of DuckDB when the function runs.
-  createFunction conn "sized_wrong_result" \(x :: Int64) -> Triple (listArray (0, 3) [x, x, x, x])
+  -- A result of another size raises the cast error of DuckDB when the function
+  -- runs. A SizedArray has no value of another size, but a hand-written newtype has.
+  createFunction conn "sized_wrong_result" \(x :: Int64) -> Triple [x, x, x, x]
   check
     "result of 4"
     (query_ conn "SELECT len(sized_wrong_result(1))")
-    (Left (ErrorInputInvalid, "Cannot cast array of size 4 to array of size 3"))
+    (Left (ErrorInputInvalid, "Cannot cast list with length 4 to array with length 3"))
 
 -- | Give an error, and no other value, for a record field outside the range
 -- of its declared type, as a parameter, as a column, and as a scalar result.

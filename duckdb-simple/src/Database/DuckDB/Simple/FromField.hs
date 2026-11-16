@@ -1,9 +1,13 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TypeApplications #-}
@@ -33,6 +37,10 @@ module Database.DuckDB.Simple.FromField (
   TimeWithZone (..),
   timeWithZone,
   timeWithZoneZone,
+  SizedArray,
+  sizedArray,
+  sizedArrayFromList,
+  sizedArrayToArray,
   ResultError (..),
   FieldParser,
   FromField (..),
@@ -41,7 +49,7 @@ module Database.DuckDB.Simple.FromField (
 ) where
 
 import Control.Exception (Exception (..))
-import Data.Array (Array, assocs, bounds, listArray, range, (!))
+import Data.Array (Array, assocs, bounds, elems, listArray, rangeSize)
 import Data.Bits (Bits (..), finiteBitSize)
 import qualified Data.ByteString as BS
 import Data.Data (Typeable, typeRep)
@@ -79,9 +87,11 @@ import Database.DuckDB.Simple.LogicalRep (
   logicalTypeSQL,
   mapEntryTypes,
  )
+import Database.DuckDB.Simple.Native (arraySizeReason)
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import GHC.Float (double2Float, float2Double, int2Double, int2Float, rationalToDouble, rationalToFloat, word2Double)
 import GHC.Num.Integer (integerFromWordList)
+import GHC.TypeLits (KnownNat, Nat, natVal)
 import Numeric.Natural (Natural)
 
 -- | Internal representation of a column value.
@@ -128,7 +138,7 @@ data FieldValue
   deriving (Eq, Show)
 
 -- | Exact-width decimal payload plus its declared width and scale. A parameter
--- of this type binds as a DECIMAL with this width and scale. An @Array@, a
+-- of this type binds as a DECIMAL with this width and scale. A @SizedArray@, a
 -- list, or a typed row cannot hold it, because it has no @DuckDBColumnType@
 -- instance: one column type cannot give the width and scale of each value.
 data DecimalValue = DecimalValue
@@ -268,6 +278,46 @@ timeWithZone time zone = TimeWithZone time (fromIntegral (timeZoneMinutes zone) 
 -- name.
 timeWithZoneZone :: TimeWithZone -> TimeZone
 timeWithZoneZone value = minutesToTimeZone (fromIntegral (timeWithZoneOffsetSeconds value `quot` 60))
+
+type role SizedArray nominal representational
+
+-- | An 'Array' of exactly @n@ values, with the bounds @(0, n - 1)@. A
+-- parameter of this type binds as the ARRAY type @T[n]@, and a typed
+-- registration declares that type. See Note [Sized arrays] in
+-- "Database.DuckDB.Simple.ToField". Make a value with 'sizedArray' or
+-- 'sizedArrayFromList'.
+newtype SizedArray (n :: Nat) a = SizedArray (Array Int a)
+  deriving stock (Eq, Ord, Show, Functor, Foldable, Traversable)
+
+-- | Make a t'SizedArray' from an 'Array' with any bounds. The result is
+-- 'Nothing' when the array does not have exactly @n@ values. The result has
+-- the values in their order, with the bounds @(0, n - 1)@.
+sizedArray :: forall n a. (KnownNat n) => Array Int a -> Maybe (SizedArray n a)
+sizedArray values
+  | toInteger count == natVal (Proxy @n) = Just (SizedArray (listArray (0, count - 1) (elems values)))
+  | otherwise = Nothing
+  where
+    count = rangeSize (bounds values)
+
+-- | Make a t'SizedArray' from a list. The result is 'Nothing' when the list
+-- does not have exactly @n@ values. The count is checked before the 'Array'
+-- is built, and the check reads at most @n + 1@ elements.
+-- A size above @maxBound :: Int@ gives 'Nothing' without reading the list.
+sizedArrayFromList :: forall n a. (KnownNat n) => [a] -> Maybe (SizedArray n a)
+sizedArrayFromList values
+  | size > toInteger (maxBound :: Int) = Nothing
+  | hasSize size values = Just (SizedArray (listArray (0, fromInteger size - 1) values))
+  | otherwise = Nothing
+  where
+    size = natVal (Proxy @n)
+    hasSize 0 [] = True
+    hasSize 0 (_ : _) = False
+    hasSize _ [] = False
+    hasSize remaining (_ : rest) = hasSize (remaining - 1) rest
+
+-- | Give the 'Array' of a t'SizedArray', with the bounds @(0, n - 1)@.
+sizedArrayToArray :: SizedArray n a -> Array Int a
+sizedArrayToArray (SizedArray values) = values
 
 -- | Match signed values without narrowing to the machine word size.
 pattern FieldInt :: Int64 -> FieldValue
@@ -873,50 +923,45 @@ instance FromField BigNum where
 instance {-# OVERLAPPABLE #-} (Typeable a, FromField a) => FromField [a] where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldList entries ->
-        traverse (uncurry parseElement) (zip [0 :: Int ..] entries)
-      FieldArray arr ->
-        traverse (uncurry parseElement) (assocs arr)
+      FieldList entries -> traverse fromField (elementFields f (zip [0 ..] entries))
+      FieldArray arr -> traverse fromField (elementFields f (assocs arr))
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
-    where
-      parseElement idx value =
-        fromField
-          Field
-            { fieldName = fieldNameWithIndex idx
-            , fieldIndex = fieldIndex f
-            , fieldValue = value
-            , fieldType = elementType
-            }
-      -- The elements share the parent type conversion.
-      elementType = listElementType <$> fieldType f
-      fieldNameWithIndex idx =
-        let base = fieldName f
-            idxText = Text.pack (show idx)
-        in  base <> Text.pack "[" <> idxText <> Text.pack "]"
 
--- | Reads ARRAY. Each element reads as @a@.
-instance (Typeable a, FromField a) => FromField (Array Int a) where
+-- | Give the fields of the elements of a LIST or an ARRAY field, from the index
+-- and the value of each element. An element has the name @name[index]@ and the
+-- element type of the field.
+elementFields :: Field -> [(Int, FieldValue)] -> [Field]
+elementFields f = map element
+  where
+    element (idx, value) =
+      Field
+        { fieldName = fieldName f <> Text.pack "[" <> Text.pack (show idx) <> Text.pack "]"
+        , fieldIndex = fieldIndex f
+        , fieldValue = value
+        , fieldType = elementType
+        }
+    -- The elements share the parent type conversion.
+    elementType = listElementType <$> fieldType f
+
+-- | Reads ARRAY and LIST, as a list does. A size @n@ with no DuckDB ARRAY type
+-- or a value with another count raises 'Incompatible'. See Note [Sized arrays] in
+-- "Database.DuckDB.Simple.ToField".
+instance (KnownNat n, Typeable a, FromField a) => FromField (SizedArray n a) where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldArray arr -> do
-        converted <- traverse (traverseElement arr) (range (bounds arr))
-        pure (listArray (bounds arr) converted)
+      FieldList entries -> sized (zip [0 ..] entries)
+      FieldArray arr -> sized (assocs arr)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
     where
-      traverseElement arr idx =
-        fromField
-          Field
-            { fieldName = fieldNameWithIndex idx
-            , fieldIndex = fieldIndex f
-            , fieldValue = arr ! idx
-            , fieldType = elementType
-            }
-      elementType = listElementType <$> fieldType f
-      fieldNameWithIndex idx =
-        let idxText = Text.pack (show idx)
-        in  fieldName f <> Text.pack "[" <> idxText <> Text.pack "]"
+      size = natVal (Proxy @n)
+      sized elements
+        | Just reason <- arraySizeReason size = returnError Incompatible f reason
+        | toInteger count == size = SizedArray . listArray (0, count - 1) <$> traverse fromField (elementFields f elements)
+        | otherwise = returnError Incompatible f (Text.pack ("the value has " <> show count <> " elements"))
+        where
+          count = length elements
 
 -- | Reads MAP. Each key reads as @k@, and each value reads as @v@.
 instance (Ord k, Typeable k, Typeable v, FromField k, FromField v) => FromField (Map k v) where

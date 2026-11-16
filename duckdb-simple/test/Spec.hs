@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
@@ -21,7 +22,7 @@ import Control.Exception (ErrorCall, Exception, SomeException, bracket, displayE
 import Control.Monad (forM_, replicateM_, void, when)
 import CopyTests (copyTests)
 import CoreRegressionTests (coreRegressionTests)
-import Data.Array (Array, elems, listArray)
+import Data.Array (elems, listArray)
 import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
@@ -87,6 +88,7 @@ import qualified GeometryRegressionTests
 import Numeric.Natural (Natural)
 import Properties (roundTripTests)
 import RegistrationTests (registrationTests)
+import SizedArrayTests (sizedArrayTests)
 import qualified SqlFeatureTests
 import StreamingTests (nativeStreamingTests)
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
@@ -94,6 +96,7 @@ import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, Timeout (..), adjustOption, defaultMain, mkTimeout, testGroup)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
+import TestUtils (sized)
 import TimeTests (timeTests)
 import TypedRegistrationTests (typedRegistrationTests)
 import UserCastTests (geometryArgumentTests, userCastTests)
@@ -275,6 +278,7 @@ tests =
     , userCastTests
     , geometryArgumentTests
     , valueRegressionTests
+    , sizedArrayTests
     , timeTests
     , SqlFeatureTests.tests
     , withConnectionTests
@@ -899,11 +903,11 @@ typeTests =
         withConnection ":memory:" \conn -> do
           _ <- execute_ conn "CREATE TABLE arrays (vals INTEGER[3])"
           let inputs =
-                [ listArray (0, 2) [1, 2, 3]
-                , listArray (0, 2) [4, 5, 6]
+                [ sized [1, 2, 3]
+                , sized [4, 5, 6]
                 ]
           _ <- executeMany conn "INSERT INTO arrays VALUES (?)" (Only <$> inputs)
-          rows <- query_ conn "SELECT vals FROM arrays ORDER BY rowid" :: IO [Only (Array Int Int)]
+          rows <- query_ conn "SELECT vals FROM arrays ORDER BY rowid" :: IO [Only (SizedArray 3 Int)]
           let expected =
                 fmap Only inputs
           assertEqual "array round-trip" expected rows

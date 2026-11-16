@@ -98,7 +98,7 @@ import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List (intercalate, stripPrefix)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -121,9 +121,12 @@ import Database.DuckDB.Simple.FromField (
   FromField (..),
   IntervalValue (..),
   ResultError (..),
+  SizedArray,
   TimeWithZone (..),
   fieldTypeName,
   returnError,
+  sizedArrayFromList,
+  sizedArrayToArray,
  )
 import Database.DuckDB.Simple.Internal (duckDBTypeToName)
 import Database.DuckDB.Simple.LogicalRep (
@@ -141,6 +144,7 @@ import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..), ToField (..))
 import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Generics
+import GHC.TypeLits (KnownNat, natVal)
 import Numeric.Natural (Natural)
 
 --------------------------------------------------------------------------------
@@ -368,27 +372,32 @@ instance {-# OVERLAPPABLE #-} (DuckValue a) => DuckValue [a] where
   duckFromTypedField logical (FieldArray arr) = traverse (duckFromTypedField (listElementType logical)) (elems arr)
   duckFromTypedField logical other = unexpectedTypedValue logical "LIST or ARRAY" other
 
--- | Array values encode as DuckDB ARRAY values. A type has no size, so the
--- instance declares the size 0. When a generic record binds, the value of an
--- Array field gives the size. DuckDB rejects an ARRAY without elements. DuckDB
--- also rejects the declared size 0 in these cases: an Array field with the value
--- Nothing, a LIST, ARRAY, or MAP field with an Array in its element, key, or
--- value type (also when the field has no elements), and each constructor of a
--- sum type that has an Array field. The error is "ARRAY type size must be at
--- least 1".
-instance (DuckValue a) => DuckValue (Array Int a) where
-  duckToField arr =
-    let values = elems arr
-        (low, high) = (0, length values - 1)
-    in  FieldArray (listArray (low, high) (map duckToField values))
-  duckLogicalType _ = LogicalTypeArray (duckLogicalType (Proxy @a)) 0
+-- | A 'SizedArray' field is an ARRAY of size @n@. It reads an ARRAY and a LIST of
+-- @n@ elements, as the 'FromField' instance does. See Note [Sized arrays] in
+-- "Database.DuckDB.Simple.ToField".
+instance (KnownNat n, DuckValue a) => DuckValue (SizedArray n a) where
+  duckToField values = FieldArray (fmap duckToField (sizedArrayToArray values))
+
+  -- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Native".
+  duckLogicalType _ = LogicalTypeArray (duckLogicalType (Proxy @a)) (fromInteger (min (natVal (Proxy @n)) (toInteger (maxBound :: Word64))))
   duckFromField = duckFromTypedField (LogicalTypeScalar LogicalTypeIdVariant)
-  duckFromTypedField logical (FieldArray arr) = do
-    let values = elems arr
-    decoded <- traverse (duckFromTypedField (listElementType logical)) values
-    let (low, high) = (0, length decoded - 1)
-    pure (listArray (low, high) decoded)
-  duckFromTypedField logical other = unexpectedTypedValue logical "ARRAY" other
+  duckFromTypedField logical value = case value of
+    FieldArray arr -> sized (elems arr)
+    FieldList entries -> sized entries
+    other -> unexpectedTypedValue logical "ARRAY" other
+    where
+      size = natVal (Proxy @n)
+      sized entries
+        | Just reason <- arraySizeReason size = conversionError (sizeError reason)
+        | otherwise = case sizedArrayFromList entries of
+            Nothing -> conversionError (sizeError (Text.pack ("the value has " <> show (length entries) <> " elements")))
+            Just values -> traverse (duckFromTypedField (listElementType logical)) values
+      sizeError reason =
+        Incompatible
+          (fieldTypeName logical value)
+          Text.empty
+          (Text.pack ("SizedArray " <> show size))
+          reason
 
 -- | Map values encode as DuckDB MAP.
 instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
@@ -819,21 +828,18 @@ instance GFromField' 'False (M1 D meta U1) where
 
 -- | The deriving-via version of @DuckDBColumnType@. The text is the bare name
 -- of the generic logical type, for diagnostics. The declaration is the
--- structured generic logical type. Each field type comes from 'DuckValue'. A
--- type with an 'Array' field has no declaration, because its ARRAY type has the
--- size 0. See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
+-- structured generic logical type. Each field type comes from 'DuckValue'.
+-- See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
+-- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Native".
 instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
   duckdbTypeDeclaration _
-    | hasUnsizedArray rep =
-        Left
-          ( Text.pack
-              ( "an Array field has no size, so its ARRAY type has no declaration. Use a field of a newtype of the Array"
-                  <> " with a DuckValue instance that gives the size, or a list field, which is a LIST."
-              )
-          )
-    | otherwise = Right (StructuredType rep)
+    | containsType invalidArray logical =
+        Left (Text.pack ("a generic field has no ARRAY type, because a DuckDB ARRAY must have 1 to " <> show maxArraySize <> " elements"))
+    | otherwise = Right (StructuredType logical)
     where
-      rep = genericLogicalType (Proxy @a)
+      logical = genericLogicalType (Proxy @a)
+      invalidArray (LogicalTypeArray _ size) = isJust (arraySizeReason (toInteger size))
+      invalidArray _ = False
   duckdbColumnTypeFor _ =
     case genericLogicalType (Proxy @a) of
       LogicalTypeStruct{} -> Text.pack "STRUCT"
@@ -857,13 +863,6 @@ instance (Generic a, GToField (Rep a)) => ToField (ViaDuckDB a) where
   toField (ViaDuckDB x) = case gToField (from x) of
     EncodedUnion unionVal -> toField unionVal
     EncodedStruct structVal -> toField structVal
-
--- | Test whether a type is or contains an ARRAY type of the size 0. The
--- 'DuckValue' instance of 'Array' declares that size.
-hasUnsizedArray :: LogicalTypeRep -> Bool
-hasUnsizedArray = containsType \case
-  LogicalTypeArray _ size -> size == 0
-  _ -> False
 
 -- | Deriving-via @ToDuckValue@ instance. A sum type gives a UNION value and a
 -- product type a STRUCT value, through the @ToDuckValue@ instances of those

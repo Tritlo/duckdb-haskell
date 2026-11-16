@@ -8,7 +8,6 @@ module SqlFeatureTests (tests) where
 
 import Control.Exception (bracket, try)
 import Control.Monad (forM_, void, when)
-import Data.Array (Array, listArray)
 import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -107,7 +106,7 @@ tests =
           query
             conn
             "SELECT list_reduce(list_transform(list_filter(?::BIGINT[], lambda x: x % 2 = 0), lambda x: x * 3), lambda x, y: x + y)"
-            (Only (listArray (0, 3) [1, 2, 3, 4] :: Array Int Int64))
+            (Only [1, 2, 3, 4 :: Int64])
             >>= (@?= [Only (18 :: Int64)])
     , testCase "JSON mutation accepts bound documents, paths, and values" $
         withConnection ":memory:" \conn -> do

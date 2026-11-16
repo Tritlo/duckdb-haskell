@@ -111,7 +111,7 @@ import Database.DuckDB.Simple.CallbackMark (hasCallbackMark)
 import Database.DuckDB.Simple.Conversion (Conversion)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
-import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.Native hiding (arraySizeReason, maxArraySize)
 import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, defaultGeometryCRS, destroyTypeCache)
 import Database.DuckDB.Simple.TypeScope (TypeScope, closeTypeScope)
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToBaseRep)
@@ -1194,7 +1194,7 @@ when the statement closes.
   DuckDB again. Only a binding that reads the type of its parameter has this
   cost: a TimeOfDay, a LocalTime, or a UTCTime (or an Unbounded form) with
   digits below a microsecond (see Note [Nanosecond parameters] in
-  "Database.DuckDB.Simple.ToField"), an Array, a list, a Map, a manual STRUCT,
+  "Database.DuckDB.Simple.ToField"), a SizedArray, a list, a Map, a manual STRUCT,
   TUPLE, or UNION value, a FieldList, a FieldArray, or a FieldMap value, and an
   Integer or a Natural outside the HUGEINT range
   (see Note [Integer parameters] in "Database.DuckDB.Simple.ToField").

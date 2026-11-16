@@ -333,6 +333,10 @@ mapPartTypes _ = (Nothing, Nothing)
 -- Note [Nanosecond parameters].
 timestampTypeForTarget :: Maybe LogicalTypeRep -> LogicalTypeRep -> LogicalTypeRep
 timestampTypeForTarget target source = case (target, source) of
+  -- Keep an alias only when its base type stays unchanged.
+  (_, LogicalTypeAlias _ base) ->
+    let promoted = timestampTypeForTarget target base
+    in  if promoted == base then source else promoted
   (Just (LogicalTypeScalar LogicalTypeIdTimestampTzNs), LogicalTypeScalar LogicalTypeIdTimestampTz) ->
     LogicalTypeScalar LogicalTypeIdTimestampTzNs
   (Just (LogicalTypeScalar LogicalTypeIdTimestampNs), LogicalTypeScalar LogicalTypeIdTimestamp) ->

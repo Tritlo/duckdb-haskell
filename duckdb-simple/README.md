@@ -181,9 +181,11 @@ An `IntervalValue` binds as an INTERVAL, and DuckDB keeps its months, days, and
 microseconds. DuckDB compares intervals with 30 days for each month, so
 `INTERVAL 30 DAY = INTERVAL 1 MONTH`. A `TimeWithZone` binds as a TIMETZ with
 its time and its offset in seconds east of UTC (`timeWithZoneOffsetSeconds`).
-DuckDB stores an offset from -15:59:59 to +15:59:59, that is from -57599 to
-57599 seconds, and a value reads back equal to the bound value. A time with
-digits below one microsecond loses these digits, as in SQL text. A
+`timeWithZone` makes a value from a `Data.Time` `TimeZone`, and
+`timeWithZoneZone` gives the zone of a value, with the seconds of its offset
+dropped. DuckDB stores an offset from -15:59:59 to +15:59:59, that is from
+-57599 to 57599 seconds, and a value reads back equal to the bound value. A time
+with digits below one microsecond loses these digits, as in SQL text. A
 `DecimalValue` binds as a DECIMAL with its own width and scale. DuckDB casts it
 to the type of its target: a smaller scale rounds half away from zero, and a
 value that the target cannot hold raises an error. An `Array`, a list, or a

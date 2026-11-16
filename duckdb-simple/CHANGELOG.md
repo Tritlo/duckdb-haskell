@@ -281,11 +281,12 @@
   list, or a typed row cannot hold a `RawGeometry`.
 - An empty `Array` parameter raises `SQLError`. Version 0.3 bound an empty
   `Array` of scalar elements. Bind an empty list for an empty LIST.
-- `TimeWithZone` holds the offset in seconds east of UTC, as a TIMETZ stores
-  it. The field `timeWithZoneZone :: TimeZone` of version 0.3 is now
-  `timeWithZoneOffsetSeconds :: Int32`. A TIMETZ with an offset that has
-  seconds, for example `12:00:00+01:00:30`, now reads. Version 0.3 raised an
-  error for it. Update code that uses the old field. See MIGRATION.md.
+- `TimeWithZone` holds the offset in seconds east of UTC, as a TIMETZ stores it.
+  The field `timeWithZoneZone :: TimeZone` of version 0.3 is now
+  `timeWithZoneOffsetSeconds :: Int32`. `timeWithZone` and `timeWithZoneZone`
+  convert from and to a `TimeZone`. A TIMETZ with an offset that has seconds,
+  for example `12:00:00+01:00:30`, now reads. Version 0.3 raised an error for
+  it. Update code that uses the old field. See MIGRATION.md.
 - Add `ToField` instances for `IntervalValue`, `TimeWithZone`, and
   `DecimalValue`, and `ToDuckValue` instances for `IntervalValue` and
   `TimeWithZone`. An `IntervalValue` binds as an INTERVAL and a `TimeWithZone`

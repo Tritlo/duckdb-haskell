@@ -458,7 +458,17 @@ checkLibraryVersion = do
   actual <- output c_duckdb_v2_library_version >>= readText
   unless (actual == expected) $
     throwIO
-      (SQLError ("duckdb-simple: the V2 API requires DuckDB " <> expected <> ", but the loaded library is " <> actual) Nothing Nothing Nothing)
+      ( SQLError
+          ( "duckdb-simple: the V2 API requires DuckDB "
+              <> expected
+              <> ", but the loaded library is "
+              <> actual
+              <> ". DuckDB marks the V2 API as unstable, so each DuckDB release needs its own release of duckdb-ffi and duckdb-simple."
+          )
+          Nothing
+          Nothing
+          Nothing
+      )
   where
     expected = Text.pack ('v' : intercalate "." (map show [dUCKDB_V2_API_VERSION_MAJOR, dUCKDB_V2_API_VERSION_MINOR, dUCKDB_V2_API_VERSION_PATCH]))
 

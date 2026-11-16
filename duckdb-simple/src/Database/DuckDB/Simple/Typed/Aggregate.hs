@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -29,6 +30,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
 import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions, targetCastFactory)
+import Database.DuckDB.Simple.Conversion (runConversion)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (FieldNull))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
 import Database.DuckDB.Simple.Function.Internal (FunctionResult (..), ScalarValue, prepareResultWriter)
@@ -329,9 +331,10 @@ updateStates casts name Aggregate{aggregateStep} columns info = do
   forM_ [0 .. count - 1] \row -> do
     fields <- mapM ($ row) readers
     unless (any ((== FieldNull) . fieldValue) fields) do
-      arguments <- case parseRow fromRow fields of
-        Ok arguments -> pure arguments
-        Errors failures -> throwIO (userError ("duckdb-simple: " <> Text.unpack name <> ": " <> conversionMessage failures))
+      arguments <-
+        runConversion (parseRow fromRow fields) >>= \case
+          Ok arguments -> pure arguments
+          Errors failures -> throwIO (userError ("duckdb-simple: " <> Text.unpack name <> ": " <> conversionMessage failures))
       cell <- peekElemOff states row >>= stateCell
       readIORef cell >>= (`aggregateStep` arguments) >>= evaluate >>= writeIORef cell
 

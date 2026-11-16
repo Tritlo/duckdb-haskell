@@ -108,6 +108,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.Simple.CallbackMark (hasCallbackMark)
+import Database.DuckDB.Simple.Conversion (Conversion)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
 import Database.DuckDB.Simple.Native
@@ -423,8 +424,8 @@ data ResultMode = MaterializedResult | StreamingResult deriving (Eq, Show)
 data StatementStreamColumn = StatementStreamColumn
   { statementStreamColumnIndex :: Int
   , statementStreamColumnName :: Text
-  , statementStreamColumnType :: ~LogicalTypeRep
-  -- ^ The lazy type of the column, from the result schema, for
+  , statementStreamColumnType :: Conversion LogicalTypeRep
+  -- ^ The owned type of the column, converted on demand through
   -- 'Database.DuckDB.Simple.FromField.fieldType'.
   -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
   , statementStreamColumnTree :: IORef (Maybe LogicalTypeRep)

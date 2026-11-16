@@ -22,6 +22,7 @@ import qualified Database.DuckDB.Simple.Catalog as Catalog
 import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), LogicalTypeRep (..))
 import Database.DuckDB.Simple.LogicalRep (withoutAliases)
+import Database.DuckDB.Simple.Ok (Ok (..))
 import qualified Database.DuckDB.Simple.V2.Copy as V2Copy
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import Database.DuckDB.Simple.Variant (variantObject)
@@ -161,8 +162,8 @@ testCopyFieldTypes = withDirectory \directory -> withConnection ":memory:" \conn
         (Only (Text.pack (directory </> "types")))
     )
   performMajorGC
-  (map fieldType <$> readIORef received)
-    >>= (@?= [LogicalTypeDecimal 4 1, LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)])
+  (readIORef received >>= runConversion . traverse fieldType)
+    >>= (@?= Ok [LogicalTypeDecimal 4 1, LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)])
 
 -- | COPY registrations share the instance and copy nested VARIANT payloads.
 testVariantCopy :: Assertion

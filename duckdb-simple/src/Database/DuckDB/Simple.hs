@@ -76,6 +76,9 @@ module Database.DuckDB.Simple (
   ResultError (..),
   FieldParser,
   FromField (..),
+  Conversion,
+  runConversion,
+  liftConversion,
   FromRow (..),
   RowParser,
   field,
@@ -117,6 +120,7 @@ import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Database.DuckDB.Simple.Conversion (Conversion, liftConversion, runConversion)
 import Database.DuckDB.Simple.FromField (Field (..), FieldParser, FromField (..), ResultError (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), RowParser, field, fieldWith, numFieldsRemaining, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Function (
@@ -609,6 +613,6 @@ convertRows = convertRowsWith fromRow
 
 convertRowsWith :: RowParser r -> Query -> [[Field]] -> IO [r]
 convertRowsWith parser queryText rows =
-  case traverse (parseRow parser) rows of
+  runConversion (traverse (parseRow parser) rows) >>= \case
     Errors err -> throwIO (rowErrorsToSqlError queryText err)
     Ok ok -> pure ok

@@ -13,11 +13,27 @@
 module ValueRegressionTests (main, valueRegressionTests) where
 
 import Control.Applicative ((<|>))
-import Control.Exception (bracket, fromException, try)
-import Control.Monad (forM_)
+import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
+import Control.Exception (
+  AsyncException (ThreadKilled),
+  ErrorCall,
+  MaskingState (..),
+  SomeException,
+  bracket,
+  displayException,
+  fromException,
+  getMaskingState,
+  mask,
+  mask_,
+  throwIO,
+  try,
+  uninterruptibleMask_,
+ )
+import Control.Monad (forM_, replicateM, void)
 import Data.Array (Array, elems, listArray)
 import Data.Bits (shiftR, xor)
 import qualified Data.ByteString as BS
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
@@ -41,6 +57,7 @@ import Database.DuckDB.FFI.V2 (
  )
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Catalog as Catalog
+import Database.DuckDB.Simple.Conversion (conversionErrorWith)
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
   BitString (..),
@@ -70,17 +87,17 @@ import GHC.Float (castDoubleToWord64, castFloatToWord32)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import System.Mem (getAllocationCounter, performMajorGC)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
 import TestUtils (NativeTimestamp (..), assertInputError, assertRangeError)
 
--- | The type of a field. The field of the constructor is lazy, so the read
--- does not force the type.
+-- | The type requested by a field parser.
 data FieldTypeOf = FieldTypeOf LogicalTypeRep
   deriving (Eq, Show)
 
 instance FromField FieldTypeOf where
-  fromField Field{fieldType} = Ok (FieldTypeOf fieldType)
+  fromField Field{fieldType} = FieldTypeOf <$> fieldType
 
 -- | An Int64, or else a Text. A read of an ENUM value fails as Int64, and no
 -- one renders that error.
@@ -106,12 +123,14 @@ newtype Checked = Checked Text
   deriving (Eq, Ord, Show)
 
 instance FromField Checked where
-  fromField f@Field{fieldType} = case fieldType of
-    LogicalTypeDecimal _ 2 -> Ok (Checked "decimal")
-    LogicalTypeScalar LogicalTypeIdTimestampNs -> Ok (Checked "timestamp_ns")
-    LogicalTypeArray _ 3 -> Ok (Checked "array")
-    LogicalTypeAlias "JSON" _ -> Ok (Checked "json")
-    _ -> returnError Incompatible f "expected DECIMAL(_,2), TIMESTAMP_NS, an ARRAY of 3 elements, or JSON"
+  fromField f@Field{fieldType} = do
+    logical <- fieldType
+    case logical of
+      LogicalTypeDecimal _ 2 -> pure (Checked "decimal")
+      LogicalTypeScalar LogicalTypeIdTimestampNs -> pure (Checked "timestamp_ns")
+      LogicalTypeArray _ 3 -> pure (Checked "array")
+      LogicalTypeAlias "JSON" _ -> pure (Checked "json")
+      _ -> returnError Incompatible f "expected DECIMAL(_,2), TIMESTAMP_NS, an ARRAY of 3 elements, or JSON"
 
 -- | A record field reads with its type through 'typedFromField'.
 instance DuckValue Checked where
@@ -1127,7 +1146,7 @@ valueRegressionTests =
         let checkTemporalFailure :: forall a. (FromField a) => Query -> Proxy a -> Text -> IO ()
             checkTemporalFailure sql _ target = do
               assertConversionError (query_ conn sql :: IO [Only a])
-              results <- queryWith_ (fieldWith (Ok . (fromField :: Field -> Ok a))) conn sql
+              results <- queryWith_ (fieldWith (liftConversion . runConversion . (fromField :: Field -> Conversion a))) conn sql
               case results of
                 [Errors [failure]] -> case fromException failure of
                   Just ConversionFailed{errHaskellType} -> errHaskellType @?= target
@@ -1573,17 +1592,17 @@ valueRegressionTests =
         let days = listArray (0, 1) [fromGregorian 2000 1 1, fromGregorian 10000000 1 1] :: Array Int Day
         assertOutsideTimeRange (query conn "SELECT ?" (Only days) :: IO [Only FieldValue])
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
-    , testCase "generic NULL product and payload return Left" $ do
-        assertLeft (genericFromFieldValue FieldNull :: Either String NamedRecord)
+    , testCase "generic NULL product and payload fail conversion" $ do
+        assertConversionFails (genericFromFieldValue FieldNull :: Conversion NamedRecord)
         let member = UnionMemberType "DataMember" (LogicalTypeScalar LogicalTypeIdBigInt)
             union = UnionValue 0 "DataMember" FieldNull (listArray (0, 0) [member])
-        assertLeft (genericFromFieldValue (FieldUnion union) :: Either String NullableSum)
+        assertConversionFails (genericFromFieldValue (FieldUnion union) :: Conversion NullableSum)
     , testCase "generic records decode by name" $ withConnection ":memory:" \conn -> do
         [Only struct] <- query_ conn "SELECT {'secondValue': 2::BIGINT, 'firstValue': 1::BIGINT}" :: IO [Only (StructValue FieldValue)]
-        genericFromFieldValue (FieldStruct struct) @?= Right (NamedRecord 1 2)
+        runConversion (genericFromFieldValue (FieldStruct struct)) >>= (@?= Ok (NamedRecord 1 2))
     , testCase "generic sums decode by member name" $ withConnection ":memory:" \conn -> do
         [Only union] <- query_ conn "SELECT union_value(DataMember := {'field1': 42::BIGINT})" :: IO [Only (UnionValue FieldValue)]
-        genericFromFieldValue (FieldUnion union) @?= Right (DataMember 42)
+        runConversion (genericFromFieldValue (FieldUnion union)) >>= (@?= Ok (DataMember 42))
     , testCase "union binding rejects inconsistent member name" $ withConnection ":memory:" \conn -> do
         let member = UnionMemberType "right" (LogicalTypeScalar LogicalTypeIdBigInt)
             union = UnionValue 0 "wrong" (FieldInt64 42) (listArray (0, 0) [member])
@@ -1602,7 +1621,7 @@ valueRegressionTests =
           Nothing -> assertFailure "missing generic struct"
           Just struct -> do
             let fields = listArray (0, 1) [StructField "wrong" (FieldInt64 1), StructField "secondValue" (FieldInt64 2)]
-            assertLeft (genericFromFieldValue (FieldStruct struct{structValueFields = fields}) :: Either String NamedRecord)
+            assertConversionFails (genericFromFieldValue (FieldStruct struct{structValueFields = fields}) :: Conversion NamedRecord)
     , testCase "unnamed tuples preserve scalar and nested fields on round trip" $ withConnection ":memory:" \conn -> do
         let tuple =
               TupleValue
@@ -1793,28 +1812,114 @@ valueRegressionTests =
         (alternative, withoutRender) <- allocation (query_ conn "SELECT 'label7'::wide" :: IO [Only IntOrText])
         alternative @?= [Only (IntOrText (Right "label7"))]
         assertBool ("the read with a failed alternative allocated " <> show withoutRender <> " bytes") (withoutRender < 1000000)
-        [Only (FieldTypeOf logical)] <- query_ conn "SELECT 'label7'::wide"
-        (size, conversion) <- allocation case logical of
-          LogicalTypeEnum entries -> pure (length (elems entries))
-          other -> assertFailure ("expected an ENUM type, got " <> take 100 (show other)) >> pure 0
-        size @?= 100000
+        [logical] <- queryWith_ (fieldWith (pure . fieldType)) conn "SELECT 'label7'::wide"
+        (size, conversion) <- allocation (runConversion (enumSize <$> logical))
+        size @?= Ok 100000
         -- Each of the 100,000 labels is a Text of at least 32 bytes.
         assertBool ("the read without the type allocated " <> show withoutType <> " bytes") (withoutType < 1000000)
         assertBool ("the conversion allocated " <> show conversion <> " bytes") (conversion > 3200000)
     , testCase "a column type converts after its connection, instance, and environment close" $ do
         let decimal = LogicalTypeDecimal 4 1
             readType conn = do
-              [Only (FieldTypeOf logical)] <- query_ conn "SELECT 1.5::DECIMAL(4,1)"
+              [logical] <- queryWith_ (fieldWith (pure . fieldType)) conn "SELECT 1.5::DECIMAL(4,1)"
               pure logical
         afterEnvironment <- withEnvironment \environment -> do
           afterInstance <- withInstance environment [] \instance_ -> do
             afterConnection <- withConnectionOn instance_ readType
-            afterConnection @?= decimal
+            runConversion afterConnection >>= (@?= Ok decimal)
             withConnectionOn instance_ readType
-          afterInstance @?= decimal
+          runConversion afterInstance >>= (@?= Ok decimal)
           withInstance environment [] \instance_ -> withConnectionOn instance_ readType
         performMajorGC
-        afterEnvironment @?= decimal
+        runConversion afterEnvironment >>= (@?= Ok decimal)
+    , testCase "an owned ENUM type retries after cancellation with all database scopes closed" $
+        forM_ [1 .. 3 :: Int] \_ -> do
+          logical <- closedEnumType
+          started <- newEmptyMVar
+          finished <- newEmptyMVar
+          worker <- forkIO $ mask \restore -> do
+            outcome <- try $ restore $ do
+              putMVar started ()
+              runConversion (enumSize <$> logical)
+            putMVar finished (outcome :: Either SomeException (Ok Int))
+          awaitMetadata "metadata worker did not start" (takeMVar started)
+          -- Give the traversal a chance to start. Completion can win this race.
+          threadDelay 1000
+          awaitMetadata "metadata worker did not finish" (killThread worker >> takeMVar finished) >>= \case
+            Left failure -> fromException failure @?= Just ThreadKilled
+            Right result -> result @?= Ok 100000
+          performMajorGC
+          runConversion logical
+            >>= (@?= Ok (LogicalTypeEnum (listArray (0, 99999) ["label" <> Text.pack (show index) | index <- [0 .. 99999 :: Int]])))
+          runConversion (enumSize <$> logical) >>= (@?= Ok 100000)
+    , testCase "conversion steps force successful values inside IO" $ do
+        let marker = "conversion result failure"
+            bad = error marker :: Int
+            expectFailure conversion = do
+              outcome <- try (runConversion conversion)
+              -- Match the outcome after try has left the IO exception boundary.
+              case outcome of
+                Left (failure :: ErrorCall) -> assertBool (displayException failure) (Text.pack marker `Text.isInfixOf` Text.pack (displayException failure))
+                Right _ -> assertFailure "the result exception escaped the conversion boundary"
+        expectFailure (pure bad)
+        expectFailure ((,) <$> pure (1 :: Int) <*> pure bad)
+        expectFailure ((,) <$> pure (1 :: Int) <*> fmap (const bad) (pure ()))
+        expectFailure ((,) <$> pure (1 :: Int) <*> liftConversion (pure bad))
+        expectFailure (pure bad >> pure ())
+    , testCase "a conversion propagates cancellation and retries its explicit IO" $ do
+        logical <- closedEnumType
+        attempts <- newIORef (0 :: Int)
+        let conversion = do
+              attempt <- liftConversion (atomicModifyIORef' attempts (\count -> (count + 1, count)))
+              if attempt == 0
+                then liftConversion (throwIO ThreadKilled)
+                else enumSize <$> logical
+        try (runConversion conversion) >>= \case
+          Left failure -> (failure :: AsyncException) @?= ThreadKilled
+          Right result -> assertFailure ("expected cancellation, got " <> show result)
+        runConversion conversion >>= (@?= Ok 100000)
+        readIORef attempts >>= (@?= 2)
+    , testCase "concurrent demands read one owned ENUM type after all database scopes close" $ do
+        logical <- closedEnumType
+        start <- newEmptyMVar
+        completed <- replicateM 8 newEmptyMVar
+        forM_ completed \done -> void $ forkIO $ mask \restore -> do
+          outcome <- try $ restore $ readMVar start >> runConversion logical
+          putMVar done (outcome :: Either SomeException (Ok LogicalTypeRep))
+        putMVar start ()
+        outcomes <- awaitMetadata "concurrent metadata workers did not finish" (mapM takeMVar completed)
+        forM_ outcomes \case
+          Left failure -> throwIO failure
+          Right result -> result @?= Ok (LogicalTypeEnum (listArray (0, 99999) ["label" <> Text.pack (show index) | index <- [0 .. 99999 :: Int]]))
+        case outcomes of
+          Right first : rest -> forM_ rest \case
+            Right result -> result @?= first
+            Left failure -> throwIO failure
+          _ -> assertFailure "expected completed metadata demands"
+    , testCase "conversion actions preserve the caller's masking state" $ do
+        [unmaskedType, maskedType, blockedType] <- replicateM 3 closedEnumType
+        let check logical expected = do
+              runConversion (liftConversion getMaskingState) >>= (@?= Ok expected)
+              runConversion (logical >> liftConversion getMaskingState) >>= (@?= Ok expected)
+              getMaskingState >>= (@?= expected)
+        initialState <- getMaskingState
+        check unmaskedType initialState
+        mask_ (check maskedType MaskedInterruptible)
+        uninterruptibleMask_ (check blockedType MaskedUninterruptible)
+    , testCase "a discarded diagnostic performs no metadata read or diagnostic IO" $ do
+        logical <- closedEnumType
+        diagnosticReads <- newIORef (0 :: Int)
+        let failure :: Conversion Int
+            failure = conversionErrorWith $ do
+              liftConversion (atomicModifyIORef' diagnosticReads (\count -> (count + 1, ())))
+              size <- enumSize <$> logical
+              pure (userError ("ENUM dictionary size " <> show size))
+        runConversion (failure <|> pure 42) >>= (@?= Ok 42)
+        readIORef diagnosticReads >>= (@?= 0)
+        runConversion failure >>= \case
+          Errors [problem] -> assertBool (show problem) ("ENUM dictionary size 100000" `Text.isInfixOf` Text.pack (show problem))
+          other -> assertFailure ("expected the final diagnostic, got " <> show other)
+        readIORef diagnosticReads >>= (@?= 1)
     , testCase "logical type names reject embedded NUL" $ withConnection ":memory:" \conn -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
         let logical = LogicalTypeStruct (listArray (0, 0) [StructField "before\0after" (LogicalTypeScalar LogicalTypeIdBigInt)])
         assertInputError (bracket (logicalTypeFromRep factory logical) destroyLogicalType (const (pure ())))
@@ -2137,10 +2242,14 @@ valueRegressionTests =
                 Right rows -> assertFailure (Text.unpack value <> " decodes as " <> show rows)
               -- The cause of that error is a ResultError.
               [Only native] <- query_ conn sql :: IO [Only FieldValue]
-              case fromField Field{fieldName = "value", fieldIndex = 0, fieldValue = native, fieldType = LogicalTypeScalar LogicalTypeIdVariant} :: Ok a of
-                Errors errors ->
-                  assertBool ("expected a ResultError, got " <> show errors) (not (null errors) && all isResultError errors)
-                Ok decoded -> assertFailure (Text.unpack value <> " converts to " <> show decoded)
+              runConversion
+                ( fromField Field{fieldName = "value", fieldIndex = 0, fieldValue = native, fieldType = pure (LogicalTypeScalar LogicalTypeIdVariant)}
+                    :: Conversion a
+                )
+                >>= \case
+                  Errors errors ->
+                    assertBool ("expected a ResultError, got " <> show errors) (not (null errors) && all isResultError errors)
+                  Ok decoded -> assertFailure (Text.unpack value <> " converts to " <> show decoded)
             isResultError failure = isJust (fromException failure :: Maybe ResultError)
         rejects (Proxy @Word64) "-1::BIGINT" "UBIGINT"
         rejects (Proxy @Word) "-1::BIGINT" "UBIGINT"
@@ -2312,6 +2421,30 @@ assertIncompatible conn expression parameters sqlName _ haskellName =
     Right rows -> assertFailure ("expected Incompatible for " <> Text.unpack expression <> ", got " <> show rows)
 
 -- | Assert rejection without forcing a partial generic value.
-assertLeft :: Either String a -> Assertion
-assertLeft (Left _) = pure ()
-assertLeft (Right _) = assertFailure "expected Left"
+assertConversionFails :: Conversion a -> Assertion
+assertConversionFails conversion =
+  runConversion conversion >>= \case
+    Errors _ -> pure ()
+    Ok _ -> assertFailure "expected a conversion failure"
+
+-- | Capture an owned column type before all database scopes close.
+closedEnumType :: IO (Conversion LogicalTypeRep)
+closedEnumType = withEnvironment \environment -> withInstance environment [] \instance_ ->
+  withConnectionOn instance_ \connection -> do
+    _ <- execute_ connection "ATTACH ':memory:' AS metadata"
+    _ <- execute_ connection "USE metadata"
+    _ <- execute_ connection "CREATE TYPE closed_wide AS ENUM (SELECT 'label' || i FROM range(100000) t(i) ORDER BY i)"
+    [logical] <- queryWith_ (fieldWith (pure . fieldType)) connection "SELECT 'label7'::closed_wide"
+    pure logical
+
+-- | Read the size of an ENUM dictionary.
+enumSize :: LogicalTypeRep -> Int
+enumSize (LogicalTypeEnum entries) = length (elems entries)
+enumSize other = error ("expected an ENUM type, got " <> take 100 (show other))
+
+-- | Bound waits for metadata workers, including a worker that fails.
+awaitMetadata :: String -> IO a -> IO a
+awaitMetadata message action =
+  timeout 60000000 action >>= \case
+    Just result -> pure result
+    Nothing -> assertFailure message >> fail message

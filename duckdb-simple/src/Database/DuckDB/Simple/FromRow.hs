@@ -28,16 +28,16 @@ module Database.DuckDB.Simple.FromRow (
 ) where
 
 import Control.Applicative (Alternative (..))
-import Control.Exception (Exception (..), SomeException (SomeException), fromException, toException)
+import Control.Exception (Exception (..), SomeException, fromException)
 import Control.Monad (MonadPlus, replicateM)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Reader (ReaderT, ask, runReaderT)
 import Control.Monad.Trans.State.Strict (StateT, get, put, runStateT)
 import Data.Maybe (listToMaybe, mapMaybe)
 import qualified Data.Text as Text
+import Database.DuckDB.Simple.Conversion (Conversion, conversionError)
 import Database.DuckDB.Simple.FromField
 import Database.DuckDB.Simple.Internal (SQLError (..))
-import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Types (Only (..), Query, (:.) (..))
 import GHC.Generics
 
@@ -54,7 +54,7 @@ instance Exception ColumnOutOfBounds
 
 -- | Parser used by @FromRow@ implementations.
 newtype RowParser a = RowParser
-  { runRowParser :: ReaderT RowParseRO (StateT (Int, [Field]) Ok) a
+  { runRowParser :: ReaderT RowParseRO (StateT (Int, [Field]) Conversion) a
   }
   deriving stock (Functor)
   deriving newtype (Applicative, Alternative, Monad, MonadPlus)
@@ -89,14 +89,12 @@ fieldWith fieldParser = RowParser $ do
   case remaining of
     [] -> do
       lift (put (columnIndex + 1, []))
-      lift (lift (Errors [toException (ColumnOutOfBounds (columnIndex + 1))]))
+      lift (lift (conversionError (ColumnOutOfBounds (columnIndex + 1))))
     (f : rest) -> do
       lift (put (columnIndex + 1, rest))
       if columnIndex >= rowParseColumnCount
-        then lift (lift (Errors [toException (ColumnOutOfBounds (columnIndex + 1))]))
-        else case fieldParser f of
-          Errors err -> lift $ lift $ Errors err
-          Ok value -> pure value
+        then lift (lift (conversionError (ColumnOutOfBounds (columnIndex + 1))))
+        else lift (lift (fieldParser f))
 
 -- | Read the next field with its @FromField@ instance.
 field :: (FromField a) => RowParser a
@@ -110,15 +108,15 @@ numFieldsRemaining = RowParser $ do
   pure (rowParseColumnCount - columnIndex)
 
 -- | Execute a @RowParser@ against the provided row.
-parseRow :: RowParser a -> [Field] -> Ok a
+parseRow :: RowParser a -> [Field] -> Conversion a
 parseRow parser fields =
   let context = RowParseRO (length fields)
       initialState = (0, fields)
-  in  case runStateT (runReaderT (runRowParser parser) context) initialState of
-        Ok (value, (columnCount, _))
-          | columnCount == length fields -> Ok value
-          | otherwise -> Errors [SomeException $ ColumnOutOfBounds (columnCount + 1)]
-        Errors errs -> Errors errs
+  in  do
+        (value, (columnCount, _)) <- runStateT (runReaderT (runRowParser parser) context) initialState
+        if columnCount == length fields
+          then pure value
+          else conversionError (ColumnOutOfBounds (columnCount + 1))
 
 instance FromRow () where
   fromRow = pure ()

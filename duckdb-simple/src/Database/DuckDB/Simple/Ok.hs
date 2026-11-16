@@ -7,8 +7,8 @@
 --
 -- The @Ok@ type mirrors the helper used by @sqlite-simple@. It behaves like
 -- @Either [SomeException]@. Its @Alternative@ instance keeps the errors when
--- both alternatives fail. @Database.DuckDB.Simple.FromRow@ uses it for row
--- parsing.
+-- both alternatives fail. @Database.DuckDB.Simple.Conversion.runConversion@
+-- returns it after conversion effects and diagnostics have completed.
 module Database.DuckDB.Simple.Ok (
   Ok (..),
   ManyErrors (..),

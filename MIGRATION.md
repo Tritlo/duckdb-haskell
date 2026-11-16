@@ -137,14 +137,44 @@ The SQL workflow stays the same. These changes can affect your code:
 - SQL TUPLE values decode as `FieldTuple` with a `TupleValue`. `LogicalTypeRep`
   adds `LogicalTypeTuple` and `LogicalTypeCollatedVarchar`. Update exhaustive
   matches.
-- `Field` has the new field `fieldType`, the SQL type of the column or the
-  element. A positional construction or match of `Field` does not compile. A
-  record construction must give `fieldType`, for example
-  `Field{fieldName = "n", fieldIndex = 0, fieldValue = FieldInt64 1, fieldType = LogicalTypeScalar LogicalTypeIdBigInt}`.
-  Give `LogicalTypeScalar LogicalTypeIdVariant` when the type of the value
-  decides. A record pattern compiles with no change. A `DuckValue` instance
-  compiles with no change; define `duckFromTypedField = typedFromField` to give
-  `fieldType` to the `FromField` of a record field.
+- Decoders use `Conversion a`, in the style of `postgresql-simple`.
+  `FieldParser a` is `Field -> Conversion a`, and `FromField.fromField` returns
+  `Conversion a`. `parseRow` now has the type
+  `RowParser a -> [Field] -> Conversion a`. To run a standalone decoder, call
+  `runConversion :: Conversion a -> IO (Ok a)` from
+  `Database.DuckDB.Simple.Conversion`. It takes no connection argument. Query
+  and callback APIs run conversions for you. Use `pure` for success,
+  `returnError` for a field conversion error, and `liftConversion` for IO.
+  IO exceptions, including cancellation, propagate to the caller.
+- Sequential and applicative `Conversion` operations stop at the first
+  conversion failure. The old `Ok` applicative could collect failures from
+  multiple collection elements. `Alternative` still combines the diagnostics
+  of both branches when both fail.
+- A decoder for a registered function's arguments runs inside its callback.
+  Do not run a query on that callback's connection from the decoder. Use
+  another connection. `fieldType` reads its owned logical type without taking
+  the connection lock.
+- `Field.fieldType` has the type `Conversion LogicalTypeRep`. Read it with
+  `logical <- fieldType field` in a decoder. A positional construction or
+  match of `Field` does not compile. A record construction must give
+  `fieldType`, for example
+  `Field{fieldName = "n", fieldIndex = 0, fieldValue = FieldInt64 1, fieldType = pure (LogicalTypeScalar LogicalTypeIdBigInt)}`.
+  Use `pure (LogicalTypeScalar LogicalTypeIdVariant)` when the stored value
+  determines the type. `Field` has no `Eq` or `Show` instance.
+- Each result column owns a native logical type. Its `fieldType` action can
+  run after the statement or connection closes. The library caches successful
+  type conversions. Cancellation or another IO exception leaves the cache
+  available for a retry. Type conversion runs in explicit IO; it performs no
+  hidden IO in a pure value.
+- `returnError` defers diagnostic metadata until the final conversion fails.
+  A successful `Alternative` branch discards the other branch's diagnostic
+  without reading its type or ENUM dictionary. A completed `ResultError` is
+  pure; rendering it performs no native IO.
+- Generic decoding also uses `Conversion a`. Update the `DuckValue` methods
+  `duckFromField` and `duckFromTypedField`, plus calls to `typedFromField` and
+  `genericFromFieldValue`, that used `Either String a`. Define
+  `duckFromTypedField = typedFromField` to pass a record field's SQL type to
+  its `FromField` instance. Generic encoding and type declarations stay pure.
 - `LogicalTypeRep` adds `LogicalTypeAlias`. Update exhaustive matches. The
   `columnDescriptionType` of a JSON column is
   `LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)`, also as a

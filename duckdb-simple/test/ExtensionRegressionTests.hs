@@ -11,6 +11,7 @@
 -- Description : Regression tests for extension callbacks and native handle ownership.
 module ExtensionRegressionTests (main, extensionRegressionTests) where
 
+import Control.Concurrent (forkIOWithUnmask, killThread, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
 import Control.Exception (
   AsyncException (ThreadKilled),
   ErrorCall,
@@ -23,7 +24,7 @@ import Control.Exception (
   throwIO,
   try,
  )
-import Control.Monad (forM, forM_, replicateM_, void, when)
+import Control.Monad (forM, forM_, forever, replicateM_, void, when)
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef)
 import Data.Int (Int64)
@@ -43,6 +44,7 @@ import qualified Database.DuckDB.Simple.FileSystem as FileSystem
 import Database.DuckDB.Simple.FromField (FieldValue (..))
 import Database.DuckDB.Simple.Internal (
   MacroFunctionType,
+  acquireItems,
   errorTypeCodes,
   errorTypeFromNative,
   logLevelFromNative,
@@ -64,6 +66,7 @@ import System.FilePath (takeDirectory)
 import System.IO (hClose, openBinaryTempFile)
 import System.Mem (performMajorGC)
 import System.Mem.Weak (deRefWeak)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
 import TestUtils (assertInputErrorContaining, assertRangeError, assertReleasedAfter, assertSqlErrorContaining, assertSqlErrorType)
@@ -134,6 +137,41 @@ extensionRegressionTests =
         withConnection ":memory:" \conn -> do
           deleteFunction conn "absent_scalar"
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+    , testCase "clearing bindings permits statement reuse after cancellation" $
+        withConnection ":memory:" \conn -> do
+          let parameters = replicate 32 (toField (Text.replicate 4096 "x"))
+              sql = Query ("SELECT length(concat(" <> Text.intercalate ", " (replicate 32 "?::VARCHAR") <> "))")
+          withStatement conn sql \stmt -> replicateM_ 16 do
+            started <- newEmptyMVar
+            done <- newEmptyMVar
+            -- Each worker alternates binding and clearing. The cancellation
+            -- can occur in either operation. The last query checks reuse.
+            -- Unmask the loop because bracket masks the creation of the worker.
+            bracket
+              ( forkIOWithUnmask \unmask ->
+                  try @SomeException (unmask (putMVar started () >> forever (bind stmt parameters >> clearStatementBindings stmt)))
+                    >>= putMVar done
+              )
+              ( \worker -> do
+                  stopped <- timeout (5 * 1000000) (killThread worker >> readMVar done)
+                  case stopped of
+                    Just _ -> pure ()
+                    Nothing -> assertFailure "the binding worker did not stop during cleanup"
+              )
+              \worker -> do
+                outcome <- timeout (5 * 1000000) do
+                  takeMVar started
+                  threadDelay 1000
+                  killThread worker
+                  readMVar done
+                case outcome of
+                  Just (Left failure) | fromException failure == Just ThreadKilled -> pure ()
+                  Just (Left failure) -> throwIO failure
+                  Just (Right ()) -> assertFailure "the binding worker returned before cancellation"
+                  Nothing -> assertFailure "the binding worker did not finish after cancellation"
+            clearStatementBindings stmt
+            bind stmt parameters
+            nextRow stmt >>= (@?= Just (Only (131072 :: Int64)))
     , testCase "deleteFunction reads the name with the qualified-name rules of DuckDB" $
         withConnection ":memory:" \conn -> do
           let macroCount :: Text.Text -> Text.Text -> IO [Only Int64]
@@ -300,6 +338,38 @@ extensionRegressionTests =
           createFunction conn "text_payload" payload
           createFunction conn "text_identity" (id :: Text.Text -> Text.Text)
           query_ conn "SELECT text_identity(text_payload())" >>= (@?= [Only payload])
+    , testCase "a throwing String result tail fails the query and permits another call" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "broken_text" \(index :: Int64) ->
+            if index == 1
+              then replicate 64 'x' <> error "text result tail failed"
+              else replicate 64 'x'
+          assertSqlErrorContaining "text result tail failed" $
+            (query_ conn "SELECT broken_text(i) FROM range(3) t(i)" :: IO [Only String])
+          query_ conn "SELECT broken_text(0)" >>= (@?= [Only (replicate 64 'x')])
+    , testGroup
+        "native acquisition cleanup"
+        [ testCase label do
+            released <- newIORef []
+            outcome <- try (acquireItems (\item -> atomicModifyIORef' released (\items -> (items <> [item], ()))) actions)
+            case outcome of
+              Left (failure :: SomeException) ->
+                assertBool "the acquisition exception reaches the caller" ("acquisition failed" `isInfixOf` displayException failure)
+              Right _ -> assertFailure "the acquisition succeeded"
+            readIORef released >>= (@?= [2, 1 :: Int])
+        | (label, actions) <-
+            [ ("a failing list spine releases the acquired prefix in reverse order", pure 1 : pure 2 : error "acquisition failed")
+            , ("a failing acquisition action releases the acquired prefix in reverse order", [pure 1, pure 2, throwIO (userError "acquisition failed")])
+            ]
+        ]
+    , testCase "a failing lazy list parameter permits another query" $
+        withConnection ":memory:" \conn -> do
+          outcome <- try (query conn "SELECT ?::BIGINT[]" (Only (1 : error "parameter tail failed" :: [Int64])) :: IO [Only [Int64]])
+          case outcome of
+            Left (failure :: ErrorCall) ->
+              assertBool "the list exception reaches the caller" ("parameter tail failed" `isInfixOf` displayException failure)
+            Right _ -> assertFailure "the lazy list parameter succeeded"
+          query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "scalar NULL arguments reach Maybe functions" $
         withConnection ":memory:" \conn -> do
           createFunction conn "null_default" (\(x :: Maybe Int64) -> maybe 42 id x)

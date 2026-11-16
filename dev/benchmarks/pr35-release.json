@@ -1,0 +1,347 @@
+{
+  "date": "2026-11-16",
+  "primary_samples": {
+    "file": "pr35-release.csv",
+    "sha256": "d7a445f62c91e90a3adec6cee06917adb6282197004a7784b6dcc7543db38b35",
+    "input_glob": "raw/final-*.csv",
+    "input_files": 69,
+    "cases_per_arm": 23,
+    "samples": 483,
+    "checks": "Seven distinct run numbers and expected checksum verified for every case; all final stderr files empty.",
+    "rows_column": "Input count: collection elements, singleton parameter queries, or result rows, according to workload."
+  },
+  "arms": {
+    "v1": {
+      "commit": "08feb05dbcad6e4c6910b8f28e2d5d8ee0d69f03",
+      "executable_sha256": "03741bda6cf738599add4b4faf99adb3c8ffc0a84e29d1b0b78c8fd7ffa92ea2"
+    },
+    "v2": {
+      "commit": "9f85ab5af709c3d51b3153d7f3b366c062c890af",
+      "executable_sha256": "52bffa18b40d7f7763bdf4026fd57721cd34b67451b466a0e31fecccb2e79e55"
+    },
+    "v2-final": {
+      "commit": "6949a6b30e4daba22e2c68f9941b6d69c7061306",
+      "executable_sha256": "101c01e4212e1de5818c8c4298d2a7e48f3e18ee327486091c63ce591da1c258"
+    }
+  },
+  "build": {
+    "ghc": "9.14.1",
+    "cabal_install": "3.16.1.0",
+    "optimization": "-O2",
+    "environment": "Nix",
+    "native_duckdb": "2.0.0",
+    "native_library": "/nix/store/y72xxpiza7xmdc7n718gwj9ssm46sgcr-duckdb-2.0.0/lib/libduckdb.so",
+    "harness": "duckdb-simple/bench/Main.hs",
+    "harness_sha256": "2085cafc2e1695281a6bf8114cb220139b33306260d83535446173dd1905cedd",
+    "baseline_overlay": "Same benchmark source and array/containers benchmark dependencies; no library-code backport.",
+    "selected_tree": "d652a571c5f919c2145482cbc9ba58b805aa200f",
+    "pre_rewrite_selected_commit": "bde102e8",
+    "history_note": "6949a6b3 and bde102e8 have identical Git trees; later documentation is not part of the measured runtime."
+  },
+  "protocol": {
+    "command": "taskset -c 23 <executable> <workload> <rows> +RTS -N1 -T -RTS",
+    "duckdb_threads": 1,
+    "warmup_runs": 1,
+    "measured_runs": 7,
+    "summary": "median",
+    "timing": "Monotonic elapsed time around the action and checksum forcing. Connection/fixture setup, warm-up, and forced major GC excluded; normal GC during the action included.",
+    "allocation": "GHC.Stats allocated_bytes delta before action to after post-action major GC; includes small instrumentation overhead; excludes native allocations and RSS.",
+    "arm_order_cycle": [
+      [
+        "v1",
+        "v2",
+        "v2-final"
+      ],
+      [
+        "v2-final",
+        "v1",
+        "v2"
+      ],
+      [
+        "v2",
+        "v2-final",
+        "v1"
+      ]
+    ],
+    "case_order": [
+      "eager:100000",
+      "fold:100000",
+      "scalar:100000",
+      "text:100000",
+      "timestamp:100000",
+      "parameters:1000",
+      "timestamp-parameters:1000",
+      "variant:10000",
+      "variant-parameters:1000",
+      "variant-objects:2000",
+      "variant-list:20000",
+      "geometry:10000",
+      "geometry-parameters:1000",
+      "geometry-typed:10000",
+      "geometry-typed-parameters:1000",
+      "list-bigint:20000",
+      "list-bignum:20000",
+      "array-bignum:20000",
+      "map-bignum:20000",
+      "list-bigint:100000",
+      "list-bignum:100000",
+      "array-bignum:100000",
+      "map-bignum:100000"
+    ],
+    "started": "2026-11-16T05:43:57+01:00",
+    "last_invocation_started": "2026-11-16T05:45:54+01:00"
+  },
+  "host": {
+    "environment": "WSL2",
+    "architecture": "x86_64",
+    "cpu": "AMD Ryzen 9 7950X 16-Core Processor",
+    "allowed_cpus": 24,
+    "pinned_cpu": 23,
+    "dedicated": false,
+    "activity": "Concurrent compilation; six compiler processes each used about one CPU in the host snapshot.",
+    "snapshot_time": "2026-11-16T05:45+01:00",
+    "snapshot_load_1m_5m_15m": [
+      7.26,
+      5.86,
+      3.74
+    ],
+    "invocation_load_1m_range": [
+      6.55,
+      7.33
+    ],
+    "interpretation": "CPU pinning does not establish exclusive use; small timing differences are provisional."
+  },
+  "source_manifest_sha256": {
+    "final-metadata.txt": "1f2e32ac1b329879307b1b13e6b4d5d22816bc7732f0c4c5ba8acd74a49080a3",
+    "final-order.log": "e13d1aa70b28fefb431ac4d194848bb7fdfe5894e387696ac9a5acc8fa3abb17",
+    "final-host-activity.txt": "4afd1464268786a4dc89517e88d4bd8feccd5de89c9bbda1f172d83899448313"
+  },
+  "collection_phase": {
+    "file": "pr35-collection-phase.csv",
+    "sha256": "b5566bbc24b656d5f471c32b55e927e7b540971318dc0ff7fc5a1f25e8d28626",
+    "samples": 42,
+    "elements_per_case": 100000,
+    "comparison": "Before/after collection folds; both sides already include the other three selected optimizations and cleanup fixes.",
+    "reproduction": {
+      "after_commit": "6949a6b30e4daba22e2c68f9941b6d69c7061306",
+      "before_commit": "6949a6b30e4daba22e2c68f9941b6d69c7061306",
+      "before_revert": "6386befab488ff681e98fef239572d67bc9af0fd",
+      "protocol": "Use separate worktrees. Revert the collection-fold commit for the before arm. Keep harness, compiler, flags, native library, and run protocol fixed."
+    },
+    "local_build_base_commit": "0dc26d4df4005933ab0374572221ced4ea088150",
+    "local_build_patch_sha256": {
+      "scalar": "2de22c84d353d733602bce3c220645d86e27143f2408b671c9555aea87f42ce8",
+      "collections": "eb77ccde0db96714373fa8eb59dec7af2d2733a15044417e0961f01a82975588"
+    },
+    "local_provenance_note": "These local pre-rewrite identifiers document the measured builds. Use the published commits in reproduction to recreate the pair."
+  },
+  "callgrind_collection_phase": {
+    "workload": "list-bignum",
+    "elements": 2000,
+    "processes_per_arm": 1,
+    "scope": "Whole process: startup, fixture setup, one warm-up, seven measured runs, and GC.",
+    "total_instructions_before_after": [
+      757816390,
+      353277317
+    ],
+    "threadPaused_self_instructions_before_after": [
+      426850641,
+      21128614
+    ],
+    "source_sha256": {
+      "profile-v2-scalar-list-bignum.callgrind": "57c2eec8452faa77378d38b400a88dc8faa64a8ac4b82cdaac470fbd8df1adcf",
+      "profile-v2-collections-list-bignum.callgrind": "9727d4b3f0785a622720002174e9595cc53da1f7f7c6022d3be469f40f26b64f"
+    }
+  },
+  "rss_nested_variant_list": {
+    "elements": 100000,
+    "processes_per_arm": 1,
+    "arms": [
+      "v2-cleanup",
+      "v2-final"
+    ],
+    "max_rss_kib": [
+      441728,
+      383868
+    ],
+    "scope": "Whole process peak RSS, including Haskell and native memory, setup, warm-up, and all seven runs.",
+    "source_sha256": {
+      "rss-v2-cleanup.txt": "2e9649568ec53dea078691c9f8a27d342c1cf817ec1dabf35eb97d218a04b6d7",
+      "rss-v2-final.txt": "042b36d221c6806a9db1cb60005295f2ca09909d43e9b65945ae162d9ff06fad"
+    }
+  },
+  "attribution_limit": "Original-to-metadata phase includes acquireItems correctness changes. Nested-list cleanup controls at 2000 and 20000 elements showed about 56 extra allocated bytes per element in those cases only.",
+  "validation": {
+    "pr35": {
+      "high_level": 793,
+      "retained_ffi": 97,
+      "v2_ffi": 74,
+      "leak_and_nonthreaded": "passed"
+    },
+    "combined_stack": {
+      "high_level": 817,
+      "retained_ffi": 97,
+      "v2_ffi": 74,
+      "extension": 19,
+      "leak_and_nonthreaded": "passed"
+    },
+    "valgrind": {
+      "processes": 1,
+      "test_cases": 11,
+      "errors": 0,
+      "definitely_lost_bytes": 0,
+      "indirectly_lost_bytes": 0,
+      "possibly_lost_bytes": 384,
+      "still_reachable_bytes": 4623380
+    },
+    "packaging": {
+      "source_archive_checks": "passed in both worktrees",
+      "generated_hash_checks_per_worktree": 4,
+      "public_haddock_indices": "present in both worktrees"
+    }
+  },
+  "cleanup_control": {
+    "workload": "variant-list",
+    "cases": [
+      {
+        "elements": 2000,
+        "allocated_bytes_before_after": [
+          6319992,
+          6432376
+        ],
+        "bytes_per_element_delta": 56.192
+      },
+      {
+        "elements": 20000,
+        "allocated_bytes_before_after": [
+          63768384,
+          64888768
+        ],
+        "bytes_per_element_delta": 56.0192
+      }
+    ],
+    "source_pattern": "raw/nested-{v2,v2-cleanup}-variant-list-{2000,20000}.csv",
+    "scope": "Seven samples per case. Per-element deltas apply only to these measured nested lists."
+  },
+  "source_order_scope": "final-order.log contains the 69 primary-matrix invocations followed by 12 confirmation invocations. Primary case order excludes confirmation.",
+  "variant_confirmation": {
+    "file": "pr35-variant-confirmation.csv",
+    "sha256": "f477d6cfca4bf2515e68b7ea35563e47a72e3389aa0d09b6652fd87aee79d38f",
+    "samples": 84,
+    "rows_per_action": 10000,
+    "processes_per_arm": 3,
+    "measured_samples_per_process": 7,
+    "warmup_runs_per_process": 1,
+    "timing_summary": "Pooled median across 21 samples per arm; process medians retained separately.",
+    "process_medians_ms": {
+      "v2": [
+        52.693,
+        47.202,
+        52.714
+      ],
+      "v2-cleanup": [
+        46.376,
+        50.442,
+        49.868
+      ],
+      "v2-scalar": [
+        42.75,
+        42.222,
+        46.02
+      ],
+      "v2-final": [
+        43.627,
+        44.17,
+        43.551
+      ]
+    },
+    "pooled_results": {
+      "v2": {
+        "pooled_median_ms": 51.259,
+        "median_allocated_bytes": 32584520
+      },
+      "v2-cleanup": {
+        "pooled_median_ms": 49.751,
+        "median_allocated_bytes": 33145120
+      },
+      "v2-scalar": {
+        "pooled_median_ms": 43.067,
+        "median_allocated_bytes": 33129168
+      },
+      "v2-final": {
+        "pooled_median_ms": 43.627,
+        "median_allocated_bytes": 35027264
+      }
+    },
+    "order_by_round": [
+      [
+        "v2",
+        "v2-final",
+        "v2-cleanup",
+        "v2-scalar"
+      ],
+      [
+        "v2-scalar",
+        "v2-cleanup",
+        "v2-final",
+        "v2"
+      ],
+      [
+        "v2-final",
+        "v2",
+        "v2-scalar",
+        "v2-cleanup"
+      ]
+    ],
+    "started": "2026-11-16T06:02:35+01:00",
+    "last_invocation_started": "2026-11-16T06:02:40+01:00",
+    "load_1m_5m_15m_ranges": [
+      [
+        1.35,
+        1.4
+      ],
+      [
+        1.92,
+        1.93
+      ],
+      [
+        2.71,
+        2.72
+      ]
+    ],
+    "reproduction": {
+      "v2": {
+        "commit": "9f85ab5af709c3d51b3153d7f3b366c062c890af"
+      },
+      "v2-cleanup": {
+        "commit": "6b008de1c920cacd2657b4e0ef137481a3637dad"
+      },
+      "v2-scalar": {
+        "commit": "6949a6b30e4daba22e2c68f9941b6d69c7061306",
+        "revert": "6386befab488ff681e98fef239572d67bc9af0fd"
+      },
+      "v2-final": {
+        "commit": "6949a6b30e4daba22e2c68f9941b6d69c7061306"
+      },
+      "protocol": "Same harness and benchmark dependencies overlaid on each reference; same compiler, native library, CPU affinity, RTS options, and DuckDB thread count as the primary matrix."
+    },
+    "callgrind": {
+      "rows_per_action": 1000,
+      "processes_per_arm": 1,
+      "scope": "Whole process, including startup, fixture setup, one warm-up, seven runs, and GC.",
+      "total_instructions": {
+        "v2": 854648092,
+        "v2-cleanup": 854934805,
+        "v2-scalar": 789899211,
+        "v2-final": 791665132
+      },
+      "source_sha256": {
+        "profile-v2-variant-confirm.callgrind": "0bafa4633b2aee1d1888f6545cae88d20d5881aa8d8f5f3069027e4f93cc0ea4",
+        "profile-v2-cleanup-variant-confirm.callgrind": "5b6e1fd3e8321d161ae6d749d3b1f98e3303040fdb1f6eb99a4125568a2c9889",
+        "profile-v2-scalar-variant-confirm.callgrind": "04c62a16e0e8f8453a4b743dd4c914024d9a64c192765b2115bd0653760afd6e",
+        "profile-v2-final-variant-confirm.callgrind": "05432f192611b36a65bee509a8ab2ac4f45aa0fde370955bb4a3e6a0405f1f14"
+      }
+    },
+    "interpretation": "The earlier scalar VARIANT timing increase did not reproduce. These measurements do not identify its cause; selected instruction count is lower and Haskell allocation is higher than baseline."
+  }
+}

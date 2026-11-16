@@ -1,9 +1,10 @@
 -- |
 -- Module      : Database.DuckDB.Simple.Arrow
--- Description : Scoped Arrow export through the DuckDB C Data Interface.
+-- Description : Scoped Arrow export through the Arrow C Data Interface.
 --
--- These functions execute a query and visit its Arrow batches. The default fold
--- collects owned batches and closes the native cursor before the first callback.
+-- These functions execute a query with V2 and visit its Arrow batches. The
+-- default fold collects owned batches and closes the native cursor before the
+-- first callback.
 -- It releases each batch after its callback. Memory use can grow with the query size.
 --
 -- Each callback receives a separate schema and array. It may read them or pass
@@ -17,9 +18,6 @@
 -- separately. Moved contents remain valid after the query and connection close.
 -- Haskell consumers must mask asynchronous exceptions while moving a root and
 -- register its cleanup before restoring exceptions.
---
--- This module uses native V2 Arrow results. It retains owned Arrow batches
--- until execution finishes, then delivers them to the callback.
 module Database.DuckDB.Simple.Arrow (
   foldArrow,
   foldArrow_,

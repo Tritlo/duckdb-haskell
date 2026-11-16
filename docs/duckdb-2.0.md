@@ -111,8 +111,8 @@ git diff
 ## Native runtime
 
 `duckdb-ffi/native.sha256` pins the official shared-library archives.
-`Setup.hs` downloads from it by default. `dev/fetch-duckdb.sh` downloads the
-same archive for `-fsystemlib` builds. It checks the archive digest and
+`Setup.hs` downloads the pinned archive by default. `dev/fetch-duckdb.sh`
+downloads the same archive for `-fsystemlib` builds. It checks the archive digest and
 requires the release headers to be identical to the vendored headers.
 
 ```sh
@@ -183,5 +183,5 @@ cabal test duckdb-simple:duckdb-simple-quack-test -fquack-tests -fsystemlib --ex
 5. Build source archives with `cabal sdist all`. Check that they contain the
    generated modules, C checks, client headers, license, and manifest.
 6. `dev/release.sh` regenerates both APIs and verifies the header digests and
-   generated checksums before it builds and uploads the Hackage archives. It uploads
-   package candidates even without `--publish`.
+   generated checksums before it builds and uploads the Hackage archives.
+   It uploads package candidates even without `--publish`.

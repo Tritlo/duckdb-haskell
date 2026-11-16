@@ -64,9 +64,9 @@ instance FromField Variant where
 -- and its keys are in ascending order: DuckDB sorts the keys of an object by
 -- their UTF-8 bytes. The order of 'Text' is the order of code points, and UTF-8
 -- keeps that order in its bytes, so the two orders are the same. Each other
--- value has no VARIANT
--- form: a 'FieldArray', a 'FieldTuple', another 'FieldStruct', a 'FieldEnum',
--- a 'FieldMap', a 'FieldUnion', and a GEOMETRY with a CRS.
+-- value has no VARIANT form: a 'FieldArray', a 'FieldTuple', another
+-- 'FieldStruct', a 'FieldEnum', a 'FieldMap', a 'FieldUnion', and a GEOMETRY
+-- with a CRS.
 variantShape :: FieldValue -> Bool
 variantShape = \case
   FieldEnum{} -> False

@@ -14,9 +14,9 @@
 -- Module      : Database.DuckDB.Simple.Function.Internal
 -- Description : Share typed scalar registration for connections and extensions.
 --
--- This module is not exposed: the cabal file lists it in @other-modules@. It
--- holds the implementation, and "Database.DuckDB.Simple.Function" exports the
--- forms for a connection. The forms that take a registration target,
+-- The cabal file lists this hidden module in @other-modules@.
+-- "Database.DuckDB.Simple.Function" exports the forms for a connection.
+-- The forms that take a registration target,
 -- 'createFunctionOn' and 'createFunctionWithStateOn', are for the module of
 -- the loadable extensions. Both forms use the same argument conversion, result
 -- conversion, and callback resources.
@@ -60,16 +60,15 @@ import Database.DuckDB.Simple.Callback (
  )
 import Database.DuckDB.Simple.Element (vectorElementType)
 import Database.DuckDB.Simple.FromField (
-  Field (..),
+  Field,
   FromField (..),
  )
 import Database.DuckDB.Simple.Internal (duckDBTypeToName)
 import Database.DuckDB.Simple.LogicalRep (TypeDeclaration)
-import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareGeometryReader, prepareVectorReader, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
-import Database.DuckDB.Simple.Typed (argumentName, checkArgumentType, conversionMessage, rowDeclarations)
+import Database.DuckDB.Simple.Typed (argumentName, checkArgumentType, conversionMessage, prepareArgumentReader, rowDeclarations)
 import Database.DuckDB.Simple.V2.Registration (withTypeDeclaration)
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 import Foreign.Marshal.Utils (copyBytes, fillBytes)
@@ -381,27 +380,12 @@ scalarFunctionInitHandler initState info _context err = runCallback err do
   state <- initState
   transferCallbackState (attachOpaque (c_duckdb_v2_scalar_function_init_set_init_data info)) state
 
-type ColumnReader = Int -> IO Field
-
 -- | Prepare the reader of one argument. A GEOMETRY value reads with the
 -- factory, at each depth of the type.
-makeColumnReader :: DuckDBV2FactoryHandle -> DuckDBV2ScalarFunctionExecInfoHandle -> Int -> IO ColumnReader
-makeColumnReader factory info columnIndex = do
-  let noVariant =
-        rejectRows
-          (throwInvalidArgument "the type of a scalar function argument cannot be or contain VARIANT")
-  readValue <-
-    output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex))
-      >>= prepareVectorReader (FallbackReaders noVariant (prepareGeometryReader factory))
-  let name = Text.pack ("arg" <> show columnIndex)
-  pure \rowIdx -> do
-    value <- readValue rowIdx
-    pure
-      Field
-        { fieldName = name
-        , fieldIndex = columnIndex
-        , fieldValue = value
-        }
+makeColumnReader :: DuckDBV2FactoryHandle -> DuckDBV2ScalarFunctionExecInfoHandle -> Int -> IO (Int -> IO Field)
+makeColumnReader factory info columnIndex =
+  output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex))
+    >>= prepareArgumentReader (Just factory) columnIndex
 
 -- | Write the results of one call to the result vector. Set the size, then
 -- flatten, then read the pointers. A row of a result that is not raw borrows

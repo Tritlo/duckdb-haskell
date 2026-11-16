@@ -9,7 +9,7 @@
 
 -- |
 -- Module      : Database.DuckDB.Simple.FromRow
--- Description : Convert rows of @Field@s into Haskell values using a parser-style interface.
+-- Description : Parse rows of @Field@s as Haskell values.
 module Database.DuckDB.Simple.FromRow (
   -- * Row parsing
   RowParser (..),
@@ -81,7 +81,7 @@ class FromRow a where
   default fromRow :: (Generic a, GFromRow (Rep a)) => RowParser a
   fromRow = to <$> gFromRow
 
--- | Pull the next field using the provided @FieldParser@.
+-- | Read the next field with the supplied @FieldParser@.
 fieldWith :: FieldParser a -> RowParser a
 fieldWith fieldParser = RowParser $ do
   RowParseRO{rowParseColumnCount} <- ask
@@ -98,7 +98,7 @@ fieldWith fieldParser = RowParser $ do
           Errors err -> lift $ lift $ Errors err
           Ok value -> pure value
 
--- | Pull the next field and parse it using its @FromField@ instance.
+-- | Read the next field with its @FromField@ instance.
 field :: (FromField a) => RowParser a
 field = fieldWith fromField
 
@@ -223,7 +223,7 @@ resultErrorToSqlError query err =
     , sqlErrorBody = Nothing
     }
 
--- | Collapse parser failure diagnostics into an @SQLError@ while preserving the query.
+-- | Convert parser errors to an @SQLError@ that retains the query.
 rowErrorsToSqlError :: Query -> [SomeException] -> SQLError
 rowErrorsToSqlError query errs =
   case listToMaybe (mapMaybe (fromException :: SomeException -> Maybe ResultError) errs) of

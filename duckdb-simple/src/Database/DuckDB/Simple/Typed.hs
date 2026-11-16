@@ -50,7 +50,7 @@ import GHC.Generics
 
 -- | A row with a fixed list of typed columns. A typed registration uses the
 -- column types in the signature of the SQL object, and writes the column values
--- to DuckDB. 'Only', tuples of 2 to 7 columns, and @()@ are rows. A record with a
+-- to DuckDB. t'Only', tuples of 2 to 7 columns, and @()@ are rows. A record with a
 -- 'Generic' instance is a row when each field has a 'ToDuckValue' instance:
 --
 -- > data Point = Point {x :: Double, y :: Double} deriving (Generic)

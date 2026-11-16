@@ -740,7 +740,7 @@ through the error slot aborts the query." DuckDB does not keep this sentence.
 Thus each cast callback of the library writes the code
 DUCKDB_V2_ERROR_TYPE_MISMATCH for each failure (runCallbackWith in
 "Database.DuckDB.Simple.Callback"). The code of a cast does not depend on the
-exception. It replaces the type of each 'SQLError' from the callback, also the
+exception. It replaces the type of each t'SQLError' from the callback, also the
 type Conversion of a failed query in the callback. Thus a change of the code
 of runCallback does not change the code of a cast. DuckDB rethrows an error of
 this type with no change. The statement fails with "Mismatch Type Error: " and

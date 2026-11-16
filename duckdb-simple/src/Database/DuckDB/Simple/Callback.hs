@@ -289,7 +289,7 @@ runCallback :: Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
 runCallback = runCallbackAs callbackError
 
 -- | 'runCallback' with another native error code for each failure. The code
--- replaces the type of each exception, also the type of an 'SQLError', and the
+-- replaces the type of each exception, also the type of an t'SQLError', and the
 -- text is the 'failureText' of the exception. A cast callback uses it. See
 -- Note [The error code of a failed cast] in
 -- "Database.DuckDB.Simple.V2.Registration".
@@ -387,7 +387,7 @@ callbackError failure = case fromException failure of
         (code, fromMaybe message body)
   _ -> (DuckDBV2ErrorApi, Text.pack (failureText failure))
 
--- | The error types whose own code a callback must not write. An 'SQLError' of
+-- | The error types whose own code a callback must not write. An t'SQLError' of
 -- one of these types leaves the callback as a plain Invalid Input error,
 -- because DuckDB would do something wrong or unsafe with its own code.
 -- Note [Errors that leave a callback] gives the reason for each type.
@@ -405,7 +405,7 @@ typesWithoutOwnCode =
   , ErrorRuntimeFatal
   ]
 
--- | The text of a callback exception in the SQL error. An 'SQLError' gives its
+-- | The text of a callback exception in the SQL error. An t'SQLError' gives its
 -- message, and a 'userError' gives its text. Thus the SQL error does not show a
 -- Haskell record or the words \"user error\". Each other exception gives its
 -- 'exceptionText'.

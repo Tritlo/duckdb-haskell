@@ -128,9 +128,9 @@ createTypeCache instance_ connection crss = do
       let geometry = NativeTypes (nativeGeometry keptTypes <> nativeGeometry queried) (nativeOwned keptTypes <> nativeOwned queried)
       TypeCache connection instance_ casts geometry <$> newMVar Unopened
 
--- | Construct a GEOMETRY type with a CRS directly. Give 'Nothing' when DuckDB
--- rejects the name or drops the CRS. The construction raises 'SQLError' in
--- both cases, and it destroys a type that lost its CRS. See
+-- | Construct a GEOMETRY type with a CRS directly. Return 'Nothing' when DuckDB
+-- rejects the name or drops the CRS. 'logicalTypeFromRep' raises t'SQLError' in
+-- both cases and destroys a type that lost its CRS. See
 -- Note [CRS types of a connection].
 directGeometry :: DuckDBV2ConnectionHandle -> Text -> IO (Maybe DuckDBV2LogicalTypeHandle)
 directGeometry connection crs = withConnectionFactory connection \factory ->
@@ -138,8 +138,8 @@ directGeometry connection crs = withConnectionFactory connection \factory ->
     <$> (try (logicalTypeFromRep factory (LogicalTypeGeometry (Just crs))) :: IO (Either SQLError DuckDBV2LogicalTypeHandle))
 
 -- | Close the helper after all users finish. Destroy the VARIANT state before
--- the helper connection. Destroy each cached type once, also if a destroy
--- raises an error. A second call does nothing.
+-- the helper connection. Destroy each cached type once, even if an earlier
+-- destroy raises an error. A second call does nothing.
 destroyTypeCache :: TypeCache -> IO ()
 destroyTypeCache TypeCache{typeCacheGeometry, typeCacheState} = uninterruptibleMask_ do
   previous <- modifyMVarMasked typeCacheState (\state -> pure (Closed, state))

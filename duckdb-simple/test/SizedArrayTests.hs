@@ -15,6 +15,7 @@ module SizedArrayTests (sizedArrayTests) where
 import Control.Exception (try)
 import Control.Monad (forM_)
 import Data.Array (listArray)
+import Data.Foldable (toList)
 import Data.Int (Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust, isNothing)
@@ -57,14 +58,14 @@ sizedArrayTests =
   testGroup
     "sized arrays"
     [ testCase "a SizedArray rejects a longer list without forcing its tail or elements" $ do
-        assertBool "an infinite list is too long" (isNothing (sizedArray @3 ([1 ..] :: [Int64])))
+        assertBool "an infinite list is too long" (isNothing (sizedArrayFromList @3 ([1 ..] :: [Int64])))
         assertBool
           "a fourth element is enough to reject the list"
-          (isNothing (sizedArray @3 ([undefined, undefined, undefined, undefined] ++ undefined :: [Int64])))
+          (isNothing (sizedArrayFromList @3 ([undefined, undefined, undefined, undefined] ++ undefined :: [Int64])))
     , testCase "a SizedArray binds as an ARRAY of its size and reads back from a parameter and a column" $ withConnection ":memory:" \conn -> do
-        let values = fromJust (sizedArray @3 [1, 2, 3 :: Int64])
-        sizedArrayToList values @?= [1, 2, 3]
-        sizedArray @3 [1, 2 :: Int64] @?= Nothing
+        let values = fromJust (sizedArrayFromList @3 [1, 2, 3 :: Int64])
+        toList values @?= [1, 2, 3]
+        sizedArrayFromList @3 [1, 2 :: Int64] @?= Nothing
         query conn "SELECT typeof(?), ?" (values, values) >>= (@?= [("BIGINT[3]" :: Text.Text, values)])
         _ <- execute_ conn "CREATE TABLE stored (v BIGINT[3])"
         _ <- execute conn "INSERT INTO stored VALUES (?)" (Only values)
@@ -82,19 +83,19 @@ sizedArrayTests =
         refused "[1, 2, 3, 4]::BIGINT[4]" "BIGINT[4]" "4"
         refused "[1, 2]::BIGINT[]" "BIGINT[]" "2"
     , testCase "a nested SizedArray and a SizedArray of Maybe elements round-trip" $ withConnection ":memory:" \conn -> do
-        let row = fromJust . sizedArray @3
-            nested = fromJust (sizedArray @2 [row [1, 2, 3 :: Int32], row [4, 5, 6]])
+        let row = fromJust . sizedArrayFromList @3
+            nested = fromJust (sizedArrayFromList @2 [row [1, 2, 3 :: Int32], row [4, 5, 6]])
         query conn "SELECT typeof(?), ?" (nested, nested) >>= (@?= [("INTEGER[3][2]" :: Text.Text, nested)])
-        let optional = fromJust (sizedArray @3 [Just 1, Nothing, Just (3 :: Int64)])
+        let optional = fromJust (sizedArrayFromList @3 [Just 1, Nothing, Just (3 :: Int64)])
         query conn "SELECT typeof(?), ?" (optional, optional) >>= (@?= [("BIGINT[3]" :: Text.Text, optional)])
     , testCase "a SizedArray of size 0 raises an input error at the bind and at the declaration" $ withConnection ":memory:" \conn -> do
-        let empty = fromJust (sizedArray @0 ([] :: [Int64]))
+        let empty = fromJust (sizedArrayFromList @0 ([] :: [Int64]))
         assertInputErrorContaining "an empty ARRAY parameter is not possible" (query conn "SELECT ?" (Only empty) :: IO [Only (SizedArray 0 Int64)])
         assertInputErrorContaining "a SizedArray of size 0 has no ARRAY type" $
           createFunction conn "sized_empty" \(_ :: SizedArray 0 Int64) -> (1 :: Int64)
     , testCase "a SizedArray of the largest ARRAY size binds and declares, and a larger one raises an input error" $ withConnection ":memory:" \conn -> do
-        let largest = fromJust (sizedArray @100000 (replicate 100000 (1 :: Int8)))
-            above = fromJust (sizedArray @100001 (replicate 100001 (1 :: Int8)))
+        let largest = fromJust (sizedArrayFromList @100000 (replicate 100000 (1 :: Int8)))
+            above = fromJust (sizedArrayFromList @100001 (replicate 100001 (1 :: Int8)))
         query conn "SELECT typeof(?), len(?)" (largest, largest) >>= (@?= [("TINYINT[100000]" :: Text.Text, 100000 :: Int64)])
         createFunction conn "sized_largest" \(v :: SizedArray 100000 Int8) -> length v
         query conn "SELECT sized_largest(?)" (Only largest) >>= (@?= [Only (100000 :: Int)])
@@ -109,7 +110,7 @@ sizedArrayTests =
         assertInputErrorContaining
           "a DuckDB ARRAY has at most 100000 elements"
           (query conn "SELECT ?" (Only (Overflow Nothing)) :: IO [Only Overflow])
-        let above = Above (Just (fromJust (sizedArray @100001 (replicate 100001 (1 :: Int64)))))
+        let above = Above (Just (fromJust (sizedArrayFromList @100001 (replicate 100001 (1 :: Int64)))))
         assertInputErrorContaining "an ARRAY parameter of 100001 elements is not possible" (query conn "SELECT ?" (Only above) :: IO [Only Above])
         assertInputErrorContaining "a DuckDB ARRAY must have 1 to 100000 elements" $
           createFunction conn "generic_above" \(_ :: Above) -> (1 :: Int64)
@@ -141,7 +142,7 @@ sizedArrayTests =
           let value = FieldArray (listArray (0, count - 1) (map FieldInt64 [1 .. fromIntegral count]))
           query conn "SELECT typeof(?), len(?)" (value, value) >>= (@?= [(Text.pack ("BIGINT[" <> show count <> "]"), count)])
     , testCase "a SizedArray field of a record declares and reads the ARRAY of its size" $ withConnection ":memory:" \conn -> do
-        let row = Sized (fromJust (sizedArray @3 [1, 2, 3]))
+        let row = Sized (fromJust (sizedArrayFromList @3 [1, 2, 3]))
         query conn "SELECT typeof(?), ?" (row, row) >>= (@?= [("STRUCT(sizedValues BIGINT[3])" :: Text.Text, row)])
         createFunction conn "sized_field" \(Sized sized) -> sum sized
         query conn "SELECT typeof(sized_field(?)), sized_field(?)" (row, row) >>= (@?= [("BIGINT" :: Text.Text, 6 :: Int64)])

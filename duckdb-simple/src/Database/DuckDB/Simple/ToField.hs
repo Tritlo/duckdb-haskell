@@ -65,7 +65,7 @@ import Database.DuckDB.Simple.FromField (
   IntervalValue (..),
   SizedArray,
   TimeWithZone (..),
-  sizedArrayToList,
+  sizedArrayToArray,
  )
 import Database.DuckDB.Simple.Geometry (RawGeometry (..))
 import Database.DuckDB.Simple.Internal (
@@ -854,7 +854,7 @@ instance (DuckDBColumnType a, ToField a) => ToField (SizedArray n a) where
       \builder readTarget -> do
         target <- readTarget
         let childTarget = collectionChildType target
-        arrayDuckValue builder childTarget (bindElement builder childTarget) (sizedArrayToList values)
+        arrayDuckValue builder childTarget (bindElement builder childTarget) (elems (sizedArrayToArray values))
 
 -- | Bind a list as a LIST value with the element rules of a 'SizedArray'. An empty
 -- list binds as an empty LIST of the element type. When the element type has
@@ -2138,7 +2138,7 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToDuckValue k, ToDuckValue v) 
 -- element type of @a@. A structured declaration of @a@ is the target of the
 -- elements. See Note [Sized arrays].
 instance (KnownNat n, DuckDBColumnType a, ToDuckValue a) => ToDuckValue (SizedArray n a) where
-  toDuckValue factory = arrayDuckValue (plainBuilder factory) (declaredTarget (Proxy @a)) (toDuckValue factory) . sizedArrayToList
+  toDuckValue factory = arrayDuckValue (plainBuilder factory) (declaredTarget (Proxy @a)) (toDuckValue factory) . elems . sizedArrayToArray
 
 -- | Construct a LIST through the supplied factory with the element type of @a@.
 -- 'String' keeps its own instance. A structured declaration of @a@ is the

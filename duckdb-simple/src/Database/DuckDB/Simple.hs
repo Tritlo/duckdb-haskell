@@ -90,7 +90,8 @@ module Database.DuckDB.Simple (
   duckdbColumnType,
   SizedArray,
   sizedArray,
-  sizedArrayToList,
+  sizedArrayFromList,
+  sizedArrayToArray,
   Null (..),
   Only (..),
   (:.) (..),
@@ -127,7 +128,8 @@ import Database.DuckDB.Simple.FromField (
   ResultError (..),
   SizedArray,
   sizedArray,
-  sizedArrayToList,
+  sizedArrayFromList,
+  sizedArrayToArray,
  )
 import Database.DuckDB.Simple.FromRow (FromRow (..), RowParser, field, fieldWith, numFieldsRemaining, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Function (

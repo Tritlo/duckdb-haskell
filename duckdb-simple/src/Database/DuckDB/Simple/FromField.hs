@@ -39,7 +39,8 @@ module Database.DuckDB.Simple.FromField (
   timeWithZoneZone,
   SizedArray,
   sizedArray,
-  sizedArrayToList,
+  sizedArrayFromList,
+  sizedArrayToArray,
   ResultError (..),
   FieldParser,
   FromField (..),
@@ -48,7 +49,7 @@ module Database.DuckDB.Simple.FromField (
 ) where
 
 import Control.Exception (Exception (..), SomeException (..))
-import Data.Array (Array, assocs)
+import Data.Array (Array, assocs, bounds, elems, listArray, rangeSize)
 import Data.Bits (Bits (..), finiteBitSize)
 import qualified Data.ByteString as BS
 import Data.Data (Typeable, typeRep)
@@ -278,28 +279,41 @@ timeWithZoneZone value = minutesToTimeZone (fromIntegral (timeWithZoneOffsetSeco
 
 type role SizedArray nominal representational
 
--- | A list of exactly @n@ values. A parameter of this type binds as the ARRAY
--- type @T[n]@, and a typed registration declares that type. See
--- Note [Sized arrays] in "Database.DuckDB.Simple.ToField". Make a value with
--- 'sizedArray'.
-newtype SizedArray (n :: Nat) a = SizedArray [a]
+-- | An 'Array' of exactly @n@ values, with the bounds @(0, n - 1)@. A
+-- parameter of this type binds as the ARRAY type @T[n]@, and a typed
+-- registration declares that type. See Note [Sized arrays] in
+-- "Database.DuckDB.Simple.ToField". Make a value with 'sizedArray' or
+-- 'sizedArrayFromList'.
+newtype SizedArray (n :: Nat) a = SizedArray (Array Int a)
   deriving stock (Eq, Ord, Show, Functor, Foldable, Traversable)
 
--- | Make a t'SizedArray' from a list. The result is 'Nothing' when the list
--- does not have exactly @n@ values.
-sizedArray :: forall n a. (KnownNat n) => [a] -> Maybe (SizedArray n a)
+-- | Make a t'SizedArray' from an 'Array' with any bounds. The result is
+-- 'Nothing' when the array does not have exactly @n@ values. The result has
+-- the values in their order, with the bounds @(0, n - 1)@.
+sizedArray :: forall n a. (KnownNat n) => Array Int a -> Maybe (SizedArray n a)
 sizedArray values
-  | hasSize (natVal (Proxy @n)) values = Just (SizedArray values)
+  | toInteger count == natVal (Proxy @n) = Just (SizedArray (listArray (0, count - 1) (elems values)))
   | otherwise = Nothing
   where
+    count = rangeSize (bounds values)
+
+-- | Make a t'SizedArray' from a list. The result is 'Nothing' when the list
+-- does not have exactly @n@ values. The count is checked before the 'Array'
+-- is built, and the check reads at most @n + 1@ elements.
+sizedArrayFromList :: forall n a. (KnownNat n) => [a] -> Maybe (SizedArray n a)
+sizedArrayFromList values
+  | hasSize size values = Just (SizedArray (listArray (0, fromInteger size - 1) values))
+  | otherwise = Nothing
+  where
+    size = natVal (Proxy @n)
     hasSize 0 [] = True
     hasSize 0 (_ : _) = False
     hasSize _ [] = False
     hasSize remaining (_ : rest) = hasSize (remaining - 1) rest
 
--- | Give the values of a t'SizedArray' in their order.
-sizedArrayToList :: SizedArray n a -> [a]
-sizedArrayToList (SizedArray values) = values
+-- | Give the 'Array' of a t'SizedArray', with the bounds @(0, n - 1)@.
+sizedArrayToArray :: SizedArray n a -> Array Int a
+sizedArrayToArray (SizedArray values) = values
 
 -- | Match signed values without narrowing to the machine word size.
 pattern FieldInt :: Int64 -> FieldValue
@@ -946,8 +960,10 @@ instance (KnownNat n, Typeable a, FromField a) => FromField (SizedArray n a) whe
       _ -> returnError Incompatible f ""
     where
       sized elements
-        | toInteger (length elements) == natVal (Proxy @n) = SizedArray <$> traverse fromField (elementFields f elements)
-        | otherwise = returnError Incompatible f (Text.pack ("the value has " <> show (length elements) <> " elements"))
+        | toInteger count == natVal (Proxy @n) = SizedArray . listArray (0, count - 1) <$> traverse fromField (elementFields f elements)
+        | otherwise = returnError Incompatible f (Text.pack ("the value has " <> show count <> " elements"))
+        where
+          count = length elements
 
 -- | Reads MAP. Each key reads as @k@, and each value reads as @v@.
 instance (Ord k, Typeable k, Typeable v, FromField k, FromField v) => FromField (Map k v) where

@@ -46,7 +46,7 @@ import Database.DuckDB.FFI.V2 (
   c_duckdb_v2_vector_set_null,
   c_duckdb_v2_vector_set_size,
  )
-import Database.DuckDB.Simple (Connection, ErrorType (..), Only (..), Query, SQLError (..), SizedArray, query_, sizedArray)
+import Database.DuckDB.Simple (Connection, ErrorType (..), Only (..), Query, SQLError (..), SizedArray, query_, sizedArrayFromList)
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..), ToField)
 import Database.DuckDB.Simple.V2.Registration (checked, output)
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -230,4 +230,4 @@ filteredQueries =
 -- | Make a 'SizedArray' from a list of its length. A list of another length
 -- is a defect of the case.
 sized :: (KnownNat n) => [a] -> SizedArray n a
-sized values = fromMaybe (error ("sized: a list of " <> show (length values) <> " elements")) (sizedArray values)
+sized values = fromMaybe (error ("sized: a list of " <> show (length values) <> " elements")) (sizedArrayFromList values)

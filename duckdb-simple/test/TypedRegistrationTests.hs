@@ -1396,7 +1396,7 @@ testNoDeclaration = withConnection ":memory:" \conn -> do
 testSizedArray :: Assertion
 testSizedArray = withConnection ":memory:" \conn -> do
   let total = sum :: SizedArray 3 Int64 -> Int64
-      triple x = fromJust (sizedArray @3 [x, x, x :: Int64])
+      triple x = fromJust (sizedArrayFromList @3 [x, x, x :: Int64])
   createFunction conn "sized_argument" total
   createFunction conn "sized_newtype" \(Triple values) -> sum values
   createFunction conn "sized_maybe" (maybe (-1) total :: Maybe (SizedArray 3 Int64) -> Int64)

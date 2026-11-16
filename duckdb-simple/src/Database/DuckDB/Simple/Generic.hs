@@ -119,8 +119,8 @@ import Database.DuckDB.Simple.FromField (
   TimeWithZone (..),
   fieldTypeName,
   returnError,
-  sizedArray,
-  sizedArrayToList,
+  sizedArrayFromList,
+  sizedArrayToArray,
  )
 import Database.DuckDB.Simple.Internal (duckDBTypeToName)
 import Database.DuckDB.Simple.LogicalRep (
@@ -360,7 +360,7 @@ instance {-# OVERLAPPABLE #-} (DuckValue a) => DuckValue [a] where
 instance (KnownNat n, DuckValue a) => DuckValue (SizedArray n a) where
   duckToField values = FieldArray (listArray (0, length list - 1) list)
     where
-      list = map duckToField (sizedArrayToList values)
+      list = map duckToField (elems (sizedArrayToArray values))
 
   -- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Element".
   duckLogicalType _ = LogicalTypeArray (duckLogicalType (Proxy @a)) (fromInteger (min (natVal (Proxy @n)) (toInteger (maxBound :: Word64))))
@@ -371,7 +371,7 @@ instance (KnownNat n, DuckValue a) => DuckValue (SizedArray n a) where
     other -> unexpectedTypedValue logical "ARRAY" other
     where
       size = natVal (Proxy @n)
-      sized entries = case sizedArray entries of
+      sized entries = case sizedArrayFromList entries of
         Nothing -> Left (sizeError (length entries))
         Just values -> traverse (duckFromTypedField (listElementType logical)) values
       sizeError count =

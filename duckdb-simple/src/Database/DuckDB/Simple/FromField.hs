@@ -47,7 +47,7 @@ module Database.DuckDB.Simple.FromField (
 ) where
 
 import Control.Exception (Exception (..), SomeException (..))
-import Data.Array (Array, assocs, bounds, listArray, range, (!))
+import Data.Array (Array, assocs)
 import Data.Bits (Bits (..), finiteBitSize)
 import qualified Data.ByteString as BS
 import Data.Data (Typeable, typeRep)
@@ -924,29 +924,6 @@ elementFields f = map element
         }
     -- The elements share one thunk of the element type.
     elementType = listElementType (fieldType f)
-
--- | Reads ARRAY. Each element reads as @a@.
-instance (Typeable a, FromField a) => FromField (Array Int a) where
-  fromField f@Field{fieldValue} =
-    case fieldValue of
-      FieldArray arr -> do
-        converted <- traverse (traverseElement arr) (range (bounds arr))
-        pure (listArray (bounds arr) converted)
-      FieldNull -> returnError UnexpectedNull f ""
-      _ -> returnError Incompatible f ""
-    where
-      traverseElement arr idx =
-        fromField
-          Field
-            { fieldName = fieldNameWithIndex idx
-            , fieldIndex = fieldIndex f
-            , fieldValue = arr ! idx
-            , fieldType = elementType
-            }
-      elementType = listElementType (fieldType f)
-      fieldNameWithIndex idx =
-        let idxText = Text.pack (show idx)
-        in  fieldName f <> Text.pack "[" <> idxText <> Text.pack "]"
 
 -- | Reads ARRAY and LIST, as a list does. A value that does not have exactly
 -- @n@ elements raises 'Incompatible'. See Note [Sized arrays] in

@@ -30,7 +30,7 @@ import Control.Exception (
   try,
   uninterruptibleMask_,
  )
-import Control.Monad (forM_, replicateM, void, when)
+import Control.Monad (forM, forM_, replicateM, void, when)
 import Data.Array (elems, listArray)
 import Data.Bits (shiftR, xor)
 import qualified Data.ByteString as BS
@@ -52,9 +52,13 @@ import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI.V2 (
   DuckDBV2LogicalTypeHandle,
+  c_duckdb_v2_factory_create_common_type,
   c_duckdb_v2_factory_create_type_from_text,
   c_duckdb_v2_logical_type_is_equal,
   c_duckdb_v2_logical_type_to_text,
+  c_duckdb_v2_value_create_null,
+  c_duckdb_v2_vector_set_size,
+  c_duckdb_v2_vector_set_value,
  )
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Catalog as Catalog
@@ -73,7 +77,7 @@ import Database.DuckDB.Simple.FromField (
   timeWithZoneZone,
  )
 import Database.DuckDB.Simple.Generic (DuckValue (..), ViaDuckDB (..), genericFromFieldValue, genericToStructValue, typedFromField)
-import Database.DuckDB.Simple.Internal (destroyValue, withConnectionFactory, withConnectionHandle)
+import Database.DuckDB.Simple.Internal (destroyValue, withConnectionFactory, withConnectionHandle, withOwnedVector)
 import Database.DuckDB.Simple.LogicalRep
 import Database.DuckDB.Simple.Ok (Ok (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
@@ -81,7 +85,9 @@ import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToBaseRep, logicalTypeToRep)
 import qualified Database.DuckDB.Simple.V2.Registration as R
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
+import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (castPtr, nullPtr)
 import Foreign.Storable (peek)
 import GHC.Float (castDoubleToWord64, castFloatToWord32)
@@ -164,6 +170,24 @@ instance ToDuckValue Scores where
   toDuckValue factory (Scores values) = toDuckValue factory values
 
 instance ToField Scores
+
+-- | Bind declared child types without adapting them to a parameter target.
+data UnadaptedStruct
+  = UnadaptedStruct (StructValue FieldValue)
+  | TypedStructNull LogicalTypeRep
+  deriving (Show)
+
+instance DuckDBColumnType UnadaptedStruct where
+  duckdbColumnTypeFor _ = "STRUCT"
+  duckdbTypeDeclaration _ = Left "the fields depend on the value"
+
+instance ToDuckValue UnadaptedStruct where
+  toDuckValue factory (UnadaptedStruct value) = toDuckValue factory value
+  toDuckValue factory (TypedStructNull rep) =
+    bracket (logicalTypeFromRep factory rep) destroyLogicalType \logical ->
+      R.output (c_duckdb_v2_value_create_null factory logical)
+
+instance ToField UnadaptedStruct
 
 -- | Record with identical field types to detect positional decoding.
 data NamedRecord = NamedRecord {firstValue :: Int64, secondValue :: Int64}
@@ -560,6 +584,144 @@ valueRegressionTests =
           Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorQueryNotImplemented
           Right count -> assertFailure ("expected the error of DuckDB, stored " <> show count)
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "collection inference keeps aliases and collations as native common types do" $ withConnection ":memory:" \conn -> do
+        let check :: (ToField a) => String -> a -> Text -> Assertion
+            check label value literal =
+              (query conn (Query ("SELECT ?, " <> literal)) (Only value) :: IO [(FieldValue, FieldValue)]) >>= \case
+                [(actual, expected)] -> assertEqual label expected actual
+                rows -> assertFailure (show rows)
+        forM_
+          [ ("{'k': '{\"n\":1}'::VARCHAR}", "{'k': '{\"n\":2}'::JSON}", True)
+          , ("{'k': 'A'::VARCHAR}", "{'k': 'B' COLLATE nocase}", False)
+          ]
+          \(plainSql, annotatedSql, compareSQL) -> do
+            [Only plain] <- query_ conn (Query ("SELECT " <> plainSql)) :: IO [Only (StructValue FieldValue)]
+            [Only annotated] <- query_ conn (Query ("SELECT " <> annotatedSql)) :: IO [Only (StructValue FieldValue)]
+            forM_ [(plain, annotated, plainSql, annotatedSql), (annotated, plain, annotatedSql, plainSql)] \(first, second, firstSql, secondSql) -> do
+              let items = firstSql <> ", " <> secondSql
+                  array = FieldArray (listArray (0, 1) [FieldStruct first, FieldStruct second])
+                  mapping = Map.fromList [("a" :: Text, first), ("b", second)]
+              when compareSQL do
+                check "LIST" [first, second] ("[" <> items <> "]")
+                check "ARRAY" array ("array_value(" <> items <> ")")
+                check "MAP" mapping ("map(['a', 'b'], [" <> items <> "])")
+              -- SQL expression binding can discard collations before common
+              -- type inference. Compare the preserved input types directly.
+              common <- withConnectionHandle conn \native -> withConnectionFactory native \factory ->
+                bracket (logicalTypeFromRep factory (structValueTypeRep first)) destroyLogicalType \left ->
+                  bracket (logicalTypeFromRep factory (structValueTypeRep second)) destroyLogicalType \right ->
+                    withArray [left, right] \types ->
+                      bracket (R.output (c_duckdb_v2_factory_create_common_type factory (ConstPtr types) 2)) destroyLogicalType (logicalTypeToRep factory)
+              let checkType :: (ToField a) => a -> LogicalTypeRep -> Assertion
+                  checkType value expected =
+                    (query conn "SELECT ?" (Only value) :: IO [Only FieldTypeOf]) >>= (@?= [Only (FieldTypeOf expected)])
+              checkType [first, second] (LogicalTypeList common)
+              checkType array (LogicalTypeArray common 2)
+              checkType mapping (LogicalTypeMap (LogicalTypeScalar LogicalTypeIdVarchar) common)
+    , testCase "collection inference keeps typed NULL aliases and collations" $ withConnection ":memory:" \conn -> do
+        let varchar = LogicalTypeScalar LogicalTypeIdVarchar
+            plain = singleField varchar (FieldText "{}")
+            plainRep = structValueTypeRep plain
+            check :: (ToField a) => a -> LogicalTypeRep -> Assertion
+            check value expected =
+              (query conn "SELECT ?" (Only value) :: IO [Only FieldTypeOf]) >>= (@?= [Only (FieldTypeOf expected)])
+        cases <- withConnectionHandle conn \native -> withConnectionFactory native \factory ->
+          bracket (logicalTypeFromRep factory plainRep) destroyLogicalType \left ->
+            fmap concat $ forM
+              [ structValueTypeRep (singleField (LogicalTypeAlias "JSON" varchar) FieldNull)
+              , structValueTypeRep (singleField (LogicalTypeCollatedVarchar "nocase") FieldNull)
+              , LogicalTypeAlias "STRUCT" plainRep
+              ]
+              \rep -> bracket (logicalTypeFromRep factory rep) destroyLogicalType \right ->
+                forM
+                  [ ([UnadaptedStruct plain, TypedStructNull rep], [left, right])
+                  , ([TypedStructNull rep, UnadaptedStruct plain], [right, left])
+                  , ([TypedStructNull plainRep, TypedStructNull rep], [left, right])
+                  , ([TypedStructNull rep, TypedStructNull plainRep], [right, left])
+                  , ([TypedStructNull rep], [right])
+                  ]
+                  \(items, types) -> do
+                    common <- withArray types \nativeTypes ->
+                      bracket
+                        (R.output (c_duckdb_v2_factory_create_common_type factory (ConstPtr nativeTypes) (fromIntegral (length types))))
+                        destroyLogicalType
+                        (logicalTypeToRep factory)
+                    pure (items, common)
+        forM_ cases \(items, common) -> do
+          check items (LogicalTypeList common)
+          if length items == 2
+            then check (sized items :: SizedArray 2 UnadaptedStruct) (LogicalTypeArray common 2)
+            else check (sized items :: SizedArray 1 UnadaptedStruct) (LogicalTypeArray common 1)
+          check (Map.fromList (zip ["a" :: Text, "b"] items)) (LogicalTypeMap varchar common)
+        -- SQLNULL can itself have its canonical name as an alias. It must not
+        -- be discarded with an ordinary untyped NULL.
+        let canonicalNull = LogicalTypeAlias "NULL" (LogicalTypeScalar LogicalTypeIdSQLNull)
+        check [Just (TypedStructNull canonicalNull), Nothing] (LogicalTypeList canonicalNull)
+    , testCase "collection inference keeps canonical aliases in both element orders" $ withConnection ":memory:" \conn -> do
+        let integer = LogicalTypeScalar LogicalTypeIdInteger
+            canonical = LogicalTypeAlias "INTEGER" integer
+            plain = singleField integer (FieldInt32 7)
+            annotated = singleField canonical (FieldInt32 7)
+            element = structValueTypeRep annotated
+            check :: (ToField a) => a -> LogicalTypeRep -> Assertion
+            check value expected = do
+              [Only actual] <- query conn "SELECT ?" (Only value) :: IO [Only FieldTypeOf]
+              actual @?= FieldTypeOf expected
+        forM_ [[plain, annotated], [annotated, plain]] \items -> do
+          check items (LogicalTypeList element)
+          check (FieldArray (listArray (0, 1) (map FieldStruct items))) (LogicalTypeArray element 2)
+          check (Map.fromList (zip ["a" :: Text, "b"] items)) (LogicalTypeMap (LogicalTypeScalar LogicalTypeIdVarchar) element)
+    , testCase "mixed temporal inference preserves aliases on unchanged nested leaves" $ withConnection ":memory:" \conn -> do
+        let varchar = LogicalTypeScalar LogicalTypeIdVarchar
+            json = LogicalTypeAlias "JSON" varchar
+            time = LogicalTypeScalar LogicalTypeIdTime
+            nanos = LogicalTypeScalar LogicalTypeIdTimeNs
+            structure textType timeType value =
+              structOf [("k", FieldText "{}", textType), ("t", FieldTime value, timeType)]
+            coarse textType = structure textType time (TimeOfDay 3 4 5)
+            precise textType = structure textType nanos (TimeOfDay 3 4 5.123456789)
+            aliasedCoarse = structure json (LogicalTypeAlias "TIME" time) (TimeOfDay 3 4 5)
+            target = "STRUCT(k JSON, t TIME_NS)[]"
+            check items =
+              (query conn (Query ("SELECT ?::" <> target)) (Only (map UnadaptedStruct items)) :: IO [Only [StructValue FieldValue]])
+        forM_
+          [ ([coarse json, precise json], [structure json nanos (TimeOfDay 3 4 5), precise json])
+          , ([precise json, coarse json], [precise json, structure json nanos (TimeOfDay 3 4 5)])
+          ]
+          \(items, expected) -> check items >>= (@?= [Only expected])
+        -- The default native cast cannot put TIME into a TIME alias. This
+        -- input fails before collection inference. Keep the native limitation
+        -- separate from the supported temporal promotion above.
+        nativeAlias <- try $ withConnectionHandle conn \native -> withConnectionFactory native \factory ->
+          bracket (logicalTypeFromRep factory (LogicalTypeAlias "TIME" time)) destroyLogicalType \logical ->
+            withOwnedVector factory logical \vector -> do
+              R.checked (c_duckdb_v2_vector_set_size vector 1)
+              bracket (toDuckValue factory (TimeOfDay 3 4 5)) destroyValue \value ->
+                R.checked (c_duckdb_v2_vector_set_value vector 0 value)
+        let rejectsAlias :: Either SQLError a -> Assertion
+            rejectsAlias result = case result of
+              Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+                sqlErrorType @?= Just ErrorInputInvalid
+                assertBool (Text.unpack sqlErrorMessage) ("Unimplemented type for cast (TIME -> TIME)" `Text.isInfixOf` sqlErrorMessage)
+              Right _ -> assertFailure "expected the native TIME alias cast limit"
+        rejectsAlias nativeAlias
+        forM_ [[aliasedCoarse, precise json], [precise json, aliasedCoarse]] \items ->
+          try (check items) >>= rejectsAlias
+        let plainSql = "{'k': '{}'::VARCHAR, 't': TIME '03:04:05'}"
+            annotatedSql = "{'k': '{}'::JSON, 't': '03:04:05.123456789'::TIME_NS}"
+        forM_
+          [ ([coarse varchar, precise json], plainSql <> ", " <> annotatedSql)
+          , ([precise json, coarse varchar], annotatedSql <> ", " <> plainSql)
+          ]
+          \(items, sqls) -> do
+            native <- try (query_ conn (Query ("SELECT array_value(" <> sqls <> ")")) :: IO [Only FieldValue])
+            bound <- try (check items)
+            let rejected label result = case result of
+                  Left SQLError{sqlErrorMessage} ->
+                    assertBool (label <> ": " <> Text.unpack sqlErrorMessage) ("Cannot combine types" `Text.isInfixOf` sqlErrorMessage)
+                  Right _ -> assertFailure (label <> ": expected the native common-type error")
+            rejected "native SQL" native
+            rejected "bound list" bound
     , testCase "a LIST parameter fails at an element of the wrong type after earlier elements" $ withConnection ":memory:" \conn -> do
         let struct =
               singleField (LogicalTypeList (LogicalTypeScalar LogicalTypeIdBigInt)) (FieldList [FieldInt64 1, FieldInt64 2, FieldText "x", FieldInt64 4])

@@ -94,7 +94,7 @@ import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Database.DuckDB.Simple.TypeCache (cachedLogicalType, typeCacheConnection)
 import Database.DuckDB.Simple.Types (Null (..))
-import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep, logicalTypeToBaseRep)
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep, logicalTypeToBaseRep, logicalTypeToRep)
 import Database.DuckDB.Simple.Variant (Variant (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CDouble (..), CFloat (..))
@@ -1398,15 +1398,24 @@ constructor:
   element for a nanosecond target (see Note [Nanosecond parameters]). For each
   other target, a list of Integer, Natural, or BigNum elements that is not
   empty takes the type that its elements give, as the elements below do.
-- Each other element, for example a STRUCT, a TUPLE, a UNION, a generic record,
-  a list, an array, or a FieldValue, has no type name. withValueType gives its
-  type. When each element that is not NULL has the type of the first one, that
-  type is the element type.
+- An element type with no recognized scalar type name uses withValueType to
+  infer its type from values. Examples are a STRUCT, a TUPLE, a UNION, a generic
+  record, a list, an array, and a FieldValue. A complete structured declaration
+  supplies the type only when no value contributes a type, as described below.
+  A typed NULL contributes its type, including aliases and collations.
+  Only a NULL of the unaliased SQLNULL type has no type to contribute. The
+  filter compares each NULL type with one temporary unaliased SQLNULL type.
+  Native equality distinguishes aliases, including the alias "NULL". When
+  each remaining element has the type of the first one, that type is the
+  element type. The check uses native equality to keep aliases,
+  and base type trees to distinguish collations that native equality ignores.
 - When the types are different, but timestampTypeForTarget gives each of them
   the same nanosecond type for the target, that type is the element type. For
   example, a FieldTime with digits below a microsecond binds as a TIME_NS for a
   TIME_NS[] parameter, and one with no such digits binds as a TIME. DuckDB has
   no common type for TIME and TIME_NS, or for TIMESTAMPTZ and TIMESTAMPTZ_NS.
+  This check reads full type trees only when a promotion changes a base type.
+  The promoted trees must also agree on aliases on unchanged leaves.
 - When these types are different, the library names no element type. The
   native constructor then gives the type of a SQL list literal of the elements
   (duckdb_v2.h: "The child type is the common type of the elements, resolved by
@@ -1422,17 +1431,17 @@ constructor:
 - The target does not change the type of these elements. In SQL, DuckDB also
   gives the list literal its type before it casts the list to the type of a
   column.
-- A list with no element or only NULL elements of this kind takes the element
-  type of the target, when the parameter has a known type. DuckDB casts the
-  list literal [] or [NULL, NULL] to the type of a column in the same way.
+- A list with no element or only untyped NULL elements of this kind takes the
+  element type of the target, when the parameter has a known type. DuckDB casts
+  the list literal [] or [NULL, NULL] to the type of a column in the same way.
 - For a parameter with no known type, the element type of a list with no
-  element or only NULL elements is the structured declaration of the element
-  type, when it has one, for example a record through ViaDuckDB (see
+  element or only untyped NULL elements is the structured declaration of the
+  element type, when it has one, for example a record through ViaDuckDB (see
   Note [Type declarations]). The two rules below apply to each other element
   type.
-- For a parameter with no known type, a list with only NULL elements names no
-  element type. The native constructor then gives the type of the SQL list
-  literal: "NULL"[] for a LIST, "NULL"[2] for an ARRAY of two NULL elements,
+- For a parameter with no known type, a list with only untyped NULL elements
+  names no element type. The native constructor then gives the type of the SQL
+  list literal: "NULL"[] for a LIST, "NULL"[2] for an ARRAY of two NULL elements,
   and MAP(VARCHAR, "NULL") for a MAP of VARCHAR keys and NULL values.
 - For a parameter with no known type, an empty list or map of this kind gets
   the element type NULL. The SQL literals [] and MAP {} have the types
@@ -1498,27 +1507,61 @@ checkNanosecondElements declared values = case declared of
 -- | Give the element type that the values give to the action. The target is
 -- the element type of the parameter. See Note [Element types of a list].
 withValueType :: ValueBuilder -> Maybe LogicalTypeRep -> [DuckDBV2ValueHandle] -> (DuckDBV2LogicalTypeHandle -> IO b) -> IO b
-withValueType ValueBuilder{builderType = makeType} target values action = do
-  -- Keep the values that are not NULL, in list order. The fold keeps a
+withValueType ValueBuilder{builderFactory = factory, builderType = makeType} target values action = do
+  -- Keep each value except an untyped NULL, in list order. The fold keeps a
   -- constant stack. See Note [Constant stack at safe calls] in
   -- "Database.DuckDB.Simple.Native".
-  let keep kept value = output (c_duckdb_v2_value_is_null value) >>= \flag -> if flag == 0 then pure (value : kept) else pure kept
-  present <- reverse <$> foldM keep [] values
+  let keep plainNull kept value =
+        output (c_duckdb_v2_value_is_null value) >>= \flag ->
+          if flag == 0
+            then pure (value : kept)
+            else do
+              untyped <-
+                bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \logical ->
+                  (/= 0) <$> output (c_duckdb_v2_logical_type_is_equal logical plainNull)
+              pure (if untyped then kept else value : kept)
+  present <-
+    bracket (makeType (LogicalTypeScalar LogicalTypeIdSQLNull)) destroyLogicalType \plainNull ->
+      reverse <$> foldM (keep plainNull) [] values
   case present of
     value : rest -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \logical -> do
       -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
       expected <- logicalTypeToBaseRep logical
       let promoted = timestampTypeForTarget target expected
-          sameTypes (same, samePromoted) element = do
-            actual <- bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType logicalTypeToBaseRep
-            let same' = same && actual == expected
-                samePromoted' = samePromoted && timestampTypeForTarget target actual == promoted
-            same' `seq` samePromoted' `seq` pure (same', samePromoted')
-      (same, samePromoted) <- foldM sameTypes (True, True) rest
-      case (same, samePromoted) of
-        (True, _) -> action logical
-        (False, True) -> bracket (makeType promoted) destroyLogicalType action
-        (False, False) -> action nullHandle
+          sameTypes (same, samePromoted, changed) element =
+            bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType \elementType -> do
+              actual <- logicalTypeToBaseRep elementType
+              sameNative <-
+                if same && actual == expected
+                  then (/= 0) <$> output (c_duckdb_v2_logical_type_is_equal logical elementType)
+                  else pure False
+              let actualPromoted = timestampTypeForTarget target actual
+                  samePromoted' = samePromoted && actualPromoted == promoted
+                  changed' = changed || actualPromoted /= actual
+              sameNative `seq` samePromoted' `seq` changed' `seq` pure (sameNative, samePromoted', changed')
+          promotedType native = timestampTypeForTarget target <$> logicalTypeToRep factory native
+      (same, samePromoted, changed) <- foldM sameTypes (True, True, promoted /= expected) rest
+      case (same, samePromoted, changed) of
+        (True, _, _) -> action logical
+        (False, True, True) -> do
+          -- Preserve aliases on leaves that the promotion does not change.
+          -- See Note [Element types of a list].
+          fullPromoted <- promotedType logical
+          sameFull <-
+            foldM
+              ( \matches element ->
+                  if matches
+                    then
+                      bracket
+                        (output (c_duckdb_v2_value_get_logical_type element))
+                        destroyLogicalType
+                        (fmap (== fullPromoted) . promotedType)
+                    else pure False
+              )
+              True
+              rest
+          if sameFull then bracket (makeType fullPromoted) destroyLogicalType action else action nullHandle
+        _ -> action nullHandle
     -- See Note [Element types of a list].
     [] -> case target of
       Just rep -> bracket (makeType rep) destroyLogicalType action

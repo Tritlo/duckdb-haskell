@@ -39,8 +39,8 @@ logicalTypeToRep :: DuckDBV2FactoryHandle -> DuckDBV2LogicalTypeHandle -> IO Log
 logicalTypeToRep factory = convertLogicalType (Just factory)
 
 -- | Copy a native logical type into a Haskell type tree with no alias, at each
--- depth. The function reads no type name, so it is the conversion for the
--- readers and the binding. See Note [Type aliases] in
+-- depth. Use it when decoding or binding needs only base types. The function
+-- reads no type name. See Note [Type aliases] in
 -- "Database.DuckDB.Simple.LogicalRep". The function does not destroy the
 -- handle.
 logicalTypeToBaseRep :: DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep

@@ -57,9 +57,9 @@ data LogicalTypeRep
 
 {- Note [Type aliases]
 ~~~~~~~~~~~~~~~~~~~~~~
-DuckDB can keep an alias on a type. The type then has the values and the casts
-of its base type, and the type text of DuckDB gives the alias. In DuckDB 2.0.0
-these types have an alias:
+DuckDB can keep an alias on a type. The alias uses the value representation of
+its base type, and the type text of DuckDB gives the alias. In DuckDB 2.0.0 these
+types have an alias:
 
 - JSON. It is VARCHAR with the alias JSON, also as a child type, for example
   the element type of JSON[].
@@ -87,16 +87,23 @@ code. The temporary type is destroyed before the function returns.
 logicalTypeFromRep writes the alias with
 duckdb_v2_factory_create_type_with_alias.
 
-The base type decides each conversion of the library. Thus the binding of
-parameters, and the readers of a DECIMAL and a GEOMETRY, use
-logicalTypeToBaseRep. It reads no type name, so these paths make no native call
-for an alias. These places keep the alias:
+The base type decides value conversion and vector layout. These operations use
+logicalTypeToBaseRep, which reads no type name. Collection binding also compares
+native type identity to keep aliases during element type inference. A temporal
+promotion reads full type trees to keep aliases on unchanged leaves. See
+Note [Element types of a list] in "Database.DuckDB.Simple.ToField".
+These places keep the alias:
 
 - A 'Database.DuckDB.Simple.Catalog.ColumnDescription'.
 - The type fields of a STRUCT, TUPLE, or UNION value that a reader gives. The
   reader of a vector takes its tree from logicalTypeToRep, and it decides with
-  aliasBase. Thus a value that the library reads and binds again keeps its
-  type, for example STRUCT(k JSON).
+  aliasBase. A value that the library reads and binds again keeps its type when
+  the native default cast supports its aliases, for example STRUCT(k JSON).
+
+Alias metadata does not imply native cast support. DuckDB 2.0.0 cannot cast a
+TIME value to an alias of TIME through the default cast. Binding such a value
+in a composite raises the native SQLError. LogicalTypeRep stores the alias
+name and public type parameters. It does not store other C++ extension metadata.
 
 Use withoutAliases to compare base types.
 -}

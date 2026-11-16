@@ -60,13 +60,14 @@ import qualified Data.Map.Strict as Map
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Time.Calendar (Day)
-import Data.Time.Clock (UTCTime (..))
+import Data.Time.Calendar (Day, addDays, diffDays, fromGregorian)
+import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
 import Data.Time.LocalTime (
   LocalTime (..),
   TimeOfDay (..),
   TimeZone,
   minutesToTimeZone,
+  timeOfDayToTime,
   timeZoneMinutes,
  )
 import qualified Data.UUID as UUID
@@ -498,9 +499,9 @@ nothing until the error renders. These pairs are:
   VARIANT, or keys out of ascending order), a FieldEnum, a FieldMap, a
   FieldUnion, or a GEOMETRY with a CRS, at any depth. The cast to VARIANT gives
   another value. Write c::VARIANT. A VARIANT column decodes only to values of
-  the VARIANT shape. FromField does not know the SQL type of a column, so the
-  one known difference stays: a JSON column reads as its text, as a VARCHAR
-  column does, where c::VARIANT gives the parsed value. The bind side
+  the VARIANT shape. A JSON type at any depth raises Incompatible, because
+  DuckDB parses its text when it casts to VARIANT. Write c::VARIANT for the
+  parsed value. The bind side
   (variantPayloadType in "Database.DuckDB.Simple.ToField") accepts more: it
   binds a FieldArray and a FieldTuple as a VARIANT list, and the fields of each
   FieldStruct as VARIANT values.
@@ -1004,31 +1005,90 @@ instance FromField DecimalValue where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+{- Note [Temporal casts]
+~~~~~~~~~~~~~~~~~~~~~
+DuckDB converts TIMESTAMP_S, TIMESTAMP_MS, and TIMESTAMP_NS to microseconds
+before a cast to DATE. The S/MS conversion can overflow even when the date
+fits DATE. The NS conversion rounds to the nearest microsecond, with ties away
+from the epoch. Both Day readers use this intermediate. A DATE-to-timestamp
+cast checks midnight in the same microsecond range. Both LocalTime readers
+check this range for a DATE input. For a timestamp input, they keep the wider
+range and the nanoseconds. Unbounded readers also keep infinity.
+
+A TIMESTAMP_S or TIMESTAMP_MS cast to TIME checks the same microsecond range.
+The TimeOfDay reader checks this range for a timestamp input. It reads
+TIMESTAMP_NS at nanosecond precision, as a cast to TIME_NS.
+-}
+
+-- | Get the checked microsecond intermediate of a temporal cast.
+-- Round to the nearest microsecond, with ties away from the epoch. See
+-- Note [Temporal casts].
+localTimeMicros :: LocalTime -> Maybe Integer
+localTimeMicros LocalTime{localDay, localTimeOfDay} =
+  let epoch = fromGregorian 1970 1 1
+      picoseconds =
+        diffDays localDay epoch * 86400000000000000
+          + diffTimeToPicoseconds (timeOfDayToTime localTimeOfDay)
+      micros
+        | picoseconds < 0 = negate ((negate picoseconds + 500000) `div` 1000000)
+        | otherwise = (picoseconds + 500000) `div` 1000000
+  in  if micros < toInteger (minBound :: Int64) || micros > toInteger (maxBound :: Int64)
+        then Nothing
+        else Just micros
+
+-- | Convert a timestamp as the native cast to DATE does. See
+-- Note [Temporal casts].
+timestampDate :: LocalTimestamp -> Maybe Date
+timestampDate (Finite timestamp) = do
+  micros <- localTimeMicros timestamp
+  pure (Finite (addDays (micros `div` 86400000000) (fromGregorian 1970 1 1)))
+timestampDate NegInfinity = Just NegInfinity
+timestampDate PosInfinity = Just PosInfinity
+
+-- | Convert a date to midnight in the TIMESTAMP range. See
+-- Note [Temporal casts].
+dateTimestamp :: Date -> Maybe LocalTimestamp
+dateTimestamp (Finite day) =
+  let timestamp = LocalTime day (TimeOfDay 0 0 0)
+  in  Finite timestamp <$ localTimeMicros timestamp
+dateTimestamp NegInfinity = Just NegInfinity
+dateTimestamp PosInfinity = Just PosInfinity
+
 -- | Reads DATE, and the date of TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, and
--- TIMESTAMP_NS. Infinity fails with 'ConversionFailed'.
+-- TIMESTAMP_NS. Infinity and a timestamp outside the range of a DATE cast fail
+-- with 'ConversionFailed'. See Note [Temporal casts].
 instance FromField Day where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldDate day -> finiteField f day
-      FieldTimestamp timestamp -> finiteField f (localDay <$> timestamp)
+      FieldTimestamp timestamp -> case timestampDate timestamp of
+        Just day -> finiteField f day
+        Nothing -> returnError ConversionFailed f "timestamp is outside the range of a DATE cast"
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads the SQL types that 'Day' reads, also infinity.
+-- | Reads the SQL types that 'Day' reads, also infinity. See
+-- Note [Temporal casts].
 instance FromField (Unbounded Day) where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldDate day -> Ok day
-      FieldTimestamp timestamp -> Ok (localDay <$> timestamp)
+      FieldTimestamp timestamp -> case timestampDate timestamp of
+        Just day -> Ok day
+        Nothing -> returnError ConversionFailed f "timestamp is outside the range of a DATE cast"
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
 -- | Reads TIME, TIME_NS, and the time of TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS,
--- and TIMESTAMP_NS. An infinite TIMESTAMP fails with 'ConversionFailed'.
+-- and TIMESTAMP_NS. Infinity and a timestamp outside the range of a TIME cast
+-- fail with 'ConversionFailed'. See Note [Temporal casts].
 instance FromField TimeOfDay where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldTime tod -> Ok tod
+      FieldTimestamp (Finite timestamp)
+        | Nothing <- localTimeMicros timestamp ->
+            returnError ConversionFailed f "timestamp is outside the range of a TIME cast"
       FieldTimestamp timestamp -> finiteField f (localTimeOfDay <$> timestamp)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
@@ -1042,28 +1102,30 @@ instance FromField TimeWithZone where
       _ -> returnError Incompatible f ""
 
 -- | Reads TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP_NS, and DATE at
--- midnight. It does not read TIMESTAMPTZ. Infinity fails with
--- 'ConversionFailed'. See Note [Reads of another SQL type].
+-- midnight. It does not read TIMESTAMPTZ. Infinity and a DATE outside the
+-- TIMESTAMP range fail with 'ConversionFailed'. See Note [Temporal casts]
+-- and Note [Reads of another SQL type].
 instance FromField LocalTime where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldTimestamp ts -> finiteField f ts
-      FieldDate day -> finiteField f ((\value -> LocalTime value midnight) <$> day)
+      FieldDate day -> case dateTimestamp day of
+        Just timestamp -> finiteField f timestamp
+        Nothing -> returnError ConversionFailed f "date is outside the TIMESTAMP range"
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
-    where
-      midnight = TimeOfDay 0 0 0
 
--- | Reads the SQL types that t'LocalTime' reads, also infinity.
+-- | Reads the SQL types that t'LocalTime' reads, also infinity. See
+-- Note [Temporal casts].
 instance FromField (Unbounded LocalTime) where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldTimestamp ts -> Ok ts
-      FieldDate day -> Ok ((\value -> LocalTime value midnight) <$> day)
+      FieldDate day -> case dateTimestamp day of
+        Just timestamp -> Ok timestamp
+        Nothing -> returnError ConversionFailed f "date is outside the TIMESTAMP range"
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
-    where
-      midnight = TimeOfDay 0 0 0
 
 -- | Reads INTERVAL.
 instance FromField IntervalValue where

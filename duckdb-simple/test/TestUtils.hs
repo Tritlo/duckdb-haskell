@@ -22,7 +22,7 @@ module TestUtils (
   writeNullRows,
 ) where
 
-import Control.Concurrent (getNumCapabilities, setNumCapabilities)
+import Control.Concurrent (MVar, getNumCapabilities, newMVar, setNumCapabilities, withMVar)
 import Control.Exception (SomeException, try)
 import Control.Monad (forM_, void, when)
 import Data.IORef (IORef, mkWeakIORef, newIORef)
@@ -55,6 +55,7 @@ import Foreign.C.Types (CChar)
 import Foreign.Ptr (castPtr)
 import Foreign.Storable (pokeElemOff)
 import GHC.TypeLits (KnownNat)
+import System.IO.Unsafe (unsafePerformIO)
 import System.Mem (performMajorGC)
 import System.Mem.Weak (deRefWeak)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, (@?=))
@@ -72,12 +73,23 @@ as disabled capabilities. A callback from a foreign thread, for example from
 a DuckDB worker thread, can then run on a disabled capability. A garbage
 collection can then lose the wake-up of that callback. The callback then
 waits for ever, and the test run does not end.
+
+The capability count is shared by all cases in the process. capabilityLock
+serializes the read and change in raiseCapabilities. Without this lock, two
+cases can read the same count, then set a larger count followed by a smaller
+count.
 -}
+
+-- | Serialize capability changes in this process. See
+-- Note [Capabilities of the tests].
+capabilityLock :: MVar ()
+capabilityLock = unsafePerformIO (newMVar ())
+{-# NOINLINE capabilityLock #-}
 
 -- | Raise the capability count of the GHC runtime to the given count. Do not
 -- lower it. See Note [Capabilities of the tests].
 raiseCapabilities :: Int -> IO ()
-raiseCapabilities wanted = do
+raiseCapabilities wanted = withMVar capabilityLock $ \_ -> do
   current <- getNumCapabilities
   when (wanted > current) (setNumCapabilities wanted)
 

@@ -32,6 +32,7 @@ import Database.DuckDB.Simple.LogicalRep (
   UnionValue (..),
  )
 import Database.DuckDB.Simple.Ok (Ok (..))
+import qualified Database.DuckDB.Simple.Registration as R
 import Database.DuckDB.Simple.Time
 import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Generics (Generic)
@@ -362,6 +363,23 @@ nanosecondTimeTests =
       stored "STRUCT(v TIMESTAMP)" localStruct >>= (@?= [Only "{'v': '2026-01-02 03:04:05.123456'}"])
       stored "STRUCT(v TIME_NS)" timeStruct >>= (@?= [Only "{'v': '03:04:05.123456999'}"])
       stored "STRUCT(v TIME)" timeStruct >>= (@?= [Only "{'v': '03:04:05.123456'}"])
+      let timestamp = LogicalTypeScalar LogicalTypeIdTimestamp
+          list = LogicalTypeList timestamp
+          record = LogicalTypeStruct (listArray (0, 0) [StructField "v" timestamp])
+          listValue = FieldList [FieldTimestamp (Finite precise)]
+          recordValue = FieldStruct localStruct
+      forM_
+        [ ("time_list", list, listValue, "STRUCT(v TIMESTAMP_NS[])", "{'v': ['2026-01-02 03:04:05.123456999']}")
+        , ("time_record", record, recordValue, "STRUCT(v STRUCT(v TIMESTAMP_NS))", "{'v': {'v': '2026-01-02 03:04:05.123456999'}}")
+        ]
+        $ \(name, base, value, target, expected) -> do
+          R.registerCustomType conn name (R.StructuredType base)
+          let aliased = struct value (LogicalTypeAlias name base)
+          (query conn "SELECT typeof((?).v)" (Only aliased) :: IO [Only Text.Text]) >>= (@?= [Only name])
+          stored target aliased >>= (@?= [Only expected])
+      let nested = struct (FieldList [recordValue]) (LogicalTypeList (LogicalTypeAlias "time_record" record))
+      stored "STRUCT(v STRUCT(v TIMESTAMP_NS)[])" nested
+        >>= (@?= [Only "{'v': [{'v': '2026-01-02 03:04:05.123456999'}]}"])
   , testCase "a FieldMap gives its key target to its keys and its value target to its values" $ withConnection ":memory:" $ \conn -> do
       _ <- execute_ conn "CREATE TABLE stored (v MAP(VARCHAR, TIME_NS))"
       _ <-

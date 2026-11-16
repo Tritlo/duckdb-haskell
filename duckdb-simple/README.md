@@ -945,9 +945,9 @@ parameters. Its comparisons use that collation after a round trip.
 Temporal fields retain their SQL units when composite values are rebound.
 The `FieldDate`, `FieldTimestamp`, and `FieldTimestampTZ` constructors hold
 `Unbounded` values. Wrap finite payloads in `Finite` when constructing them.
-For TIMESTAMP_S or TIMESTAMP_MS values outside the TIMESTAMP range, use an
-explicit parameter cast, such as `SELECT ?::STRUCT(value TIMESTAMP_S)`.
-DuckDB otherwise attempts to convert these parameters to microseconds.
+TIMESTAMP_S and TIMESTAMP_MS fields use the finite range described in
+[Infinite dates and timestamps](#infinite-dates-and-timestamps). An explicit
+parameter cast does not extend that range.
 
 For more control, you can work directly with `StructValue` and `UnionValue`
 from `Database.DuckDB.Simple.LogicalRep`:

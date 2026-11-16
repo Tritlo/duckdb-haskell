@@ -885,7 +885,7 @@ getCallbackState getter = do
 --
 -- > R.withTypeDeclaration factory bigint $ R.checked . c_duckdb_v2_cast_function_set_source_type function
 withTypeDeclaration :: DuckDBV2FactoryHandle -> TypeDeclaration -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
-withTypeDeclaration factory declaration = bracket acquire (destroy c_duckdb_v2_logical_type_destroy)
+withTypeDeclaration factory declaration = bracket acquire destroyLogicalType
   where
     acquire = case declaration of
       StructuredType rep -> logicalTypeFromRep factory rep
@@ -905,7 +905,7 @@ configureFunctionSignature factory FunctionSignature{signatureParameters, signat
       withTypeDeclaration factory parameterType $ \dtype ->
         case parameterDefault of
           Nothing -> checked (c_duckdb_v2_function_signature_add_parameter signature name dtype nullHandle parameterKind)
-          Just (DefaultValue make) -> bracket (make factory) (destroy c_duckdb_v2_value_destroy) $ \native ->
+          Just (DefaultValue make) -> bracket (make factory) destroyValue $ \native ->
             checked (c_duckdb_v2_function_signature_add_parameter signature name dtype native parameterKind)
   forM_ signatureReturnType $ \dtype ->
     withTypeDeclaration factory dtype $ checked . c_duckdb_v2_function_signature_set_return_type signature

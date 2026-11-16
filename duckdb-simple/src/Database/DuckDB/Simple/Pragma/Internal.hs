@@ -118,7 +118,7 @@ pragmaArguments casts name info context = withContextFactory context \contextFac
       (value, argumentType) <-
         bracket
           (output (c_duckdb_v2_function_bind_get_arg_value info index))
-          (destroy c_duckdb_v2_value_destroy)
+          destroyValue
           \native -> (,) <$> materializeValue (noVariant argument) factory native <*> lazyTypeRep (output (c_duckdb_v2_value_get_logical_type native))
       pure (Field argument (fromIntegral index) value argumentType)
     noVariant argument = rejectRows (throwInvalidArgument (Text.intercalate ": " [name, "parameter " <> argument, variantArgumentReason]))

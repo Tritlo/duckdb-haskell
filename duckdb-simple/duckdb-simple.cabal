@@ -105,6 +105,7 @@ library
     Database.DuckDB.Simple.Typed
     Database.DuckDB.Simple.Typed.Aggregate
     Database.DuckDB.Simple.Typed.Table
+    Database.DuckDB.Simple.TypeScope
     Database.DuckDB.Simple.VariantCodec
 
   hs-source-dirs: src

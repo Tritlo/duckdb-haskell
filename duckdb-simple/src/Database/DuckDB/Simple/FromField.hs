@@ -362,23 +362,27 @@ fieldType reads the SQL type of a Field, with each alias (see
 Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep"). Each place that
 makes a Field supplies a conversion:
 
-- A result column. collectResultColumns in "Database.DuckDB.Simple.Result"
-  copies and owns the column's logical type, then releases the result schema.
-  Its fields share the type conversion.
-- A callback argument. The reader owns the logical type of the argument vector
-  or value, and shares its conversion for each call.
+- A result column. The query result owns its native logical type. A query
+  parser runs before this metadata scope closes. A cursor retains its scope
+  until exhaustion, reset, or statement closure.
+- A callback argument. The callback owns its native logical type. Its scope
+  closes when the callback invocation returns.
 - A LIST or ARRAY element, or a MAP key or value. The reader maps the type
   projection over the parent's conversion with listElementType or mapEntryTypes.
 - A synthetic field made from a FieldValue alone. Its conversion returns VARIANT.
 
 VARIANT means that the stored value determines its type. An element of a
 VARIANT column also has type VARIANT. A conversion that does not demand
-fieldType does not convert the type tree or copy an ENUM dictionary. The
-library acquires the owned native type before it returns the field.
+fieldType does not convert the type tree or copy an ENUM dictionary.
 
-The metadata reader owns the logical type independently of its connection.
-It caches successful type reads. See Note [Conversion effects] in
-"Database.DuckDB.Simple.Conversion".
+The scope caches successful type reads. An interrupted read can retry while
+the scope remains open. Closure releases native types and clears the cache.
+An escaped native conversion raises SQLError with the message
+"duckdb-simple: field type scope is closed", including a cached conversion.
+A LogicalTypeRep snapshot already returned to the caller is pure and remains
+valid after closure. Completed conversion diagnostics are also pure. The
+library resolves them before closing the scope. See Note [Conversion effects]
+in "Database.DuckDB.Simple.Conversion".
 -}
 
 -- | Exception thrown if conversion from a SQL value to a Haskell

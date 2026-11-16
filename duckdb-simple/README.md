@@ -296,25 +296,35 @@ combines their diagnostics.
 
 A decoder for a registered function's arguments runs inside its callback.
 Do not run another query on that callback's connection from the decoder. Use
-another connection. See [User-defined functions](#user-defined-functions) for the connection rules.
-`fieldType` reads its owned logical type without taking the connection lock.
+another connection. See [User-defined functions](#user-defined-functions)
+for the connection rules.
+`fieldType` reads its scoped logical type without taking the connection lock.
 
 `fieldType :: Field -> Conversion LogicalTypeRep` reads the SQL type of a
 column, or of an element, key, or value in a LIST, ARRAY, or MAP. It preserves
-aliases such as JSON. Each query captures one owned native logical type per
-result column. The library converts it to `LogicalTypeRep` when a decoder
-requests `fieldType` and caches a successful result for that column and
-execution. It does not convert an unused type or copy its ENUM dictionary.
-If cancellation interrupts a read, a later call can retry it. The cache does
-not store exceptions.
+aliases such as JSON. A query result or callback owns the native metadata.
+The library converts a column's type to `LogicalTypeRep` when a decoder
+requests `fieldType` and caches a successful result within that scope. It
+does not convert an unused type or copy its ENUM dictionary. If cancellation
+interrupts a read while the scope remains open, another call can retry it.
+The cache does not store exceptions.
 
-The `fieldType` action keeps its native logical type alive. You can retain the
-action and run it after the statement or connection closes. The library
-releases the type when its owner becomes unreachable. `Field` has no `Eq` or
-`Show` instance. A value in a VARIANT has the type VARIANT, and so does a
-`Field` made from a `FieldValue` alone. In those cases, the stored value
-determines the type. `logicalTypeSQL` gives the SQL type text, for example
-DECIMAL(18,3). A custom decoder can check the type:
+Native metadata is available while a query parser runs. A cursor retains its
+metadata until exhaustion, reset, or statement closure. Callback metadata is
+available during that callback invocation. An escaped native `fieldType`
+action raises `SQLError` with the message
+`duckdb-simple: field type scope is closed`, including when its result was
+cached before closure. Read a pure
+`LogicalTypeRep` snapshot inside the scope if you need the type later.
+Snapshots remain usable after the statement, connection, instance, and
+environment close.
+
+Metadata scopes release their native types when they close. They use no
+metadata finalizers. Existing statement and connection finalizers are
+unchanged. `Field` has no `Eq` or `Show` instance. A value in a VARIANT has the
+type VARIANT, and so does a `Field` made from a `FieldValue` alone. In those
+cases, the stored value determines the type. `logicalTypeSQL` gives the SQL
+type text, for example DECIMAL(18,3). A custom decoder can check the type:
 
 ```haskell
 newtype Cents = Cents DecimalValue

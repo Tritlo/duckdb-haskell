@@ -80,10 +80,7 @@ library
     duckdb_haskell_extension.h
     duckdb_v2.h
 
-  -- The finalizers are in each mode. See the comment at the top of
-  -- cbits/finalizers.c.
   c-sources:
-    cbits/finalizers.c
     generated/abi-checks-v2.c
 
   if flag(extension)

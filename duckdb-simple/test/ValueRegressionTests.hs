@@ -30,7 +30,7 @@ import Control.Exception (
   try,
   uninterruptibleMask_,
  )
-import Control.Monad (forM_, replicateM, void)
+import Control.Monad (forM_, replicateM, void, when)
 import Data.Array (elems, listArray)
 import Data.Bits (shiftR, xor)
 import qualified Data.ByteString as BS
@@ -1768,29 +1768,56 @@ valueRegressionTests =
         (alternative, withoutRender) <- allocation (query_ conn "SELECT 'label7'::wide" :: IO [Only IntOrText])
         alternative @?= [Only (IntOrText (Right "label7"))]
         assertBool ("the read with a failed alternative allocated " <> show withoutRender <> " bytes") (withoutRender < 1000000)
-        [logical] <- queryWith_ (fieldWith (pure . fieldType)) conn "SELECT 'label7'::wide"
-        (size, conversion) <- allocation (runConversion (enumSize <$> logical))
+        [(size, conversion)] <-
+          queryWith_
+            (fieldWith (\entry -> liftConversion (allocation (runConversion (enumSize <$> fieldType entry)))))
+            conn
+            "SELECT 'label7'::wide"
         size @?= Ok 100000
         -- Each of the 100,000 labels is a Text of at least 32 bytes.
         assertBool ("the read without the type allocated " <> show withoutType <> " bytes") (withoutType < 1000000)
         assertBool ("the conversion allocated " <> show conversion <> " bytes") (conversion > 3200000)
-    , testCase "a column type converts after its connection, instance, and environment close" $ do
-        let decimal = LogicalTypeDecimal 4 1
-            readType conn = do
-              [logical] <- queryWith_ (fieldWith (pure . fieldType)) conn "SELECT 1.5::DECIMAL(4,1)"
-              pure logical
-        afterEnvironment <- withEnvironment \environment -> do
-          afterInstance <- withInstance environment [] \instance_ -> do
-            afterConnection <- withConnectionOn instance_ readType
-            runConversion afterConnection >>= (@?= Ok decimal)
-            withConnectionOn instance_ readType
-          runConversion afterInstance >>= (@?= Ok decimal)
-          withInstance environment [] \instance_ -> withConnectionOn instance_ readType
+    , testCase "a pure column type snapshot survives all database scopes" $ do
+        snapshot <- withEnumType runConversion
         performMajorGC
-        runConversion afterEnvironment >>= (@?= Ok decimal)
-    , testCase "an owned ENUM type retries after cancellation with all database scopes closed" $
-        forM_ [1 .. 3 :: Int] \_ -> do
-          logical <- closedEnumType
+        snapshot @?= Ok (LogicalTypeEnum (listArray (0, 99999) ["label" <> Text.pack (show index) | index <- [0 .. 99999 :: Int]]))
+    , testCase "unused and cached native type actions reject after the query returns" $
+        forM_ [False, True] \cached -> do
+          logical <- withEnumType \action -> do
+            when cached (runConversion (enumSize <$> action) >>= (@?= Ok 100000))
+            pure action
+          performMajorGC
+          assertClosedMetadata logical
+    , testCase "a parser can read metadata around a nested query on its connection" $ withConnection ":memory:" \conn -> do
+        rows <-
+          queryWith_
+            ( fieldWith \entry -> do
+                before <- fieldType entry
+                liftConversion (query_ conn "SELECT 7::INTEGER" :: IO [Only Int32]) >>= liftConversion . (@?= [Only 7])
+                after <- fieldType entry
+                pure (before, after)
+            )
+            conn
+            "SELECT 1.5::DECIMAL(4,1)"
+        rows @?= [(LogicalTypeDecimal 4 1, LogicalTypeDecimal 4 1)]
+    , testCase "a cursor keeps metadata until exhaustion reset or statement close" $ withEnumConnection \conn ->
+        forM_ [False, True] \cached ->
+          forM_ (["exhaustion", "reset", "close"] :: [String]) \end ->
+            withStatement conn "SELECT 'label7'::scoped_wide FROM range(2)" \stmt -> do
+              Just logical <- nextRowWith (fieldWith (pure . fieldType)) stmt
+              when cached (runConversion (enumSize <$> logical) >>= (@?= Ok 100000))
+              case end of
+                "exhaustion" -> do
+                  Just (Only label) <- nextRow stmt
+                  (label :: Text) @?= "label7"
+                  -- The first field's metadata is still valid after another row.
+                  when cached (runConversion (enumSize <$> logical) >>= (@?= Ok 100000))
+                  nextRow stmt >>= (@?= (Nothing :: Maybe (Only Text)))
+                "reset" -> clearStatementBindings stmt
+                _ -> closeStatement stmt
+              assertClosedMetadata logical
+    , testCase "an ENUM type retries cancellation while its query scope remains open" $
+        forM_ [1 .. 3 :: Int] \_ -> withEnumType \logical -> do
           started <- newEmptyMVar
           finished <- newEmptyMVar
           worker <- forkIO $ mask \restore -> do
@@ -1799,14 +1826,11 @@ valueRegressionTests =
               runConversion (enumSize <$> logical)
             putMVar finished (outcome :: Either SomeException (Ok Int))
           awaitMetadata "metadata worker did not start" (takeMVar started)
-          -- Give the traversal a chance to start. Completion can win this race.
+          -- Completion can win this cancellation race.
           threadDelay 1000
           awaitMetadata "metadata worker did not finish" (killThread worker >> takeMVar finished) >>= \case
             Left failure -> fromException failure @?= Just ThreadKilled
             Right result -> result @?= Ok 100000
-          performMajorGC
-          runConversion logical
-            >>= (@?= Ok (LogicalTypeEnum (listArray (0, 99999) ["label" <> Text.pack (show index) | index <- [0 .. 99999 :: Int]])))
           runConversion (enumSize <$> logical) >>= (@?= Ok 100000)
     , testCase "conversion steps force successful values inside IO" $ do
         let marker = "conversion result failure"
@@ -1822,8 +1846,7 @@ valueRegressionTests =
         expectFailure ((,) <$> pure (1 :: Int) <*> fmap (const bad) (pure ()))
         expectFailure ((,) <$> pure (1 :: Int) <*> liftConversion (pure bad))
         expectFailure (pure bad >> pure ())
-    , testCase "a conversion propagates cancellation and retries its explicit IO" $ do
-        logical <- closedEnumType
+    , testCase "a conversion propagates cancellation and retries its explicit IO" $ withEnumType \logical -> do
         attempts <- newIORef (0 :: Int)
         let conversion = do
               attempt <- liftConversion (atomicModifyIORef' attempts (\count -> (count + 1, count)))
@@ -1835,8 +1858,7 @@ valueRegressionTests =
           Right result -> assertFailure ("expected cancellation, got " <> show result)
         runConversion conversion >>= (@?= Ok 100000)
         readIORef attempts >>= (@?= 2)
-    , testCase "concurrent demands read one owned ENUM type after all database scopes close" $ do
-        logical <- closedEnumType
+    , testCase "concurrent demands share an ENUM snapshot within its query scope" $ withEnumType \logical -> do
         start <- newEmptyMVar
         completed <- replicateM 8 newEmptyMVar
         forM_ completed \done -> void $ forkIO $ mask \restore -> do
@@ -1852,18 +1874,34 @@ valueRegressionTests =
             Right result -> result @?= first
             Left failure -> throwIO failure
           _ -> assertFailure "expected completed metadata demands"
+    , testCase "concurrent type demand and cursor closure complete without deadlock" $ withEnumConnection \conn ->
+        forM_ [1 .. 3 :: Int] \_ -> withStatement conn "SELECT 'label7'::scoped_wide" \stmt -> do
+          Just logical <- nextRowWith (fieldWith (pure . fieldType)) stmt
+          started <- newEmptyMVar
+          readFinished <- newEmptyMVar
+          closeFinished <- newEmptyMVar
+          void $ forkIO $ mask \restore -> do
+            outcome <- try $ restore (putMVar started () >> runConversion (enumSize <$> logical))
+            putMVar readFinished (outcome :: Either SQLError (Ok Int))
+          awaitMetadata "metadata reader did not start" (takeMVar started)
+          void $ forkIO $ do
+            outcome <- try (closeStatement stmt)
+            putMVar closeFinished (outcome :: Either SomeException ())
+          awaitMetadata "cursor closure blocked on metadata" (takeMVar closeFinished) >>= either throwIO pure
+          awaitMetadata "metadata reader blocked on cursor closure" (takeMVar readFinished) >>= \case
+            Left failure -> sqlErrorMessage failure @?= "duckdb-simple: field type scope is closed"
+            Right result -> result @?= Ok 100000
+          assertClosedMetadata logical
     , testCase "conversion actions preserve the caller's masking state" $ do
-        [unmaskedType, maskedType, blockedType] <- replicateM 3 closedEnumType
-        let check logical expected = do
+        let check expected = withEnumType \logical -> do
               runConversion (liftConversion getMaskingState) >>= (@?= Ok expected)
               runConversion (logical >> liftConversion getMaskingState) >>= (@?= Ok expected)
               getMaskingState >>= (@?= expected)
         initialState <- getMaskingState
-        check unmaskedType initialState
-        mask_ (check maskedType MaskedInterruptible)
-        uninterruptibleMask_ (check blockedType MaskedUninterruptible)
-    , testCase "a discarded diagnostic performs no metadata read or diagnostic IO" $ do
-        logical <- closedEnumType
+        check initialState
+        mask_ (check MaskedInterruptible)
+        uninterruptibleMask_ (check MaskedUninterruptible)
+    , testCase "a discarded diagnostic performs no metadata read or diagnostic IO" $ withEnumType \logical -> do
         diagnosticReads <- newIORef (0 :: Int)
         let failure :: Conversion Int
             failure = conversionErrorWith $ do
@@ -2383,15 +2421,27 @@ assertConversionFails conversion =
     Errors _ -> pure ()
     Ok _ -> assertFailure "expected a conversion failure"
 
--- | Capture an owned column type before all database scopes close.
-closedEnumType :: IO (Conversion LogicalTypeRep)
-closedEnumType = withEnvironment \environment -> withInstance environment [] \instance_ ->
+-- | Run a parser action while the ENUM column's metadata scope is open.
+withEnumType :: (Conversion LogicalTypeRep -> IO a) -> IO a
+withEnumType action = withEnumConnection \connection -> do
+  [result] <- queryWith_ (fieldWith (liftConversion . action . fieldType)) connection "SELECT 'label7'::scoped_wide"
+  pure result
+
+-- | Create an ENUM in an explicitly attached in-memory database.
+withEnumConnection :: (Connection -> IO a) -> IO a
+withEnumConnection action = withEnvironment \environment -> withInstance environment [] \instance_ ->
   withConnectionOn instance_ \connection -> do
     _ <- execute_ connection "ATTACH ':memory:' AS metadata"
     _ <- execute_ connection "USE metadata"
-    _ <- execute_ connection "CREATE TYPE closed_wide AS ENUM (SELECT 'label' || i FROM range(100000) t(i) ORDER BY i)"
-    [logical] <- queryWith_ (fieldWith (pure . fieldType)) connection "SELECT 'label7'::closed_wide"
-    pure logical
+    _ <- execute_ connection "CREATE TYPE scoped_wide AS ENUM (SELECT 'label' || i FROM range(100000) t(i) ORDER BY i)"
+    action connection
+
+-- | Reject native metadata reads after their query or callback scope closes.
+assertClosedMetadata :: Conversion a -> Assertion
+assertClosedMetadata conversion =
+  try (runConversion conversion) >>= \case
+    Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: field type scope is closed"
+    Right _ -> assertFailure "metadata read succeeded after its scope closed"
 
 -- | Read the size of an ENUM dictionary.
 enumSize :: LogicalTypeRep -> Int

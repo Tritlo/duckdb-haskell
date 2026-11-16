@@ -10,11 +10,6 @@
   `Database.DuckDB.FFI`. See MIGRATION.md for the changed types and names.
 - Add `Database.DuckDB.FFI.V2` with the 620 functions of the new C API.
   Upstream marks this API as unstable, so it requires exactly DuckDB 2.0.0.
-- Add the C functions `duckdb_ffi_destroy_logical_type` and
-  `duckdb_ffi_destroy_schema` for the finalizer of a `ForeignPtr`. A finalizer
-  needs the address of a C function, and a loadable extension has no DuckDB
-  symbol to take the address of. Each function calls DuckDB through the same
-  path as the bindings.
 - DuckDB 2.0.0 plans casts between some pairs of types as casts that cannot
   fail. This includes registered casts, for example from INTEGER to VARCHAR. If
   a registered cast reports an error for such a pair with an Invalid Input, Out

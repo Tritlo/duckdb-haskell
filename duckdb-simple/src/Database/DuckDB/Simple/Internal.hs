@@ -113,6 +113,7 @@ import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
 import Database.DuckDB.Simple.Native hiding (arraySizeReason, maxArraySize)
 import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, defaultGeometryCRS, destroyTypeCache)
+import Database.DuckDB.Simple.TypeScope (TypeScope, closeTypeScope)
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToBaseRep)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (CString)
@@ -400,8 +401,8 @@ cleanupStatementStreamRef.
 
 The cursor owns each native chunk that it holds. fetchChunk writes a new chunk
 to the cursor before it reads the metadata of the chunk or makes the readers.
-Thus a release of the cursor also releases the chunk. finalizeStream releases
-the current chunk, the pending chunks, and the result, in that order.
+Thus a release of the cursor also releases the chunk. finalizeStream closes the metadata scope, then releases
+the current chunk, the pending chunks, and the result.
 -}
 
 -- | Cursor state. Exhaustion persists until the caller resets the statement.
@@ -412,6 +413,7 @@ data StatementStreamState = StatementStreamIdle | StatementStreamExhausted | Sta
 -- Note [Statement cursor].
 data StatementStream = StatementStream
   { statementStreamResult :: DuckDBV2ResultHandle
+  , statementStreamTypes :: TypeScope
   , statementStreamColumns :: [StatementStreamColumn]
   , statementStreamPendingChunks :: [DuckDBV2DataChunkHandle]
   , statementStreamChunk :: Maybe StatementStreamChunk
@@ -425,7 +427,7 @@ data StatementStreamColumn = StatementStreamColumn
   { statementStreamColumnIndex :: Int
   , statementStreamColumnName :: Text
   , statementStreamColumnType :: Conversion LogicalTypeRep
-  -- ^ The owned type of the column, converted on demand through
+  -- ^ The scoped type of the column, converted on demand through
   -- 'Database.DuckDB.Simple.FromField.fieldType'.
   -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
   , statementStreamColumnTree :: IORef (Maybe LogicalTypeRep)
@@ -908,7 +910,7 @@ These functions use a result window:
 
 - executeStatement in "Database.DuckDB.Simple".
 
-- startStatementStream and collectParsedRows in "Database.DuckDB.Simple.Result".
+- startStatementStream and withParsedRows in "Database.DuckDB.Simple.Result".
 
 - foldArrowWith in "Database.DuckDB.Simple.Arrow.Internal", for a materialized
   result.
@@ -1131,13 +1133,14 @@ cleanupStatementStreamRef ref = mask_ do
     StatementStreamActive stream -> finalizeStream stream
     _ -> pure ()
 
--- | Release the native state of a stream in this order: the current chunk, the
--- pending chunks, and the result. Each release runs also when an earlier
--- release raises an error.
+-- | Close metadata access, then release the current chunk, pending chunks,
+-- and result. Each release runs even if an earlier release raises an error.
 finalizeStream :: StatementStream -> IO ()
-finalizeStream StatementStream{statementStreamResult, statementStreamChunk, statementStreamPendingChunks} =
-  maybe (pure ()) finalizeChunk statementStreamChunk
-    `finally` (releaseItems destroyDataChunk statementStreamPendingChunks `finally` destroy c_duckdb_v2_result_destroy statementStreamResult)
+finalizeStream StatementStream{statementStreamTypes, statementStreamResult, statementStreamChunk, statementStreamPendingChunks} =
+  closeTypeScope statementStreamTypes
+    `finally` ( maybe (pure ()) finalizeChunk statementStreamChunk
+                  `finally` (releaseItems destroyDataChunk statementStreamPendingChunks `finally` destroy c_duckdb_v2_result_destroy statementStreamResult)
+              )
 
 -- | Release the native chunk of a stream chunk.
 finalizeChunk :: StatementStreamChunk -> IO ()

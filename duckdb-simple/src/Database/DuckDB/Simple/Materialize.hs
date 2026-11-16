@@ -22,12 +22,10 @@ module Database.DuckDB.Simple.Materialize (
   TypeTree,
   EnumLabels,
   prepareVectorReaderWith,
-  ownedTypeRep,
 ) where
 
-import Control.Concurrent.MVar (modifyMVar, newMVar)
-import Control.Exception (bracket, evaluate, mask_, onException)
-import Control.Monad (foldM, forM, when, (>=>))
+import Control.Exception (bracket)
+import Control.Monad (foldM, forM, when)
 import Data.Array (Array, bounds, elems, listArray, rangeSize, (!))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64)
@@ -37,7 +35,6 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.Simple.Conversion (Conversion, liftConversion)
 import Database.DuckDB.Simple.Element (
   chunkIsRowValid,
   decodeElement,
@@ -64,7 +61,6 @@ import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToBaseRep, logicalTypeToRep)
 import qualified Database.DuckDB.Simple.VariantCodec as VariantCodec
 import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.ForeignPtr (FinalizerPtr, addForeignPtrFinalizer, mallocForeignPtr, withForeignPtr)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable (..), peekElemOff)
@@ -197,30 +193,6 @@ prepareVectorReader readers vector = do
   labels <- newIORef IntMap.empty
   -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
   prepareVectorReaderWith readers (withVectorType vector logicalTypeToRep) (Just labels) vector
-
--- | Own a native type and convert it on demand. A successful conversion is
--- shared by all readers. An interrupted conversion can be retried.
--- See Note [Column types] in "Database.DuckDB.Simple.FromField".
-ownedTypeRep :: IO DuckDBV2LogicalTypeHandle -> IO (Conversion LogicalTypeRep)
-ownedTypeRep create = do
-  owner <- mallocForeignPtr
-  mask_ do
-    handle <- create
-    withForeignPtr owner (`poke` handle)
-    addForeignPtrFinalizer destroyLogicalTypeAddress owner
-      `onException` withForeignPtr owner (c_duckdb_v2_logical_type_destroy >=> checkCode)
-  cache <- newMVar (Left owner)
-  pure $ liftConversion $ modifyMVar cache \case
-    Right logical -> pure (Right logical, logical)
-    Left native -> do
-      logical <- withForeignPtr native (peek >=> logicalTypeToRep) >>= evaluate
-      pure (Right logical, logical)
-
--- | The C finalizer of an owned type, from duckdb-ffi. It also supports the
--- function table of an extension. See Note [Column types] in
--- "Database.DuckDB.Simple.FromField".
-foreign import ccall "&duckdb_ffi_destroy_logical_type"
-  destroyLogicalTypeAddress :: FinalizerPtr DuckDBV2LogicalTypeHandle
 
 -- | The labels of an ENUM type that readers read, by index. 'Nothing' means
 -- that the type tree holds the labels. See Note [ENUM labels].

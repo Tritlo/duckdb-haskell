@@ -95,7 +95,11 @@ rejectRows raise vector = pure \row ->
 -- "Database.DuckDB.Simple.VariantCodec".
 prepareVariantReader :: VariantCodec.VariantState -> VectorReader
 prepareVariantReader =
-  VariantCodec.prepareVariantDecoder (materializeValue (rejectRows (throwInternalError (Text.pack "expected a value without VARIANT"))))
+  VariantCodec.prepareVariantDecoder
+    (materializeValue noVariant)
+    (\factory vector -> prepareVectorReader (FallbackReaders noVariant (prepareGeometryReader factory)) vector >>= ($ 0))
+  where
+    noVariant = rejectRows (throwInternalError (Text.pack "expected a value without VARIANT"))
 
 -- | Copy one value through an owned vector. The caller retains the factory owner.
 -- The first argument reads VARIANT. 'prepareGeometryReader' reads GEOMETRY with

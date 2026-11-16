@@ -47,7 +47,9 @@ connection. It does not read the private payload format of DuckDB.
 
 - The metadata statement (metadataStatement). One statement gives the tag
   (variant_typeof) and the object keys (variant_keys) of each value in a
-  VARIANT list. The state keeps the parsed statement.
+  VARIANT list. The state keeps the parsed statement. The decoder reads the
+  borrowed result vector before its chunk closes. This avoids copying the
+  complete metadata list into an owned value and then into another vector.
 
 - The casts. The tag of a scalar is the text of variant_typeof. scalarType
   gives the type text of the exact cast target of each tag. The scalars with
@@ -143,18 +145,20 @@ destroyVariantState VariantState{variantStatement, variantExtraction, variantTyp
 
 -- | Copy a vector before returning its row reader. The connection of the state
 -- is a dedicated helper connection. It must remain exclusively borrowed until
--- this function returns. The callback decodes a value that contains no VARIANT,
--- with the factory that it gets. Each level batches type and key metadata. See
--- Note [VARIANT decoding].
+-- this function returns. The callbacks decode a value, or the first row of a
+-- borrowed vector, that contains no VARIANT. They use the factory they get and
+-- complete all native reads before returning. Each level batches type and key
+-- metadata. See Note [VARIANT decoding].
 prepareVariantDecoder
   :: (DuckDBV2FactoryHandle -> DuckDBV2ValueHandle -> IO FieldValue)
+  -> (DuckDBV2FactoryHandle -> DuckDBV2VectorHandle -> IO FieldValue)
   -> VariantState
   -> DuckDBV2VectorHandle
   -> IO (Int -> IO FieldValue)
-prepareVariantDecoder plain state vector = do
+prepareVariantDecoder plain plainVector state vector = do
   count <- output (c_duckdb_v2_vector_get_size vector)
   bracket (acquireItems destroyValue [output (c_duckdb_v2_vector_get_value vector i) | i <- indices count]) (releaseItems destroyValue) \values -> do
-    decoded <- decodeValues plain state values
+    decoded <- decodeValues plain plainVector state values
     let rows = listArray (0, length decoded - 1) decoded
     -- Give the element, not a thunk that keeps the array alive.
     pure (evaluate . (rows !))
@@ -169,12 +173,13 @@ data VariantNode
 -- See Note [VARIANT decoding].
 decodeValues
   :: (DuckDBV2FactoryHandle -> DuckDBV2ValueHandle -> IO FieldValue)
+  -> (DuckDBV2FactoryHandle -> DuckDBV2VectorHandle -> IO FieldValue)
   -> VariantState
   -> [DuckDBV2ValueHandle]
   -> IO [FieldValue]
-decodeValues _ _ [] = pure []
-decodeValues plain state values = do
-  metadata <- queryMetadata plain state values
+decodeValues _ _ _ [] = pure []
+decodeValues plain plainVector state values = do
+  metadata <- queryMetadata plainVector state values
   unless (length metadata == length values) (codecError "metadata query returned an unexpected number of nodes")
   let indexed = zip3 [0 ..] metadata values
       grouped key select = Map.toList (Map.fromListWith (++) [(key node, [(index, value)]) | (index, node@(tag, _), value) <- indexed, select tag])
@@ -192,7 +197,7 @@ decodeValues plain state values = do
           let indexedNodes = IntMap.fromList (nulls <> concat scalars <> arrays <> concat objectGroups)
           nodes <- forM [0 .. length values - 1] \index ->
             maybe (codecError "object extraction omitted a node") pure (IntMap.lookup index indexedNodes)
-          children <- decodeValues plain state (concatMap nodeChildren nodes)
+          children <- decodeValues plain plainVector state (concatMap nodeChildren nodes)
           assemble nodes children
   where
     casts = variantCasts state
@@ -371,14 +376,14 @@ parseKept connection sql keep =
 
 -- | Read exact scalar tags and object keys without serializing payloads.
 queryMetadata
-  :: (DuckDBV2FactoryHandle -> DuckDBV2ValueHandle -> IO FieldValue)
+  :: (DuckDBV2FactoryHandle -> DuckDBV2VectorHandle -> IO FieldValue)
   -> VariantState
   -> [DuckDBV2ValueHandle]
   -> IO [(Text, [Text])]
-queryMetadata plain state values = withVariantList state values \list -> do
+queryMetadata plainVector state values = withVariantList state values \list -> do
   statement <- metadataStatement state
-  withStatementValue (variantConnection state) statement [list] \metadata ->
-    plain (variantCasts state) metadata >>= maybe (codecError "metadata query returned an unexpected value") pure . metadataNodes
+  withStatementVector (variantConnection state) statement [list] \vector ->
+    plainVector (variantCasts state) vector >>= maybe (codecError "metadata query returned an unexpected value") pure . metadataNodes
 
 -- | Read the tag and the object keys of each metadata node. A NULL key list
 -- gives no keys. Return 'Nothing' for an unexpected shape.
@@ -412,6 +417,14 @@ withVariantList state values action = do
 withStatementValue
   :: DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> [DuckDBV2ValueHandle] -> (DuckDBV2ValueHandle -> IO a) -> IO a
 withStatementValue connection statement parameters action =
+  withStatementVector connection statement parameters \vector ->
+    bracket (output (c_duckdb_v2_vector_get_value vector 0)) destroyValue action
+
+-- | Borrow the first result vector while its statement result and chunk stay
+-- alive. Complete native reads before the action returns.
+withStatementVector
+  :: DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> [DuckDBV2ValueHandle] -> (DuckDBV2VectorHandle -> IO a) -> IO a
+withStatementVector connection statement parameters action =
   withArray parameters \items ->
     bracket
       (output (c_duckdb_v2_statement_execute connection statement (ConstPtr nullPtr) (ConstPtr items) (fromIntegral (length parameters))))
@@ -420,7 +433,7 @@ withStatementValue connection statement parameters action =
         bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
           unless (chunk /= nullHandle) (codecError "helper query returned no rows")
           vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
-          bracket (output (c_duckdb_v2_vector_get_value vector 0)) destroyValue action
+          action vector
 
 -- | Map every native VARIANT scalar tag to its exact cast target. The tags are
 -- the text of variant_typeof. The result is type text, because a DECIMAL tag

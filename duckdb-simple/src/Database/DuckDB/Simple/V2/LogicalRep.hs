@@ -21,7 +21,6 @@ import Control.Exception (bracket, mask_, onException)
 import Control.Monad (foldM, forM, when)
 import Data.Array (elems, listArray)
 import qualified Data.Text as Text
-import Database.DuckDB.Simple.Element (arraySizeReason)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
 import Database.DuckDB.Simple.Native
 import Foreign.C.ConstPtr (ConstPtr (..))

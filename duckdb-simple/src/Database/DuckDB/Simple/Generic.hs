@@ -108,7 +108,7 @@ import Data.Time.LocalTime (LocalTime, TimeOfDay)
 import Data.Typeable (Typeable)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.Simple.Element (arraySizeReason, containsType, maxArraySize, valueTypeName)
+import Database.DuckDB.Simple.Element (containsType, valueTypeName)
 import Database.DuckDB.Simple.FromField (
   Field (..),
   FieldValue (..),

@@ -12,12 +12,10 @@
 -- Result decoding uses them for the types whose element needs no logical type
 -- metadata.
 module Database.DuckDB.Simple.Element (
-  arraySizeReason,
   chunkIsRowValid,
   containsType,
   decodeElement,
   duckDBHugeIntToInteger,
-  maxArraySize,
   timeTzMaxOffsetSeconds,
   timeTzOffsetBits,
   valueTypeName,

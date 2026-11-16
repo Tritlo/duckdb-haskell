@@ -56,7 +56,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime, utc, utcToLocalTime)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.Simple.Element (arraySizeReason, containsType, timeTzMaxOffsetSeconds, timeTzOffsetBits, valueTypeName)
+import Database.DuckDB.Simple.Element (containsType, timeTzMaxOffsetSeconds, timeTzOffsetBits, valueTypeName)
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
   BitString (..),

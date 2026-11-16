@@ -25,7 +25,7 @@ import Data.Ratio ((%))
 import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Time.Calendar (Day, addDays, fromGregorian)
+import Data.Time.Calendar (Day, addDays, diffDays, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), hoursToTimeZone, utc, utcToLocalTime)
@@ -1058,22 +1058,101 @@ valueRegressionTests =
             _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE bignum_array (v " <> dtype <> ")"))
             _ <- execute conn "INSERT INTO bignum_array VALUES (?)" (Only (listArray (0, 1) values :: Array Int BigNum))
             (query_ conn "SELECT v::VARCHAR FROM bignum_array" :: IO [Only Text]) >>= assertEqual (Text.unpack dtype) [Only expected]
-    , testCase "native timestamp extrema read back in all units, and bind back only in the range of DuckDB" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
+    , testCase "native timestamp extrema read back in all units, and bind back only in the range of DuckDB" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+        let checkTemporalFailure :: forall a. (FromField a) => Query -> Proxy a -> Text -> IO ()
+            checkTemporalFailure sql _ target = do
+              assertConversionError (query_ conn sql :: IO [Only a])
+              results <- queryWith_ (fieldWith (Ok . (fromField :: Field -> Ok a))) conn sql
+              case results of
+                [Errors [failure]] -> case fromException failure of
+                  Just ConversionFailed{errHaskellType} -> errHaskellType @?= target
+                  _ -> assertFailure ("expected ConversionFailed, got " <> show failure)
+                _ -> assertFailure ("expected one conversion failure for " <> Text.unpack target)
+        let epoch = fromGregorian 1970 1 1
+            lowerDay = toInteger (minBound :: Int64) `div` 86400000000
+            upperDay = toInteger (maxBound :: Int64) `div` 86400000000
+            dates =
+              [fromGregorian 2000 1 2, fromGregorian (-500000) 1 1, fromGregorian 500000 1 1]
+                <> map (`addDays` epoch) [-2147483646, 2147483646, lowerDay, lowerDay + 1, upperDay, upperDay + 1]
+        -- DATE itself has a wider range than the intermediate of a timestamp cast.
+        _ <- execute_ conn "CREATE TABLE native_date(value DATE)"
+        forM_ dates \day -> do
+          _ <- execute conn "INSERT INTO native_date VALUES (?)" (Only day)
+          (query_ conn "SELECT value FROM native_date" :: IO [Only Day]) >>= (@?= [Only day])
+          (query_ conn "SELECT value FROM native_date" :: IO [Only (Unbounded Day)]) >>= (@?= [Only (Finite day)])
+          let expected = LocalTime day (TimeOfDay 0 0 0)
+              micros = diffDays day epoch * 86400000000
+          if micros >= toInteger (minBound :: Int64) && micros <= toInteger (maxBound :: Int64)
+            then do
+              (query_ conn "SELECT value::TIMESTAMP FROM native_date" :: IO [Only LocalTime]) >>= (@?= [Only expected])
+              (query_ conn "SELECT value FROM native_date" :: IO [Only LocalTime]) >>= (@?= [Only expected])
+              (query_ conn "SELECT value FROM native_date" :: IO [Only (Unbounded LocalTime)]) >>= (@?= [Only (Finite expected)])
+            else do
+              checkTemporalFailure "SELECT value FROM native_date" (Proxy @LocalTime) "LocalTime"
+              checkTemporalFailure "SELECT value FROM native_date" (Proxy @(Unbounded LocalTime)) "Unbounded LocalTime"
+              forM_ ["TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS"] \dtype ->
+                try (query_ conn (fromString ("SELECT value::" <> dtype <> " FROM native_date")) :: IO [Only LocalTime]) >>= \case
+                  Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorTypeConversion
+                  Right rows -> assertFailure ("expected the native timestamp cast to fail, got " <> show rows)
+              (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+          _ <- execute_ conn "DELETE FROM native_date"
+          pure ()
+        _ <- execute_ conn "DROP TABLE native_date"
+        forM_ [("-infinity", NegInfinity), ("infinity", PosInfinity)] \(literal, expected) -> do
+          let sql = fromString ("SELECT '" <> literal <> "'::DATE")
+              cast = fromString ("SELECT '" <> literal <> "'::DATE::TIMESTAMP")
+          assertConversionError (query_ conn sql :: IO [Only LocalTime])
+          (query_ conn sql :: IO [Only (Unbounded LocalTime)]) >>= (@?= [Only expected])
+          (query_ conn cast :: IO [Only (Unbounded LocalTime)]) >>= (@?= [Only expected])
         forM_
           [ (Seconds, 1, "TIMESTAMP_S")
           , (Milliseconds, 1000, "TIMESTAMP_MS")
           , (Microseconds, 1000000, "TIMESTAMP")
           , (Nanoseconds, 1000000000, "TIMESTAMP_NS")
           ]
-          \(constructor, units, dtype) ->
-            forM_ [minBound, negate (maxBound :: Int64) + 1, -1, 0, maxBound - 1] \value -> do
+          \(constructor, units, dtype) -> do
+            let extraValues
+                  | units <= 1000 =
+                      let limit = toInteger (maxBound :: Int64) `div` (1000000 `div` units)
+                      in  map
+                            fromInteger
+                            ( [-limit - 1, -limit, limit, limit + 1]
+                                <> [days * 86400 * units | days <- [-2147483648, -2147483647, -2147483646, 2147483646, 2147483647, 2147483648]]
+                            )
+                  | units == 1000000000 =
+                      let day = 86400000000000
+                      in  [-1, -499, -500, -501, day - 1, day - 499, day - 500, day - 501]
+                  | otherwise = []
+            forM_ ([minBound, negate (maxBound :: Int64) + 1, -1, 0, maxBound - 1] <> extraValues) \value -> do
               let expected = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (toInteger value % units)))
+                  micros = toInteger value * 1000000 `div` units
               appendTimestamp conn dtype (constructor value)
               (query_ conn "SELECT value FROM native_timestamp" :: IO [Only LocalTime]) >>= (@?= [Only expected])
+              (query_ conn "SELECT value FROM native_timestamp" :: IO [Only (Unbounded LocalTime)]) >>= (@?= [Only (Finite expected)])
+              -- S/MS casts check a microsecond intermediate. NS casts round it
+              -- to the nearest microsecond before they extract the date.
+              if micros >= toInteger (minBound :: Int64) && micros <= toInteger (maxBound :: Int64)
+                then do
+                  [Only day] <- query_ conn "SELECT value::DATE FROM native_timestamp" :: IO [Only Day]
+                  (query_ conn "SELECT value FROM native_timestamp" :: IO [Only Day]) >>= (@?= [Only day])
+                  (query_ conn "SELECT value FROM native_timestamp" :: IO [Only (Unbounded Day)]) >>= (@?= [Only (Finite day)])
+                  let timeType = if units == 1000000000 then "TIME_NS" else "TIME"
+                  [Only clock] <- query_ conn (fromString ("SELECT value::" <> timeType <> " FROM native_timestamp")) :: IO [Only TimeOfDay]
+                  (query_ conn "SELECT value FROM native_timestamp" :: IO [Only TimeOfDay]) >>= (@?= [Only clock])
+                else do
+                  checkTemporalFailure "SELECT value FROM native_timestamp" (Proxy @Day) "Day"
+                  checkTemporalFailure "SELECT value FROM native_timestamp" (Proxy @(Unbounded Day)) "Unbounded Day"
+                  checkTemporalFailure "SELECT value FROM native_timestamp" (Proxy @TimeOfDay) "TimeOfDay"
+                  try (query_ conn "SELECT value::DATE FROM native_timestamp" :: IO [Only Day]) >>= \case
+                    Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorTypeConversion
+                    Right rows -> assertFailure ("expected the native DATE cast to fail, got " <> show rows)
+                  try (query_ conn "SELECT value::TIME FROM native_timestamp" :: IO [Only TimeOfDay]) >>= \case
+                    Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorTypeConversion
+                    Right rows -> assertFailure ("expected the native TIME cast to fail, got " <> show rows)
+                  (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
               [Only original] <- query_ conn "SELECT {'value': value} FROM native_timestamp" :: IO [Only (StructValue FieldValue)]
               -- DuckDB needs an explicit parameter type for extreme S/MS values.
               let rebind = query conn (fromString ("SELECT ?::STRUCT(value " <> dtype <> ")")) (Only original)
-                  micros = toInteger value * 1000000 `div` units
               -- A second, millisecond, or microsecond value outside the range of
               -- DuckDB raises an error. See Note [Time ranges] in
               -- "Database.DuckDB.Simple.ToField".
@@ -1082,6 +1161,12 @@ valueRegressionTests =
                 else assertOutsideTimeRange rebind
               _ <- execute_ conn "DROP TABLE native_timestamp"
               pure ()
+            forM_ [("-infinity", NegInfinity), ("infinity", PosInfinity)] \(literal, expected) -> do
+              let sql = fromString ("SELECT '" <> literal <> "'::" <> dtype)
+                  cast = fromString ("SELECT '" <> literal <> "'::" <> dtype <> "::DATE")
+              assertConversionError (query_ conn sql :: IO [Only Day])
+              (query_ conn sql :: IO [Only (Unbounded Day)]) >>= (@?= [Only expected])
+              (query_ conn cast :: IO [Only (Unbounded Day)]) >>= (@?= [Only expected])
     , testCase "composite timestamps reject infinity and storage overflow" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
         -- Only a nanosecond value has the range of its storage. See
         -- Note [Time ranges] in "Database.DuckDB.Simple.ToField".

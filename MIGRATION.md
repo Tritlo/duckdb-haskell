@@ -126,6 +126,11 @@ The SQL workflow stays the same. These changes can affect your code:
 - `logicalTypeToRep`, `logicalTypeFromRep`, `logicalTypeFromRepWith`, and
   `destroyLogicalType` moved from `Database.DuckDB.Simple.LogicalRep` to
   `Database.DuckDB.Simple.V2.LogicalRep`. Import them from the new module.
+- `logicalTypeToRep` takes a factory before the logical type handle. Replace
+  `logicalTypeToRep logical` with `logicalTypeToRep factory logical`. Keep the
+  factory valid throughout the conversion. The returned `LogicalTypeRep` is
+  pure and remains valid after the factory closes. The function does not
+  destroy the logical type handle.
 - `LogicalTypeScalar` and
   `CopyBindInfo.copyBindColumnTypes` use `LogicalTypeId` instead of
   `DuckDBType`. `Database.DuckDB.Simple`, `Database.DuckDB.Simple.LogicalRep`,
@@ -501,7 +506,7 @@ The SQL workflow stays the same. These changes can affect your code:
   Version 1.0 code, with `DataKinds`:
 
   ```haskell
-  forM_ (sizedArray (listArray (0, 2) [1, 2, 3]) :: Maybe (SizedArray 3 Int64)) \values ->
+  forM_ (sizedArray (listArray (0, 2) [1, 2, 3]) :: Maybe (SizedArray 3 Int64)) $ \values ->
     execute conn "INSERT INTO t VALUES (?)" (Only values)
   rows <- query_ conn "SELECT v FROM t" :: IO [Only (SizedArray 3 Int64)]
   ```

@@ -1,5 +1,8 @@
 # Changelog
 
+See [MIGRATION.md](https://github.com/Tritlo/duckdb-haskell/blob/main/MIGRATION.md)
+for the upgrade instructions.
+
 ## 1.0.0.0
 
 - Target DuckDB 2.0 with `duckdb-ffi` 2.0.0.x. The backend uses the
@@ -251,15 +254,42 @@
   binds again with its type. The readers and the binding of parameters convert
   with the base type. A column of a type from `CREATE TYPE name AS base` has the
   base type and no alias.
-- `Field` has the lazy field `fieldType`, the SQL type of the column, or of
-  the element, the key, or the value of a LIST, an ARRAY, or a MAP, with each
-  alias. A `FromField` instance can check a DECIMAL scale, a TIMESTAMP unit, an
-  ARRAY size, or JSON. The library converts the type at the first use of the
-  field, one time for each column and execution. A value in a VARIANT has the
-  type VARIANT. `DuckValue` has the new method `duckFromTypedField`, with a
-  default that runs `duckFromField`. `typedFromField` decodes through
-  `FromField` with the type, and the generic STRUCT and UNION decoders give
-  each field its type.
+- `logicalTypeToRep` takes a factory before the logical type handle. Keep the
+  factory valid throughout the conversion. The returned `LogicalTypeRep` is
+  pure and remains valid after the factory closes. The function does not
+  destroy the logical type handle. See MIGRATION.md.
+- Decoders return `Conversion a`. `FromField.fromField` returns `Conversion a`,
+  `FieldParser a` is `Field -> Conversion a`, and `parseRow` returns `Conversion a`.
+  `runConversion :: Conversion a -> IO (Ok a)` runs a standalone decoder.
+  Query and callback APIs run conversions for you. Use `pure` for success,
+  `returnError` for a field error, and `liftConversion` for IO. IO exceptions,
+  including cancellation, propagate to the caller. Sequential and applicative
+  conversions stop at the first conversion failure. `Alternative` combines
+  the diagnostics when both branches fail.
+- `Field.fieldType` has the type `Conversion LogicalTypeRep`. It reads the
+  SQL type of the column, element, key, or value, with each alias. A decoder
+  can check a DECIMAL scale, a TIMESTAMP unit, an ARRAY size, or JSON. A query
+  result or callback owns the native metadata. A cursor keeps it until
+  exhaustion, reset, or statement closure. Callback metadata expires when
+  that invocation returns. An escaped native action raises `SQLError` with
+  the message `duckdb-simple: field type scope is closed`, including after a
+  cached read. Read a pure `LogicalTypeRep` snapshot inside the scope to keep
+  it after closure. `Field` has no `Eq` or `Show` instance.
+- Metadata scopes cache successful reads only. An interrupted read permits a
+  retry while the scope remains open. Closure releases native types and
+  clears the cache. Metadata uses no finalizers. Statement and connection
+  finalizers are unchanged. Type conversion runs in explicit IO.
+- `returnError` defers diagnostic metadata until the final conversion fails.
+  A successful `Alternative` branch discards the other branch's diagnostics
+  without reading its type or ENUM dictionary. A completed `ResultError` is
+  pure. Query and callback decoders resolve diagnostics inside their scope.
+- Generic decoding also returns `Conversion a`. Update `DuckValue` methods
+  `duckFromField` and `duckFromTypedField`, and calls to `typedFromField` and
+  `genericFromFieldValue`, that returned `Either String a`. Encoding and type
+  declarations remain pure. `duckFromTypedField` defaults to `duckFromField`.
+  Set it to `typedFromField` to give a record field's SQL type to its
+  `FromField` instance. Generic STRUCT and UNION decoders give each field its
+  type. A value in a VARIANT has the type VARIANT.
 - Read errors name the type of the column with `logicalTypeSQL`, the type
   text of DuckDB, for example DECIMAL(18,2), TIMESTAMP_NS, ENUM('a', 'b'), or
   JSON. For a VARIANT column, they name the type of the stored value in the

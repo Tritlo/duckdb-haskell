@@ -3,9 +3,9 @@
 `duckdb-simple` is a Haskell interface to DuckDB. Its API is like the APIs of
 [`sqlite-simple`](https://hackage.haskell.org/package/sqlite-simple) and
 [`postgresql-simple`](https://hackage.haskell.org/package/postgresql-simple).
-It uses the [`duckdb-ffi`](../duckdb-ffi) bindings. It opens connections,
-runs queries, binds parameters, and decodes results into Haskell types. It
-supports DuckDB scalar types, for example signed and unsigned integers,
+It uses the [`duckdb-ffi`](https://hackage.haskell.org/package/duckdb-ffi) bindings.
+It opens connections, runs queries, binds parameters, and decodes results into
+Haskell types. It supports DuckDB scalar types, for example signed and unsigned integers,
 decimals, HUGEINT and UHUGEINT, intervals, dates, times, and timestamps of each
 precision and with a time zone, blobs, enums, bit strings, and bignums.
 
@@ -55,9 +55,12 @@ is idempotent. `open` and `withConnection` continue to create private parents.
   the name of a type from `registerCustomType`. A column of a type from
   `CREATE TYPE name AS base` has the base type, and an ENUM from `CREATE TYPE`
   has no name.
+- `V2.LogicalRep.logicalTypeToRep factory logical` copies a native logical type
+  into a pure `LogicalTypeRep`. Keep the factory valid throughout the
+  conversion. The function does not destroy the logical type handle.
 - `Tokenizer.tokenize` returns token kinds, UTF-8 byte offsets, token bytes, and
   the native indication of an unterminated final token.
-- `Function` registers scalar, cast, aggregate, and table functions with
+- `Function` registers scalar, aggregate, and table functions with
   Haskell values. `Registration` registers custom types and replacement scans,
   and has the type and parameter declarations. See
   [Typed registration](#typed-registration).
@@ -860,7 +863,7 @@ import Data.Array (listArray)
 storeArray :: Connection -> IO [SizedArray 3 Int]
 storeArray conn = do
   _ <- execute_ conn "CREATE TABLE arrays (vals INTEGER[3])"
-  forM_ (sizedArray (listArray (0, 2) [1, 2, 3]) :: Maybe (SizedArray 3 Int)) \arr ->
+  forM_ (sizedArray (listArray (0, 2) [1, 2, 3]) :: Maybe (SizedArray 3 Int)) $ \arr ->
     execute conn "INSERT INTO arrays VALUES (?)" (Only arr)
   fmap fromOnly <$> query_ conn "SELECT vals FROM arrays"
 

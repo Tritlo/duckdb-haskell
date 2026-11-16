@@ -93,7 +93,7 @@ import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 
 -- | Register a Haskell function under the supplied name.
 --
--- The result type needs a 'Database.DuckDB.Simple.ToField.ToDuckValue'
+-- The result type needs a t'Database.DuckDB.Simple.ToField.ToDuckValue'
 -- instance, and the SQL type of the result is its
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration'. Thus an
 -- 'Data.Int.Int16' result is SMALLINT and a 'Float' result is FLOAT. DuckDB
@@ -107,8 +107,8 @@ import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 -- type, as a SQL @CAST@ does: it rounds a value to the scale of a DECIMAL type
 -- text, and it raises an error for a value that does not fit.
 --
--- Each argument type needs 'Database.DuckDB.Simple.FromField.FromField' and
--- 'Database.DuckDB.Simple.ToField.DuckDBColumnType' instances. The SQL type of
+-- Each argument type needs t'Database.DuckDB.Simple.FromField.FromField' and
+-- t'Database.DuckDB.Simple.ToField.DuckDBColumnType' instances. The SQL type of
 -- an argument is the 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of
 -- its type. An argument type with no declaration raises an @SQLError@ at
 -- registration. A type that is or contains VARIANT is an error at
@@ -185,7 +185,7 @@ createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 -- 'aggregateCombine' must give the other state when one state is
 -- 'aggregateInitial'. Each new state is evaluated to weak head normal form.
 --
--- The arguments decode with 'Database.DuckDB.Simple.FromRow.FromRow'. The SQL
+-- The arguments decode with t'Database.DuckDB.Simple.FromRow.FromRow'. The SQL
 -- type of each argument is the
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of its column in
 -- 'TypedRow'. A type with no declaration is an error at registration, as for

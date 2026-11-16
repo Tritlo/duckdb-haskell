@@ -88,16 +88,16 @@ arrowModeTests streaming =
         concat defaultRows @?= map Just [0 .. 4]
         concat singleRows @?= concat defaultRows
         (length defaultRows, length singleRows) @?= (1, 5)
-        -- As in DuckDB, 0 means 131072 rows.
-        checkBatches 0 131072 300000
+        -- 131072 is the batch size of DuckDB.
+        checkBatches 131072 131072 300000
         checkBatches 20000 20000 10000
         checkBatches 3000 3000 10000
-        negative <- try (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionArrowBatchSize = -1} (const (pure ())))
-        case negative of
-          Left (err :: SQLError) -> do
-            sqlErrorType err @?= Just ErrorInputInvalid
-            assertBool ("unexpected message: " <> show err) ("connectionArrowBatchSize" `Text.isInfixOf` sqlErrorMessage err)
-          Right () -> assertFailure "a negative batch size opened a connection"
+        forM_ [-1, 0] \size ->
+          try (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionArrowBatchSize = size} (const (pure ()))) >>= \case
+            Left (err :: SQLError) -> do
+              sqlErrorType err @?= Just ErrorInputInvalid
+              assertBool ("unexpected message: " <> show err) ("connectionArrowBatchSize is not positive" `Text.isInfixOf` sqlErrorMessage err)
+            Right () -> assertFailure ("the batch size " <> show size <> " opened a connection")
     , testCase "an error of the step keeps its own query, and a native error of the fold has the fold query" $
         withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> withConnection ":memory:" \other -> do
           let failingStep :: IO ()

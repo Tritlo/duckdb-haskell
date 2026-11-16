@@ -305,9 +305,9 @@ data ConnectionOptions = ConnectionOptions
   , connectionArrowBatchSize :: Int
   -- ^ The largest number of rows in one Arrow array of an Arrow fold on this
   --     connection ("Database.DuckDB.Simple.Arrow" and
-  --     "Database.DuckDB.Simple.Streaming"). DuckDB can give shorter arrays. As
-  --     in DuckDB, 0 means 131072. The default is 'defaultArrowBatchSize'. The
-  --     open rejects a negative value.
+  --     "Database.DuckDB.Simple.Streaming"). DuckDB can give shorter arrays.
+  --     The default is 'defaultArrowBatchSize'. The open rejects a value that is
+  --     not positive. For the batch size of DuckDB, write 131072.
   }
   deriving (Eq, Show)
 

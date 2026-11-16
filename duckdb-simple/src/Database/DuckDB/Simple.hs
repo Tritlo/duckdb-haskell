@@ -252,11 +252,12 @@ checkAggregateStripes stripes
   | stripes <= 0 = throwInvalidArgument (Text.pack "connectionAggregateStripes is not positive")
   | otherwise = pure stripes
 
--- | Reject a negative 'connectionArrowBatchSize'. The check evaluates the
--- field, so an error in the field occurs here and not in a later fold.
+-- | Reject a 'connectionArrowBatchSize' that is not positive. The check
+-- evaluates the field, so an error in the field occurs here and not in a later
+-- fold.
 checkArrowBatchSize :: Int -> IO Int
 checkArrowBatchSize size
-  | size < 0 = throwInvalidArgument (Text.pack "connectionArrowBatchSize is negative")
+  | size <= 0 = throwInvalidArgument (Text.pack "connectionArrowBatchSize is not positive")
   | otherwise = pure size
 
 -- | Open a database with a private environment and instance.

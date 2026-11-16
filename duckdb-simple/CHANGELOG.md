@@ -194,8 +194,8 @@
   not positive. A registration on an extension uses the default.
 - Add `connectionArrowBatchSize` to `ConnectionOptions`. It sets the largest
   number of rows in one Arrow array of an Arrow fold on the connection. The
-  default is `defaultArrowBatchSize` (2048 rows). As in DuckDB, 0 means 131072.
-  The open rejects a negative value.
+  default is `defaultArrowBatchSize` (2048 rows). The open rejects a value that
+  is not positive.
 - The library decodes the message of a native error with replacement
   characters. Thus `show` of such an `SQLError` does not raise for a text that
   is not valid UTF-8. Version 0.3 decoded the text with `decodeUtf8`, which

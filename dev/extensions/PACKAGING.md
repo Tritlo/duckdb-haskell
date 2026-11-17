@@ -49,3 +49,54 @@ The zero signature does not authenticate the library. Native loading requires
 DuckDB's unsigned-extension option.
 
 The packer does not verify exported symbols or native dependency resolution.
+
+## Ubuntu 24.04 directory bundle
+
+`build-linux.sh` builds and verifies a directory bundle for Linux x86_64 on
+Ubuntu 24.04 or later. The supported host is the pinned native DuckDB 2.0.0 CLI
+with one Haskell extension. Haskell host executables and multiple independently
+built Haskell extensions are not supported. This path does not target macOS or
+Windows. The Docker client can run on Windows; the output is a Linux extension.
+
+Generate and verify the four ignored binding source files first. Then run from
+the repository root with Docker available:
+
+```sh
+bash dev/extensions/build-linux.sh /absolute/new-output-directory
+```
+
+Set `DOCKER` to the Docker client executable when it is not named `docker`.
+The script streams source into a pinned Ubuntu container. It does not mount the
+build tree or use Nix libraries. It installs checksum-verified GHC 9.14.1 and
+Cabal 3.18.1.0 release archives. The build container has a 12 GiB memory limit,
+no swap, and two CPUs. Cabal uses one build job. The verification container has
+a 3 GiB memory limit, no swap, and one CPU. Run the complete command through the
+serial heavy-job wrapper when that wrapper is required by the host.
+
+The output contains `bundle/haskell_demo.duckdb_extension`, `bundle/lib/`,
+`bundle/manifest.json`, and `bundle/licenses/`. Move the complete `bundle`
+directory together. Load its extension with the native CLI and `-unsigned`.
+The manifest records dependency hashes, SONAMEs, required symbol versions,
+toolchain versions, the base image, native archive checksums, and license
+provenance. Boot-package and bundled libffi notices come from the matching
+checksum-verified GHC source archive. Native copyright files include their
+referenced common-license texts. License source archives retain the dependency
+notices and sources.
+The output also contains verification fixtures and build metadata. These are
+not part of the deployable bundle.
+
+The packer copies non-glibc dependencies. It rejects unresolved dependencies,
+different libraries with the same name, non-x86_64 ELF objects, native DuckDB
+imports, missing license provenance, and glibc requirements newer than 2.39.
+Each bundled library uses a relative `$ORIGIN` search path. The extension uses
+`$ORIGIN/lib`. The script changes the raw ELF files before `Pack.hs` appends the
+exact-release footer. It does not bundle glibc or its loader.
+
+A fresh Ubuntu container receives only the bundle and verification tools. The
+script moves the bundle to a path with spaces, checks hashes and dependency
+resolution, checks rejection of incompatible footer versions and platforms,
+and runs the existing extension integration suite. The compiler, Cabal store,
+source tree, and original build directory are absent from this container.
+
+On failure, the script retains its task containers and prints their exact cleanup
+command. Successful runs remove their task containers.

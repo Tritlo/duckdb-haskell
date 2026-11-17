@@ -217,14 +217,17 @@ extension build directory and the matching native CLI.
 
 ## Deployment
 
-The example targets Linux and macOS and links GHC and package libraries
-dynamically. Its run paths point into the Cabal build directory, the Cabal
-store, and the GHC or Nix installation. The packaged extension loads only on a
-machine where those paths exist, and `cabal clean` breaks it. Two extensions
+The build-and-load commands above target Linux and macOS and link GHC and
+package libraries dynamically. Their run paths point into the Cabal build
+directory, the Cabal store, and the GHC or Nix installation. This output loads
+only on a machine where those paths exist, and `cabal clean` breaks it. Two extensions
 built in different projects can use the same `-inplace` library names. The
 loader then reuses the first library, so do not load two such extensions in
-one process. This example does not cover relocatable bundling, Windows, or
-loading into another Haskell executable.
+one process. For a Linux x86_64 directory bundle on Ubuntu 24.04 or later, use
+[the container build and relocation check](PACKAGING.md#ubuntu-2404-directory-bundle).
+That bundle supports one Haskell extension loaded by the pinned native CLI.
+Windows extensions, multiple independently built Haskell extensions, and
+loading into another Haskell executable remain unsupported.
 
 References: [Cabal foreign libraries](https://cabal.readthedocs.io/en/3.18/cabal-package-description-file.html#foreign-libraries),
 [GHC runtime initialization](https://downloads.haskell.org/ghc/9.14.1/docs/users_guide/exts/ffi.html#using-your-own-main),

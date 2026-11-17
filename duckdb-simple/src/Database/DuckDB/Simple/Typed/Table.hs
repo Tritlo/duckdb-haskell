@@ -193,12 +193,14 @@ writeRows factory chunk columns rows = do
         pure vector
       -- Use loops with a constant stack. See Note [Constant stack at safe calls]
       -- in "Database.DuckDB.Simple.Native".
+      let select
+            | columns == [0 .. width - 1] = id
+            | otherwise = \values -> map (values !!) columns
       forM_ (zip [0 ..] now) \(index, row) -> do
-        let values = rowColumnValues row
         zipWithM_
           (\vector (ColumnValue make) -> bracket (make factory) destroyValue (checked . c_duckdb_v2_vector_set_value vector index))
           vectors
-          (map (values !!) columns)
+          (select (rowColumnValues row))
       pure later
 
 -- | Split a list after at most the given number of elements. Evaluate the

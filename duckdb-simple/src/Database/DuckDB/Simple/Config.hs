@@ -87,20 +87,21 @@ registerCustomOption conn = registerCustomOptionOn (ConnectionTarget conn)
 -- connection, for example a custom option of the database.
 -- 'listConfigOptions' gives the same options with their values.
 listConfigFlags :: Connection -> IO [ConfigFlag]
-listConfigFlags conn =
-  map (\option -> ConfigFlag (configOptionName option) (configOptionDescription option)) <$> listConfigOptions conn
+listConfigFlags conn = withConnectionHandle conn \handle -> do
+  config <- output (c_duckdb_v2_connection_get_config handle)
+  copyOptions config copyFlag
 
 -- | List options with effective values from a live connection.
 listConfigOptions :: Connection -> IO [ConfigOption]
 listConfigOptions conn = withConnectionHandle conn \handle -> do
   config <- output (c_duckdb_v2_connection_get_config handle)
-  copyOptions config
+  copyOptions config (copyOption config)
 
 -- | List options and global values from an instance.
 listInstanceOptions :: Instance -> IO [ConfigOption]
 listInstanceOptions instance_ = withInstanceHandle instance_ \handle -> do
   config <- output (c_duckdb_v2_instance_get_config handle)
-  copyOptions config
+  copyOptions config (copyOption config)
 
 -- | Read an effective option by its canonical name or an alias.
 getConfigOption :: Connection -> Text -> IO (Maybe ConfigValue)
@@ -182,17 +183,23 @@ checkOptionName :: Text -> IO ()
 checkOptionName name = when (Text.any (== '\0') name) $ throwInvalidArgument "config option name contains NUL"
 
 -- | Copy the options visible through a borrowed config.
-copyOptions :: DuckDBV2ConfigHandle -> IO [ConfigOption]
-copyOptions config = do
+copyOptions :: DuckDBV2ConfigHandle -> (DuckDBV2OptionHandle -> IO a) -> IO [a]
+copyOptions config copy = do
   count <- output (c_duckdb_v2_config_get_option_count config)
   forM (indices count) \index ->
-    bracket (output (c_duckdb_v2_config_get_option_by_index config index)) (destroy c_duckdb_v2_option_destroy) (copyOption config)
+    bracket (output (c_duckdb_v2_config_get_option_by_index config index)) (destroy c_duckdb_v2_option_destroy) copy
+
+-- | Copy the name and description without reading the option value.
+copyFlag :: DuckDBV2OptionHandle -> IO ConfigFlag
+copyFlag handle =
+  ConfigFlag
+    <$> (output (c_duckdb_v2_option_get_name handle) >>= readIdentifier)
+    <*> (output (c_duckdb_v2_option_get_description handle) >>= readText)
 
 -- | Copy a descriptor while its native strings are alive.
 copyOption :: DuckDBV2ConfigHandle -> DuckDBV2OptionHandle -> IO ConfigOption
 copyOption config handle = do
-  name <- output (c_duckdb_v2_option_get_name handle) >>= readIdentifier
-  description <- output (c_duckdb_v2_option_get_description handle) >>= readText
+  ConfigFlag name description <- copyFlag handle
   setting <- withOptionValue config name \value _ -> nullableText value
   defaultSetting <- bracket (output (c_duckdb_v2_option_get_default_value handle)) (destroy c_duckdb_v2_value_destroy) nullableText
   scope <- output (c_duckdb_v2_option_get_default_scope handle) >>= settingScopeFromNative

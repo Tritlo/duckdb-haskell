@@ -617,14 +617,13 @@ prepareUnionDecoder readers tree vector = do
       LogicalTypeUnion members -> pure members
       other ->
         throwInternalError (Text.pack "expected UNION logical type, but saw " <> logicalTypeSQL other)
-  let membersList = elems membersArray
-      memberCount = length membersList
+  let memberCount = rangeSize (bounds membersArray)
   -- Child 0 of a UNION vector is the tag, and member j is child j + 1. The tag
   -- reader needs no type tree.
   checkChildCount "UNION" vector (memberCount + 1)
   readTag <- vectorChild vector 0 >>= prepareVectorReader readers
-  memberReaders <-
-    forM (zip [1 ..] membersList) \(childIdx, UnionMemberType{unionMemberType}) -> do
+  readersByTag <- fmap (listArray (0, memberCount - 1)) $
+    forM (zip [1 ..] (elems membersArray)) \(childIdx, UnionMemberType{unionMemberName, unionMemberType}) -> do
       memberVec <- vectorChild vector childIdx
       prepared <- newIORef Nothing
       pure \row -> do
@@ -635,16 +634,17 @@ prepareUnionDecoder readers tree vector = do
             reader <- prepareVectorReaderWith readers (pure unionMemberType) Nothing memberVec
             writeIORef prepared (Just reader)
             pure reader
-        readMember row
+        payload <- readMember row
+        pure (unionMemberName, payload)
   pure \rowIdx -> do
     memberIdx <- readTag rowIdx >>= unionTagIndex
     when (memberIdx < 0 || memberIdx >= memberCount) $
       throwInternalError (Text.pack "union tag out of range")
-    payload <- (memberReaders !! memberIdx) rowIdx
+    (name, payload) <- (readersByTag ! memberIdx) rowIdx
     pure
       UnionValue
         { unionValueIndex = fromIntegral memberIdx
-        , unionValueLabel = unionMemberName (membersList !! memberIdx)
+        , unionValueLabel = name
         , unionValuePayload = payload
         , unionValueMembers = membersArray
         }

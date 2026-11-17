@@ -1,0 +1,175 @@
+{
+  "date": "2026-11-17",
+  "baseline_commit": "bdb6501ecbf4dff36ea57e5c770f9eb8ed797b2a",
+  "selected_production_commit": "ca73ace5a3910a70848391f1db77eae76aa3d32b",
+  "selected_change": "Construct SQLNULL by name instead of parsing its quoted type declaration. No cache or ownership change.",
+  "selected_source_sha256": {
+    "duckdb-simple/src/Database/DuckDB/Simple/ToField.hs": "ebe40f0a9d90cff50d057a142dfeca9866bf0cfb0187f5e77b1ba0afb302fee3",
+    "duckdb-simple/src/Database/DuckDB/Simple/V2/LogicalRep.hs": "8987d185211edd38081e7f527fd1093b94cd095f4f41e48f04a2636dca2419a4"
+  },
+  "baseline_source_sha256": {
+    "duckdb-simple/src/Database/DuckDB/Simple/ToField.hs": "ebe40f0a9d90cff50d057a142dfeca9866bf0cfb0187f5e77b1ba0afb302fee3",
+    "duckdb-simple/src/Database/DuckDB/Simple/V2/LogicalRep.hs": "70d606468fccdb6acf223d07bf8ad556b35ec43a786a1c695159de170aa2b996"
+  },
+  "combined_extra_patch": "--- a/duckdb-simple/src/Database/DuckDB/Simple/ToField.hs\n+++ b/duckdb-simple/src/Database/DuckDB/Simple/ToField.hs\n@@ -1520,9 +1520,15 @@\n                 bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \\logical ->\n                   (/= 0) <$> output (c_duckdb_v2_logical_type_is_equal logical plainNull)\n               pure (if untyped then kept else value : kept)\n-  present <-\n-    bracket (makeType (LogicalTypeScalar LogicalTypeIdSQLNull)) destroyLogicalType \\plainNull ->\n-      reverse <$> foldM (keep plainNull) [] values\n+      -- Construct the comparison type only if a NULL needs it.\n+      untilNull kept [] = pure (reverse kept)\n+      untilNull kept (value : rest) =\n+        output (c_duckdb_v2_value_is_null value) >>= \\flag ->\n+          if flag == 0\n+            then untilNull (value : kept) rest\n+            else bracket (makeType (LogicalTypeScalar LogicalTypeIdSQLNull)) destroyLogicalType \\plainNull ->\n+              reverse <$> foldM (keep plainNull) kept (value : rest)\n+  present <- untilNull [] values\n   case present of\n     value : rest -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \\logical -> do\n       -- See Note [Type aliases] in \"Database.DuckDB.Simple.LogicalRep\".\n",
+  "combined_ToField_sha256": "f06416ba7184eb0c59c937bae8a3e4137dfeccd4827b1965feb4a04808a1471b",
+  "host": "WSL2 Linux 6.18.58.1-microsoft-standard-WSL2; AMD Ryzen 9 7950X, 24 visible logical CPUs.",
+  "native_settings": {
+    "threads": 1,
+    "async_threads": 0
+  },
+  "compiler": "GHC 9.14.1, library Cabal -O1, standalone drivers -O2 -threaded -rtsopts; +RTS -T -N1",
+  "native": {
+    "version": "2.0.0",
+    "path": "/nix/store/y72xxpiza7xmdc7n718gwj9ssm46sgcr-duckdb-2.0.0/lib/libduckdb.so",
+    "sha256": "f5b924a0cfbb6896a4fde2856957609f413ad72abfae0f44004050468f220912",
+    "haskell_linkage": "Static; readelf showed no NEEDED libHS entries."
+  },
+  "measurement": {
+    "rows_per_query": 1000,
+    "queries_per_sample": 10,
+    "pairs_per_comparison": 4,
+    "arm_order": "Pairs 1/3: first arm then second arm; pairs 2/4: second arm then first arm. First/second arms: baseline/combined, combined/constructor, and baseline/constructor. Each arm runs NULL fixture then dynamic fixture.",
+    "null_samples_per_arm_per_comparison": 20,
+    "dynamic_samples_per_arm_per_comparison": 12,
+    "allocation_scope": "GHC allocated_bytes only; excludes native heap allocation. Major GC before and after each sample. Native RSS is checked separately by the leak suite.",
+    "latency_scope": "Complete query, including parameter conversion, SQL execution and result validation. Both NULL counts or dynamic type, length, payload order and sum are checked.",
+    "comparison_boundary": "Final CSV is a direct baseline-versus-constructor comparison. The two earlier comparisons are retained separately as rejected-candidate evidence."
+  },
+  "constructor_control": {
+    "driver": "pr35-null-constructor-control.hs",
+    "result": "Passed: named and quoted NULL are equal and unaliased SQLNULL for connection and instance factories.",
+    "scenarios": {
+      "baseline": "passed",
+      "default_schema": "CREATE TYPE \"NULL\" AS VARCHAR was rejected because NULL already exists; constructors still checked.",
+      "search_path": "CREATE SCHEMA custom; CREATE TYPE custom.\"NULL\" AS VARCHAR; SET search_path=custom,main; passed.",
+      "system_registration": "R.registerCustomType \"NULL\" with VARCHAR base succeeded; constructors remained unaliased SQLNULL."
+    },
+    "rejected_candidate": "Unquoted from_text(\"NULL\") succeeds on connection factories but fails to parse on instance factories."
+  },
+  "validation": {
+    "exact_final": "cabal build all -j1 --disable-documentation; cabal test all -j1 --disable-documentation --test-show-details=direct. Passed: 835 high-level, 171 FFI tests, nonthreaded and default leak suite. DUCKDB_TEST_VERSION=2.0.0.",
+    "stress_boundary": "leak all 100 passed on combined arm, which has the same NULL constructor. Final ToField.hs reverts to the previously tested baseline. all100 was not repeated for the final one-line arm.",
+    "optional_components": "DataFrame, extension flag suites and Valgrind were not rerun for this isolated patch.",
+    "formatting": "fourmolu and git diff --check passed; no Cabal files changed.",
+    "retained_driver_smoke": "All three retained drivers compiled and ran successfully against the exact final source. The stricter constructor control requires successful search-path and system-registration setups.",
+    "evidence_validation": "Independently verified raw row counts, unique sample identities, CSV/source/driver hashes, all ten final group medians, and sample denominators."
+  },
+  "rejected_change": "Lazy plain-NULL sentinel loop: small and inconsistent latency differences, only about 1-4 KiB/query allocation difference. Retain the one-line constructor change.",
+  "raw_samples": {
+    "file": "pr35-null-parameters.csv",
+    "sha256": "1c8db189b16a6bd9fc22c5d4e09faf4f0b5bbd469b940b848832dda57fae8b13",
+    "sample_count": 152,
+    "rejected_candidates_file": "pr35-null-rejected-candidates.csv",
+    "rejected_candidates_sha256": "ad7848f69154486e3ef8702371f744680b0ea44b3f8a1689b85afb8bef4621c1",
+    "rejected_candidates_sample_count": 304
+  },
+  "compiled_driver_sources_sha256": {
+    "pr35-null-inference-bench.hs": "9aca2989b0847f89ce09928eeec235b77322eaae74627138a816901fd8d0a5b7",
+    "pr35-dynamic-null-bench.hs": "1e30aa942f77e1b65dbe432f1139ea0329171a6bd66cf57d3abdbbbf4ec4812b",
+    "pr35-null-name-control.hs": "f156586e5dd42c1a62111f5bcbcab07855cbd157d4825298b7a9f2c37583deb6"
+  },
+  "driver_source_note": "Recorded timing binaries used the original driver sources identified by compiled_driver_sources_sha256. Retained copies differ only in formatting, comments, explicit constructor-control type signatures, and stricter setup checks outside timed loops. The retained copies were compiled and smoke-tested separately; their smoke timings are not included in the CSV.",
+  "binaries_sha256": {
+    "baseline_null": "8de86c3827e9c1d73b11da3601b1aa0fa9ef8c565da24087c2167fa36cd94a69",
+    "baseline_dynamic": "476971b6e75844b3f6b910ca31f5e792f61069ef42547cddabf643ad97b5f6af",
+    "combined_null": "b8ff3220b73e6420c213a6a4fdb90a102a8de660447e085edbb942fd5e8754fc",
+    "combined_dynamic": "5ac09972840ee37f8bfcf00e11a8d8621f1324b11ead433dce1797b7207fbc08",
+    "constructor_null": "2f9ffc77abd43666696277fd1f3e4e2dd9b513d9d523e4dbe995fab87383588a",
+    "constructor_dynamic": "a73ad041469c8ede78f994a1338c5c79c273603fe21415a894c3708a4c8620fe"
+  },
+  "drivers": {
+    "pr35-null-inference.hs": "66031e2540e0c1fec280f6177d6b4046ce79d2d91f0aa6bfd37adaa5d8cff121",
+    "pr35-null-dynamic.hs": "03f69d00d6fd2679595f7dcad4c2b45282a82219018d62a2a0865fdf341dd0a4",
+    "pr35-null-constructor-control.hs": "2453834bd80115f6b71957e4c3491d96f96befe0950d2ec6ab391be164f9c751"
+  },
+  "reproduction": [
+    "Use separate worktrees at baseline_commit and at the selected one-line change, with the same pinned nix-shell dev/nix/shell.nix and matching generated binding checksums. Build serially under heavy-management/bin/capped.",
+    "Run GHC_ENVIRONMENT=- cabal build all -j1 --disable-documentation for each arm.",
+    "Compile each retained driver from its worktree with env -u GHC_ENVIRONMENT cabal exec -- ghc -O2 -threaded -rtsopts -package duckdb-simple DRIVER -odir UNIQUE_OBJECT_DIR -hidir UNIQUE_OBJECT_DIR -o UNIQUE_BINARY. Add -package duckdb-ffi for the constructor control. Keep each binary and object directory separate.",
+    "Inside the same pinned shell, run the saved binaries with +RTS -T -N1 -RTS. Alternate arm order across four pairs. No builds or other heavy jobs may overlap timing. Preserve each stdout CSV and combine it with comparison, arm, pair and sample labels.",
+    "To reproduce the discarded combined arm, apply combined_extra_patch to the selected constructor-only source. It changes only ToField.hs; verify the recorded source hash."
+  ],
+  "medians_per_query": [
+    {
+      "comparison": "baseline_constructor",
+      "arm": "baseline",
+      "workload": "mixed_nulls",
+      "samples": 20,
+      "milliseconds": 12.14415,
+      "allocated_bytes": 3185070.4
+    },
+    {
+      "comparison": "baseline_constructor",
+      "arm": "baseline",
+      "workload": "struct_array",
+      "samples": 12,
+      "milliseconds": 9.099599999999999,
+      "allocated_bytes": 8369681.6
+    },
+    {
+      "comparison": "baseline_constructor",
+      "arm": "baseline",
+      "workload": "struct_list",
+      "samples": 12,
+      "milliseconds": 8.3886,
+      "allocated_bytes": 8305772.0
+    },
+    {
+      "comparison": "baseline_constructor",
+      "arm": "baseline",
+      "workload": "struct_map",
+      "samples": 12,
+      "milliseconds": 12.5683,
+      "allocated_bytes": 11443928.8
+    },
+    {
+      "comparison": "baseline_constructor",
+      "arm": "baseline",
+      "workload": "untyped_nulls",
+      "samples": 20,
+      "milliseconds": 21.593650000000004,
+      "allocated_bytes": 3421489.6
+    },
+    {
+      "comparison": "baseline_constructor",
+      "arm": "constructor",
+      "workload": "mixed_nulls",
+      "samples": 20,
+      "milliseconds": 3.61035,
+      "allocated_bytes": 3513546.4
+    },
+    {
+      "comparison": "baseline_constructor",
+      "arm": "constructor",
+      "workload": "struct_array",
+      "samples": 12,
+      "milliseconds": 9.011949999999999,
+      "allocated_bytes": 8370619.2
+    },
+    {
+      "comparison": "baseline_constructor",
+      "arm": "constructor",
+      "workload": "struct_list",
+      "samples": 12,
+      "milliseconds": 8.388449999999999,
+      "allocated_bytes": 8306206.4
+    },
+    {
+      "comparison": "baseline_constructor",
+      "arm": "constructor",
+      "workload": "struct_map",
+      "samples": 12,
+      "milliseconds": 12.498,
+      "allocated_bytes": 11445196.0
+    },
+    {
+      "comparison": "baseline_constructor",
+      "arm": "constructor",
+      "workload": "untyped_nulls",
+      "samples": 20,
+      "milliseconds": 4.7814,
+      "allocated_bytes": 4077995.2
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "date": "2026-11-17",
+  "baseline_commit": "e4d9c8434db0e50260e3f5ce6ff967606d9d4967",
+  "host": "Linux-6.18.58.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "native_library": "/nix/store/y72xxpiza7xmdc7n718gwj9ssm46sgcr-duckdb-2.0.0/lib/libduckdb.so",
+  "native_library_sha256": "f5b924a0cfbb6896a4fde2856957609f413ad72abfae0f44004050468f220912",
+  "header_sha256": "73026a28e5b55952afb6e2e9ce80fd4f76614afedce329da895ccaf85a4a8be6",
+  "native_source_commit": "d54cbbe3df17e8e5ce68312f483b4155836112aa",
+  "compiler": "pinned dev/nix/shell.nix cc, -O2 -Wall -Wextra -Werror",
+  "samples_per_cell": 5,
+  "sample_rows": 135,
+  "memory_cap": "2G",
+  "time_cap": "5m",
+  "peak_mib": 409,
+  "exit_status": 0,
+  "scope": "Native public API operation timings; no Haskell snapshot or query benchmark; no proposed getter speedup measured.",
+  "failures": "Initial fixture compile passed duckdb_v2_str by value; corrected to pointer before successful run.",
+  "linked_dependencies": [
+    "\tlinux-vdso.so.1 (0x00007ee27dc41000)",
+    "\tlibduckdb.so => /nix/store/y72xxpiza7xmdc7n718gwj9ssm46sgcr-duckdb-2.0.0/lib/libduckdb.so (0x00007ee279400000)",
+    "\tlibc.so.6 => /nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib/libc.so.6 (0x00007ee279000000)",
+    "\tlibdl.so.2 => /nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib/libdl.so.2 (0x00007ee27dc2f000)",
+    "\tlibstdc++.so.6 => /nix/store/r48746qznwqxxl9qzd8f08ny8mg1dg2y-gcc-15.3.0-lib/lib/libstdc++.so.6 (0x00007ee278c00000)",
+    "\tlibm.so.6 => /nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib/libm.so.6 (0x00007ee279308000)",
+    "\tlibgcc_s.so.1 => /nix/store/r48746qznwqxxl9qzd8f08ny8mg1dg2y-gcc-15.3.0-lib/lib/libgcc_s.so.1 (0x00007ee27dc00000)",
+    "\t/nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib/ld-linux-x86-64.so.2 => /nix/store/0d8g8n0a11v6f5m2h416ajyxmnkwc3md-glibc-2.42-67/lib64/ld-linux-x86-64.so.2 (0x00007ee27dc43000)"
+  ],
+  "artifact_sha256": {
+    "bench.c": "ce7619d748a2ef46037940220dd79b0438385dca198bb2963a234f3a4bfed5b7",
+    "samples.csv": "c17d2b126cdf8b450520d23a9f0a3255532f7fc86144a34734f8de3282595654",
+    "summary.json": "e2a8a9b217f6253b4611c920fd106029b40ea4551478288252638aad94ea6172"
+  }
+}

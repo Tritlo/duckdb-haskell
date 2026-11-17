@@ -1646,8 +1646,7 @@ member; a collated VARCHAR member; and a GEOMETRY('OGC:CRS84') member.
   member, written to a one-row vector of the UNION type with the default cast,
   as defaultCast does. It gives the correct value in each of the eight cases,
   and it runs no cast that a user registers. The header does not document this
-  cast. It takes about 27 to 51 percent more native instructions for each value
-  than (a) (two members and 255 members).
+  cast.
 - (c) The cast of the member value to the UNION type. The header calls it "the
   sanctioned way to build UNION and ENUM values". DuckDB chooses the member by
   the type of the value. Thus the cast is ambiguous when two members have the
@@ -1661,8 +1660,8 @@ member; a collated VARCHAR member; and a GEOMETRY('OGC:CRS84') member.
   of the outer UNION ("The cast is ambiguous"), and for the STRUCT member, which
   DuckDB reads as the STRUCT form of the UNION.
 
-Thus (a) is correct in each case, it uses the layout and the write that the
-header documents, and it costs less than (b). DuckDB does not document two
+Thus (a) is correct in each case and uses the layout and the write that the
+header documents. DuckDB does not document two
 facts: that the children of a new vector are FLAT, which (a) needs, and the cast
 of a STRUCT to a UNION, which (b) needs. If a later DuckDB gives a new vector
 other children, (a) can write a wrong value or fail. These cases bind a UNION

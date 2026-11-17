@@ -50,10 +50,10 @@ import Database.DuckDB.Simple.Materialize (
   VectorReader,
   callbackReadFactory,
   prepareGeometryReader,
-  prepareVariantReader,
   prepareVectorReader,
+  readCallbackVariant,
   readFactoryHandle,
-  rejectRows,
+  readInstanceVariant,
  )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.TypeScope (scopedTypeRep, withTypeScope)
@@ -69,7 +69,6 @@ import Database.DuckDB.Simple.V2.Copy (
   registerMultiFileFunctionWith,
  )
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
-import Database.DuckDB.Simple.VariantCodec (destroyVariantState, newVariantState)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, nullPtr)
@@ -114,8 +113,7 @@ registerCopyToFunction
 registerCopyToFunction = registerCopyToFunctionOn . ConnectionTarget
 
 -- | Register row-oriented COPY TO callbacks on a connection or a loading
--- extension. The rules of 'registerCopyToFunction' apply. A COPY TO function of
--- an extension cannot read a VARIANT value.
+-- extension. The rules of 'registerCopyToFunction' apply.
 registerCopyToFunctionOn
   :: RegistrationTarget
   -> Text
@@ -141,28 +139,12 @@ registerCopyOn target name to from = do
 checkCopyName :: Text -> IO ()
 checkCopyName name = when (Text.null name || Text.any (== '\0') name) $ throwInvalidArgument "invalid copy function name"
 
--- | Give the VARIANT reader of a registration target to an action. On a
--- connection, the reader decodes VARIANT through a helper connection of the
--- database. An extension target has no instance handle, so its reader raises an
--- error for each VARIANT row. See Note [VARIANT decoding] in
--- "Database.DuckDB.Simple.VariantCodec".
+-- | Use the host instance for a connection's COPY TO and a private one for an extension.
 withVariantReader :: RegistrationTarget -> (VectorReader -> IO a) -> IO a
 withVariantReader target action = case target of
-  ConnectionTarget connection -> withDatabaseHandle connection (action . readVariant)
-  ExtensionTarget _ _ -> action (rejectRows (throwInvalidArgument "a COPY TO function of an extension cannot read VARIANT"))
-  where
-    -- Keep the raw instance handle, not the 'Instance' value. DuckDB registers
-    -- the COPY function on the database, and it can keep the callbacks until
-    -- the database closes. A callback that holds the 'Instance' value keeps the
-    -- state of the instance reachable. Then the finalizer of an instance that
-    -- the program dropped does not run. The handle is valid in each COPY
-    -- statement, because the statement runs on a connection of the instance.
-    -- The close of an instance closes its connections before it destroys the
-    -- handle.
-    readVariant instanceHandle vector =
-      bracket (output (c_duckdb_v2_connection_create instanceHandle)) (destroy c_duckdb_v2_connection_destroy) \helper ->
-        withInstanceFactory instanceHandle \casts ->
-          bracket (newVariantState helper casts) destroyVariantState (`prepareVariantReader` vector)
+  -- A catalog-owned callback must not keep the managed instance alive.
+  ConnectionTarget connection -> withDatabaseHandle connection (action . readInstanceVariant)
+  ExtensionTarget _ _ -> action readCallbackVariant
 
 -- | The native COPY TO callbacks of the row-oriented functions. The first
 -- argument is the factory of 'targetCastFactory'.

@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- |
@@ -26,17 +25,14 @@ import Database.DuckDB.Simple.Conversion (runConversion)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal (Connection)
-import Database.DuckDB.Simple.Materialize (callbackReadFactory, materializeValue, readFactoryHandle, rejectRows)
+import Database.DuckDB.Simple.Materialize (callbackReadFactory, materializeValue, readCallbackVariant, readFactoryHandle)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.TypeScope (TypeScope, scopedTypeRep, withTypeScope)
-import Database.DuckDB.Simple.Typed (checkArgumentType, variantArgumentReason)
 import qualified Database.DuckDB.Simple.V2.Pragma as V2
 import Database.DuckDB.Simple.V2.Registration (
-  FunctionParameter (..),
+  FunctionParameter,
   RegistrationTarget (..),
-  withRegistrationFactory,
-  withTypeDeclaration,
  )
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 
@@ -62,11 +58,7 @@ data PragmaCallback args
 -- @PRAGMA p(1, label = \'x\')@. The field is at the position of the parameter in
 -- both cases. When the call omits a parameter, the field has the default value of
 -- the parameter. A NULL argument needs a 'Maybe' field. When the row does not
--- decode, the call fails with an SQL error that names the pragma. A parameter
--- type that is or contains VARIANT is an error at registration, because the
--- library cannot read a VARIANT value in a callback (see the section /Typed
--- registration/ of the README). A parameter of the type ANY can get a VARIANT
--- value, and that call fails with the same error. A GEOMETRY parameter works.
+-- decode, the call fails with an SQL error that names the pragma.
 --
 -- > registerPragmaFunction conn "repeat_answer" [parameter "times" (TypeExpression "BIGINT")] $
 -- >     QueryPragma \(Only (times :: Int64)) -> pure ("SELECT 42 FROM range(" <> Text.pack (show times) <> ")")
@@ -81,13 +73,6 @@ registerPragmaFunctionOn target name parameters callback = do
   -- registration does. 'V2.registerPragmaFunctionOn' checks it again.
   when (Text.null name || Text.any (== '\0') name) $
     throwInvalidArgument "pragma function name must be nonempty and must not contain NUL"
-  -- The argument reader reads no VARIANT. Thus reject such a type before the
-  -- registration.
-  withRegistrationFactory target \factory ->
-    mapM_
-      ( \FunctionParameter{parameterName, parameterType} -> withTypeDeclaration factory parameterType (checkArgumentType True name ("parameter " <> parameterName))
-      )
-      parameters
   casts <- targetCastFactory target
   V2.registerPragmaFunctionOn target name parameters case callback of
     QueryPragma action -> V2.QueryPragma \info context -> withTypeScope \scope -> pragmaArguments scope casts name info context >>= action
@@ -124,7 +109,6 @@ pragmaArguments scope casts name info context = withContextFactory context \cont
           destroyValue
           \native ->
             (,)
-              <$> materializeValue (noVariant argument) factory native
+              <$> materializeValue readCallbackVariant factory native
               <*> scopedTypeRep scope (pure (readFactoryHandle factory)) (output (c_duckdb_v2_value_get_logical_type native))
       pure (Field argument (fromIntegral index) value argumentType)
-    noVariant argument = rejectRows (throwInvalidArgument (Text.intercalate ": " [name, "parameter " <> argument, variantArgumentReason]))

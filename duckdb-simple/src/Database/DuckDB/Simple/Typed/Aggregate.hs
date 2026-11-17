@@ -25,18 +25,20 @@ import Control.Monad (forM_, unless, when)
 import Data.Array (Array, elems, listArray, (!))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.IntSet as IntSet
-import Data.Maybe (isJust)
+import Data.Maybe (isNothing)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
 import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions, targetCastFactory)
 import Database.DuckDB.Simple.Conversion (runConversion)
+import Database.DuckDB.Simple.Element (containsType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (FieldNull))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
 import Database.DuckDB.Simple.Function.Internal (FunctionResult (..), ScalarValue, prepareResultWriter)
 import Database.DuckDB.Simple.Internal (Connection (..), ConnectionOptions (..), defaultAggregateStripes)
-import Database.DuckDB.Simple.Materialize (ReadFactory (..))
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (LogicalTypeGeometry))
+import Database.DuckDB.Simple.Materialize (ReadFactory (..), createHelperInstance)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..))
@@ -44,11 +46,11 @@ import Database.DuckDB.Simple.TypeScope (withTypeScope)
 import Database.DuckDB.Simple.Typed (
   TypedRow (..),
   argumentName,
-  checkArgumentType,
   conversionMessage,
   prepareArgumentReader,
   rowDeclarations,
  )
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToBaseRep)
 import Database.DuckDB.Simple.V2.Registration (
   AggregateCallbacks (..),
   BindCallback,
@@ -62,7 +64,6 @@ import Database.DuckDB.Simple.V2.Registration (
   withRegistrationFactory,
   withTypeDeclaration,
  )
-import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, intPtrToPtr, nullPtr, ptrToIntPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (peek, peekElemOff, poke)
@@ -225,9 +226,7 @@ registrationMetadataFactory cache = modifyMVarMasked cache \case
   Nothing ->
     bracketOnError (output c_duckdb_v2_environment_create) (destroy c_duckdb_v2_environment_destroy) \environment ->
       bracketOnError
-        ( withTextArray ["threads", "async_threads"] \names -> withTextArray ["1", "0"] \values ->
-            output (c_duckdb_v2_instance_create_with_options environment (ConstPtr names) (ConstPtr values) 2)
-        )
+        (createHelperInstance environment)
         (destroy c_duckdb_v2_instance_destroy)
         \instanceHandle -> do
           factory <- output (c_duckdb_v2_instance_get_factory instanceHandle)
@@ -250,8 +249,7 @@ stateStripe :: StateTable -> Int -> IORef IntSet.IntSet
 stateStripe table key = table ! (key `mod` length table)
 
 -- | Register a typed aggregate function on a connection or a loading extension.
--- An argument type or a result type with no declaration, or an argument type
--- that is or contains VARIANT, raises an error at registration. On a loading
+-- An argument type or a result type with no declaration raises an error at registration. On a loading
 -- extension, an argument type that is or contains GEOMETRY also raises an
 -- error at registration, because the update callback has no factory to read
 -- it. See Note [Type declarations] in
@@ -260,10 +258,7 @@ stateStripe table key = table ! (key `mod` length table)
 -- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal". The
 -- check of the name, the declarations of the arguments and the result, and the
 -- check of a raw result come before the read of the state of the target, so
--- their input errors win over a closed connection. The VARIANT and GEOMETRY
--- checks ('checkArgumentType') need the resolved type of the argument, so they
--- come after the read of the state. Thus a closed connection wins over the
--- VARIANT check. The GEOMETRY check applies only to a loading extension.
+-- their input errors win over a closed connection.
 createAggregateOn
   :: forall state args result
    . (FromRow args, TypedRow args, FunctionResult result) => RegistrationTarget -> Text -> Aggregate state args result -> IO ()
@@ -314,12 +309,21 @@ createAggregateOn target name aggregate = do
           , aggregateDestroyCallback = Just destroyStates
           }
   withRegistrationFactory target \factory -> do
-    -- The argument reader does not read VARIANT, and it reads GEOMETRY only with
-    -- a factory. Thus reject such a type before the registration.
-    forM_ (zip [0 ..] argumentTypes) \(index, argumentType) ->
-      withTypeDeclaration factory argumentType (checkArgumentType (isJust casts) name ("argument " <> argumentName index))
+    when (isNothing casts) $
+      forM_ (zip [0 ..] argumentTypes) \(index, argumentType) ->
+        withTypeDeclaration factory argumentType \logical -> do
+          rep <- logicalTypeToBaseRep logical
+          when (containsType isGeometry rep) $
+            throwInvalidArgument
+              ( name
+                  <> ": argument "
+                  <> argumentName index
+                  <> ": the type of an argument of an aggregate function of an extension cannot be or contain GEOMETRY"
+              )
     registerAggregateFunctionWithCleanup target closeMetadata (configure parameters resultType factory) callbacks
   where
+    isGeometry LogicalTypeGeometry{} = True
+    isGeometry _ = False
     columnTypes = rowColumnDeclarations (Proxy @args)
     configure parameters resultType factory function = do
       withIdentifier name (checked . c_duckdb_v2_aggregate_function_set_name function)

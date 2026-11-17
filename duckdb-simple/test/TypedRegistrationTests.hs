@@ -73,7 +73,7 @@ import Database.DuckDB.Simple.Registration (
  )
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import qualified Database.DuckDB.Simple.V2.Registration as R
-import Database.DuckDB.Simple.Variant (Variant)
+import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
@@ -105,7 +105,7 @@ typedRegistrationTests =
     , testCase "pragma row has the order of the declaration" testPragmaRow
     , testCase "exec pragma counts its calls" testPragmaExec
     , testCase "pragma argument rows that do not decode" testPragmaDecodeErrors
-    , testCase "pragma parameters whose types contain VARIANT fail at registration" testPragmaVariantParameters
+    , testCase "pragma parameters read VARIANT in declared and ANY arguments" testPragmaVariantParameters
     , testCase "pragma exceptions become SQL errors" testPragmaExceptions
     , testCase "pragma registration checks the name before the state of a closed connection" testPragmaClosedName
     , testCase "an SQL error in each callback kind keeps its type and one prefix" testCallbackErrorTypes
@@ -149,6 +149,7 @@ typedRegistrationTests =
     , testCase "aggregate exceptions fail the query only" testAggregateErrors
     , testCase "aggregate as a window function and with modifiers" testAggregateModifiers
     , testCase "aggregate SMALLINT and FLOAT results, and the limit of the result types" testAggregateResultTypes
+    , testCase "aggregate decodes VARIANT list elements across chunks" testAggregateVariant
     , testCase "aggregate states are released" testAggregateRelease
     , testGroup
         "the callback closure of each registration kind is released when its database closes"
@@ -233,41 +234,28 @@ testPragmaDecodeErrors = withConnection ":memory:" \conn -> do
   assertSqlError "cannot decode the arguments of pragma typed_size" (query_ conn "PRAGMA typed_size(1)" :: IO [Only Int64])
   registerPragmaFunction conn "typed_strict" [amount] (ExecPragma \(Only (_ :: Int64)) -> pure ())
   assertSqlError "cannot decode the arguments of pragma typed_strict: column amount is NULL" (execute_ conn "PRAGMA typed_strict(NULL)")
-  assertInputError
-    "typed_variant: parameter value: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
-    ( registerPragmaFunction
-        conn
-        "typed_variant"
-        [parameter "value" (TypeExpression "VARIANT")]
-        (QueryPragma \(Only (_ :: Variant)) -> pure "SELECT 1")
-    )
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
--- | Reject a pragma parameter whose type is or contains VARIANT at
--- registration, because the argument reader reads no VARIANT. A GEOMETRY
--- parameter registers, because the reader reads GEOMETRY. A parameter of the
--- type ANY registers, and a VARIANT value fails the call.
+-- | Compare pragma arguments with the same expressions read by SELECT.
 testPragmaVariantParameters :: Assertion
 testPragmaVariantParameters = withConnection ":memory:" \conn -> do
-  let register name declaration =
-        registerPragmaFunction conn name [parameter "value" (TypeExpression declaration)] $
-          QueryPragma \(Only (_ :: FieldValue)) -> pure "SELECT 1"
-  forM_ [("typed_variant_scalar", "VARIANT"), ("typed_variant_list", "VARIANT[]"), ("typed_variant_struct", "STRUCT(v VARIANT)")] \(name, declaration) ->
-    assertInputError
-      ( name
-          <> ": parameter value: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
-      )
-      (register name declaration)
-  register "typed_geometry_parameter" "GEOMETRY"
-  query_ conn "PRAGMA typed_geometry_parameter('POINT (1 2)'::GEOMETRY)" >>= (@?= [Only (1 :: Int64)])
-  -- The check sees only the declared type. A parameter of the type ANY
-  -- registers, and a VARIANT value fails the call.
-  registerPragmaFunction conn "typed_any_parameter" [parameter "value" (StructuredType (LogicalTypeScalar LogicalTypeIdAny))] $
-    QueryPragma \(Only (_ :: FieldValue)) -> pure "SELECT 1"
-  query_ conn "PRAGMA typed_any_parameter(1)" >>= (@?= [Only (1 :: Int64)])
-  assertSqlError
-    "typed_any_parameter: parameter value: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
-    (query_ conn "PRAGMA typed_any_parameter(1::VARIANT)" :: IO [Only Int64])
+  seen <- newIORef Nothing
+  let check (name, declaration, expression) = do
+        registerPragmaFunction conn name [parameter "value" declaration] $
+          QueryPragma \(Only value) -> writeIORef seen (Just value) >> pure "SELECT 1"
+        [Only expected] <- query_ conn (Query ("SELECT " <> expression)) :: IO [Only FieldValue]
+        query_ conn (Query ("PRAGMA " <> name <> "(" <> expression <> ")")) >>= (@?= [Only (1 :: Int64)])
+        readIORef seen >>= (@?= Just expected)
+  mapM_
+    check
+    [ ("typed_variant_scalar", TypeExpression "VARIANT", "42::VARIANT")
+    , ("typed_variant_list", TypeExpression "VARIANT[]", "[1::VARIANT, NULL]")
+    , ("typed_variant_struct", TypeExpression "STRUCT(v VARIANT)", "{'v': [2,3]::VARIANT}")
+    , ("typed_variant_map", TypeExpression "MAP(VARCHAR, VARIANT)", "map(['n'], [4::VARIANT])")
+    , ("typed_variant_union", TypeExpression "UNION(v VARIANT)", "union_value(v := 5::VARIANT)")
+    , ("typed_any_parameter", StructuredType (LogicalTypeScalar LogicalTypeIdAny), "{'a': 6}::VARIANT")
+    , ("typed_geometry_parameter", TypeExpression "GEOMETRY", "'POINT (1 2)'::GEOMETRY")
+    ]
 
 -- | Raise the input error of an empty pragma name, also on a closed
 -- connection. The name check comes before the read of the state of the
@@ -903,18 +891,7 @@ testAggregateResultTypes = withConnection ":memory:" \conn -> do
   assertSqlError
     "For a newtype over one of these types, derive FunctionResult with deriving newtype."
     (createAggregate conn "typed_years" sumAggregate{aggregateResult = pure . Years . fromIntegral})
-  -- The argument reader does not read VARIANT.
-  let unreadable =
-        "argument arg0: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
-  assertSqlError
-    ("typed_variant_count: " <> unreadable)
-    (createAggregate conn "typed_variant_count" countAggregate{aggregateStep = \count (Only (_ :: Variant)) -> pure (count + 1)})
-  assertSqlError
-    ("typed_variants_count: " <> unreadable)
-    (createAggregate conn "typed_variants_count" countAggregate{aggregateStep = \count (Only (_ :: [Maybe Variant])) -> pure (count + 1)})
-  query_
-    conn
-    "SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('typed_years', 'typed_variant_count', 'typed_variants_count')"
+  query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name = 'typed_years'"
     >>= (@?= [Only (0 :: Int64)])
   let limit = "result: the result type of an aggregate function must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT, DOUBLE, or VARCHAR"
   assertSqlError
@@ -935,6 +912,16 @@ testAggregateResultTypes = withConnection ":memory:" \conn -> do
   assertSqlError
     ("typed_closed_result: " <> limit)
     (createAggregate closed "typed_closed_result" sumAggregate{aggregateResult = pure . toInteger})
+
+-- | Read each BIGINT and NULL from a VARIANT list in aggregate update.
+testAggregateVariant :: Assertion
+testAggregateVariant = withConnectionWithConfig ":memory:" [("threads", "4")] \conn -> do
+  let step total (Only values) = case values of
+        [Just (Variant (FieldInt64 number)), Nothing] -> pure (total + number)
+        _ -> fail ("unexpected VARIANT list: " <> show values)
+  createAggregate conn "variant_sum" countAggregate{aggregateStep = step}
+  query_ conn "SELECT variant_sum([i::VARIANT, NULL::VARIANT]), sum(i)::BIGINT FROM range(5000) t(i)"
+    >>= (@?= [(12497500 :: Int64, 12497500 :: Int64)])
 
 -- | An aggregate that counts its rows. Change 'aggregateStep' for another
 -- argument type.
@@ -1070,16 +1057,6 @@ assertSqlError expected action = do
       assertBool (Text.unpack message) (not (any (`Text.isInfixOf` message) ["user error", "SQLError {"]))
     Right _ -> assertFailure "expected an SQL error"
 
--- | Require an 'SQLError' of the type 'ErrorInputInvalid' with a message that
--- contains the text: the error of an input check of the library.
-assertInputError :: Text -> IO a -> Assertion
-assertInputError expected action =
-  try action >>= \case
-    Left (err :: SQLError) -> do
-      sqlErrorType err @?= Just ErrorInputInvalid
-      assertBool (Text.unpack (sqlErrorMessage err)) (expected `Text.isInfixOf` sqlErrorMessage err)
-    Right _ -> assertFailure ("expected an SQL error with " <> Text.unpack expected)
-
 -- | Read one column, both columns, and more than one chunk of the example.
 testTableSquares :: Assertion
 testTableSquares = withConnection ":memory:" \conn -> do
@@ -1107,6 +1084,10 @@ testTableParameters = withConnection ":memory:" \conn -> do
   createTableFunction conn "typed_optional" ["value"] \(Only (value :: Maybe Int64)) -> pure [Only value]
   query_ conn "SELECT value FROM typed_optional(NULL)" >>= (@?= [Only (Nothing :: Maybe Int64)])
   query_ conn "SELECT value FROM typed_optional(4)" >>= (@?= [Only (Just 4 :: Maybe Int64)])
+  createTableFunction conn "typed_variant" ["value"] \(Only (value :: Maybe Variant)) -> pure [Only value]
+  query_ conn "SELECT value FROM typed_variant(NULL)" >>= (@?= [Only (Nothing :: Maybe Variant)])
+  expected <- query_ conn "SELECT {'a': [1,2]}::VARIANT" :: IO [Only Variant]
+  query_ conn "SELECT value FROM typed_variant({'a': [1,2]}::VARIANT)" >>= (@?= expected)
 
 -- | A row type with a 'Generic' instance.
 data Reading = Reading
@@ -1581,14 +1562,6 @@ testTableArgumentErrors = withConnection ":memory:" \conn -> do
   query_ conn "SELECT n FROM typed_natural(7)" >>= (@?= [Only (7 :: Int64)])
   assertSqlError "No function matches" (query_ conn "SELECT n FROM typed_natural(-7)" :: IO [Only Int64])
   assertSqlError "typed_natural: argument arg0 is NULL" (query_ conn "SELECT n FROM typed_natural(NULL)" :: IO [Only Int64])
-  -- The argument reader reads no VARIANT, so the registration of such a
-  -- parameter type fails.
-  assertInputError
-    "typed_variant: parameter arg0: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
-    (createTableFunction conn "typed_variant" ["n"] \(Only (_ :: Variant)) -> pure [Only (1 :: Int64)])
-  assertInputError
-    "typed_maybe_variant: parameter arg0: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
-    (createTableFunction conn "typed_maybe_variant" ["missing"] \(Only (value :: Maybe Variant)) -> pure [Only (isNothing value)])
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Fail a query with an exception in the function and in a row of the second chunk.

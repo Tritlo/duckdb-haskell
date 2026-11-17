@@ -12,6 +12,9 @@ module Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
   rejectRows,
   prepareVariantReader,
+  readCallbackVariant,
+  readInstanceVariant,
+  createHelperInstance,
   ReadFactory (..),
   callbackReadFactory,
   readFactoryHandle,
@@ -108,6 +111,41 @@ prepareVariantReader =
     )
   where
     noVariant = rejectRows (throwInternalError (Text.pack "expected a value without VARIANT"))
+
+{- Note [VARIANT reads inside callbacks]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The VARIANT decoder runs SQL. A callback cannot run it on the executing
+connection. Even a new connection to the host instance can need a lock that
+the caller holds, for example during SET GLOBAL. An extension has no host
+instance handle at all.
+
+Use a separate environment and instance for the vector. The decoder needs
+only built-in types, casts and system functions; it does not attach a database.
+It copies the logical rows before returning, so no helper handle escapes.
+No callback shares mutable statement state with another. A vector that has no
+VARIANT leaf needs no helper. See Note [VARIANT decoding] in
+"Database.DuckDB.Simple.VariantCodec".
+-}
+
+-- | Decode a callback's VARIANT vector independently of the invoking database.
+readCallbackVariant :: VectorReader
+readCallbackVariant vector =
+  bracket (output c_duckdb_v2_environment_create) (destroy c_duckdb_v2_environment_destroy) \env ->
+    bracket (createHelperInstance env) (destroy c_duckdb_v2_instance_destroy) (`readInstanceVariant` vector)
+
+-- | Copy a VARIANT vector through a temporary connection on the supplied instance.
+readInstanceVariant :: DuckDBV2InstanceHandle -> VectorReader
+readInstanceVariant instance_ vector =
+  bracket (output (c_duckdb_v2_connection_create instance_)) (destroy c_duckdb_v2_connection_destroy) \helper ->
+    withInstanceFactory instance_ \factory ->
+      bracket (VariantCodec.newVariantState helper factory) VariantCodec.destroyVariantState (`prepareVariantReader` vector)
+
+-- | Create an instance for synchronous metadata work, without background workers.
+createHelperInstance :: DuckDBV2EnvironmentHandle -> IO DuckDBV2InstanceHandle
+createHelperInstance env =
+  withTextArray (map Text.pack ["threads", "async_threads"]) \names ->
+    withTextArray (map Text.pack ["1", "0"]) \values ->
+      output (c_duckdb_v2_instance_create_with_options env (ConstPtr names) (ConstPtr values) 2)
 
 -- | The factory of a read, and its kind. The kind decides how
 -- 'prepareGeometryReader' casts GEOMETRY to BLOB. See

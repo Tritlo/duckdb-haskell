@@ -26,7 +26,7 @@ import Control.Exception (
  )
 import Control.Monad (forM, forM_, forever, replicateM_, void, when)
 import qualified Data.ByteString as BS
-import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import Data.List (find, isInfixOf, nub, sort)
 import Data.Maybe (isJust)
@@ -670,20 +670,25 @@ extensionRegressionTests =
           void $ execute_ conn "SET haskell_variant = {'a': 1, 'b': [1, 2]}"
           [Only expected] <- query_ conn "SELECT {'a': 1, 'b': [1, 2]}::VARIANT" :: IO [Only FieldValue]
           fst <$> Config.getConfigValue conn "haskell_variant" >>= (@?= expected)
-          -- The update callback gets no connection, so it cannot read a VARIANT
-          -- value, and the registration of such an option fails.
-          refused <-
-            try
-              (Config.registerCustomOption conn (Config.customOption "haskell_variant_update" variantType){Config.customOptionUpdate = Just \_ -> pure ()})
-          case refused of
-            Left (err :: SQLError) -> do
-              sqlErrorType err @?= Just ErrorInputInvalid
-              assertBool
-                (show err)
-                ( "haskell_variant_update: the update function: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
-                    `Text.isInfixOf` sqlErrorMessage err
-                )
-            Right () -> assertFailure "the registration of a VARIANT option with an update function succeeded"
+    , testCase "VARIANT option updates decode GLOBAL and SESSION values and can reject a write" $
+        withConnection ":memory:" \conn -> do
+          seen <- newIORef Nothing
+          let update value = case value of
+                FieldText "reject" -> throwIO (userError "rejected VARIANT value")
+                _ -> writeIORef seen (Just value)
+          Config.registerCustomOption conn $
+            (Config.customOption "haskell_variant_update" (Registration.TypeExpression "VARIANT"))
+              { Config.customOptionScopes = [Config.SettingScopeGlobal, Config.SettingScopeSession]
+              , Config.customOptionUpdate = Just update
+              }
+          [Only expected] <- query_ conn "SELECT {'a': [1,2]}::VARIANT" :: IO [Only FieldValue]
+          void $ execute_ conn "SET GLOBAL haskell_variant_update = {'a': [1,2]}"
+          readIORef seen >>= (@?= Just expected)
+          Config.getConfigValue conn "haskell_variant_update" >>= (@?= (expected, Config.SettingScopeGlobal))
+          void $ execute_ conn "SET SESSION haskell_variant_update = 7::BIGINT"
+          readIORef seen >>= (@?= Just (FieldInt64 7))
+          assertSqlErrorContaining "rejected VARIANT value" $ execute_ conn "SET SESSION haskell_variant_update = 'reject'"
+          Config.getConfigValue conn "haskell_variant_update" >>= (@?= (FieldInt64 7, Config.SettingScopeSession))
     , testCase "setConfigValue with an Integer or a Natural checks the range of an unsigned option" $
         withConnection ":memory:" \conn -> do
           -- DuckDB 2.0.0 gives asof_loop_join_threshold the type UBIGINT.

@@ -69,7 +69,7 @@ import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
 import Database.DuckDB.Simple.TypeScope (TypeScope, withTypeScope)
-import Database.DuckDB.Simple.Typed (argumentName, checkArgumentType, conversionMessage, prepareArgumentReader, rowDeclarations)
+import Database.DuckDB.Simple.Typed (argumentName, conversionMessage, prepareArgumentReader, rowDeclarations)
 import Database.DuckDB.Simple.V2.Registration (withTypeDeclaration)
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 import Foreign.Marshal.Utils (copyBytes, fillBytes)
@@ -280,13 +280,10 @@ createFunctionWithStateOn target name initState mkFn =
     ]
 
 -- | Configure a scalar function and transfer its callbacks to DuckDB. An
--- argument type or a result type with no declaration, or an argument type that
--- is or contains VARIANT, raises an error at registration. The check of the
+-- argument type or a result type with no declaration raises an error at registration. The check of the
 -- name and the declarations of the arguments and the result come before the
 -- read of the state of the target, so their input errors win over a closed
--- connection. The VARIANT check ('checkArgumentType') needs the resolved type
--- of the argument, so it comes after the read of the state, and a closed
--- connection wins over it. The last argument gives the install actions of the
+-- connection. The last argument gives the install actions of the
 -- callbacks for the builder, from the factory of 'targetCastFactory'. Their
 -- setters run after the properties. See 'installAll'.
 registerScalarFunction
@@ -320,8 +317,7 @@ registerScalarFunction target name proxy installers = do
             withIdentifier name $ checked . c_duckdb_v2_scalar_function_set_name scalarFun
             signature <- output (c_duckdb_v2_scalar_function_get_signature scalarFun)
             forM_ (zip [0 :: Int ..] parameters) \(index, dtype) ->
-              withTypeDeclaration factory dtype \logical -> do
-                checkArgumentType True name ("argument " <> argumentName index) logical
+              withTypeDeclaration factory dtype \logical ->
                 withIdentifier (argumentName index) \argument ->
                   checked (c_duckdb_v2_function_signature_add_parameter signature argument logical nullHandle DuckDBV2FunctionParameterKindPositionalOnly)
             withTypeDeclaration factory result $ checked . c_duckdb_v2_function_signature_set_return_type signature

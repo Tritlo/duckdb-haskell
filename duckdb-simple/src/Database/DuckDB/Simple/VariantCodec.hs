@@ -82,8 +82,8 @@ one open result for each connection, and it rejects a second execution. Thus
 the queries of the decoder run on a helper connection, so that the decode does
 not interrupt the stream. See Note [Connection lock] in
 "Database.DuckDB.Simple.Internal". A materialized result closes before its rows
-are decoded, but it uses the same reader. The helper connection has the
-settings of the database, not the SESSION settings of the caller. The
+are decoded, but it uses the same reader. A helper connection on the host
+instance has its GLOBAL settings, not the caller's SESSION settings. The
 metadata query needs an expression depth of 11 when it is prepared. A GLOBAL
 max_expression_depth below 11 fails its preparation with a Binder Error.
 
@@ -95,10 +95,10 @@ owner of the helper connection destroys the state before the connection.
   connection opens the helper connection and the state at the first VARIANT
   read, and keeps them until the cache closes. The calls run in sequence.
 
-- COPY TO (withVariantReader). The reader opens a helper connection of the
-  database for each vector, and keeps the state for one decode. An extension
-  target has no instance handle, so its reader raises an error for each
-  VARIANT row.
+- A connection's COPY TO reader uses a helper connection of that instance
+  for each vector. An extension's COPY TO reader and typed argument readers
+  use a private instance. See Note [VARIANT reads inside callbacks] in
+  "Database.DuckDB.Simple.Materialize".
 
 The decoder casts with the factory of the instance (variantCasts). It decodes
 each value that contains no VARIANT, such as a cast result, with the same

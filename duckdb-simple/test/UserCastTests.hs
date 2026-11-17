@@ -114,6 +114,8 @@ userCastTests =
     , testCase "a cast from VARIANT to BIGINT does not change a BIGINT payload of a VARIANT result" $
         withConnection ":memory:" \conn -> do
           calls <- nullCast conn (R.TypeExpression "VARIANT") (R.TypeExpression "BIGINT")
+          createFunction conn "user_cast_variant_arg" ((== Variant (FieldInt64 42)) :: Variant -> Bool)
+          query_ conn "SELECT user_cast_variant_arg(42::BIGINT::VARIANT)" >>= (@?= [Only True])
           query_ conn "SELECT 42::BIGINT::VARIANT" >>= (@?= [Only (Variant (FieldInt64 42))])
           query_ conn "SELECT {'n': 42::BIGINT}::VARIANT" >>= (@?= [Only (Variant (variantObject [("n", FieldInt64 42)]))])
           query_ conn "SELECT [1, 2]::BIGINT[]::VARIANT" >>= (@?= [Only (Variant (FieldList [FieldInt64 1, FieldInt64 2]))])

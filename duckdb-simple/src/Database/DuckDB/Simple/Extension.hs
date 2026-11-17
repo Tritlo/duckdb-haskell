@@ -79,8 +79,7 @@
 -- - The process supports one DuckDB implementation.
 -- - The extension loads only into the DuckDB release of the pinned header, 2.0.0.
 -- - In extension mode, duckdb-ffi exposes only "Database.DuckDB.FFI.V2".
--- - A COPY TO function of an extension cannot read a VARIANT column. A replacement scan of an extension belongs to
---   the instance, not to one connection.
+-- - A replacement scan of an extension belongs to the instance, not to one connection.
 -- - The example links the GHC and package libraries dynamically. It loads only on a machine where its run paths
 --   exist.
 --
@@ -244,8 +243,7 @@ registerLogSink :: Extension -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
 registerLogSink = Logging.registerLogSinkOn . extensionTarget
 
 -- | Register row-oriented COPY TO callbacks with the loading DuckDB host. The
--- rules of 'Database.DuckDB.Simple.Copy.registerCopyToFunction' apply. The
--- callbacks cannot read a VARIANT column.
+-- rules of 'Database.DuckDB.Simple.Copy.registerCopyToFunction' apply.
 registerCopyToFunction
   :: Extension
   -> Text
@@ -263,7 +261,6 @@ registerCopyFromFunction = Copy.registerCopyFromFunctionOn . extensionTarget
 
 -- | Register a format with a COPY TO side and a COPY FROM side with the
 -- loading DuckDB host. The rules of
--- 'Database.DuckDB.Simple.Copy.registerCopyFunction' apply. The COPY TO side
--- cannot read a VARIANT column.
+-- 'Database.DuckDB.Simple.Copy.registerCopyFunction' apply.
 registerCopyFunction :: (TypedRow row) => Extension -> Text -> CopyTo bindState globalState -> (CopyFromInfo -> IO [row]) -> IO ()
 registerCopyFunction = Copy.registerCopyFunctionOn . extensionTarget

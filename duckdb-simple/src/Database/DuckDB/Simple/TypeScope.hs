@@ -23,7 +23,8 @@ import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 
 -- | The owner of native field types for one result or callback.
 -- See Note [Scoped field types].
-newtype TypeScope = TypeScope (MVar (Maybe [(DuckDBV2LogicalTypeHandle, IORef (Maybe LogicalTypeRep))]))
+newtype TypeScope = TypeScope (MVar (Maybe [(DuckDBV2LogicalTypeHandle, IORef (Either (IO DuckDBV2FactoryHandle) LogicalTypeRep))]))
+  deriving (Eq)
 
 {- Note [Scoped field types]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -33,13 +34,16 @@ read, including a cache hit. A snapshot already returned to the caller is pure
 and remains valid after closure.
 
 Only internal native operations run while the scope is locked. The type and
-factory acquisition actions must not run user code. The factory owner must
-outlive the scope. The factory is acquired only for an uncached read; an
-extension aggregate can initialize its registration-owned helper at that point.
+factory acquisition actions must not run user code. An uncached read needs a
+live factory owner. A result reads the factory from the connection at that
+point, so a decoder that closed the connection gets an error. An extension
+aggregate can initialize its registration-owned helper at that point.
 logicalTypeToRep reads type ids, names, and parameters, and compares temporary
 alias copies. These operations do not run SQL or callbacks. A failed or
 interrupted read leaves the native type available for another attempt. Only
-a successful read fills the snapshot cache.
+a successful read fills the snapshot cache. Until then, the cache holds the
+factory acquisition action. Closure drops that action too, so an escaped field
+cannot retain the connection that it used for the read.
 
 Closure waits for an active metadata operation, then destroys every native
 type and clears every snapshot cache. Cleanup uses only internal metadata
@@ -64,7 +68,7 @@ closeTypeScope (TypeScope scope) = uninterruptibleMask_ do
       Nothing -> pure ()
       Just entries -> releaseItems release entries
   where
-    release (native, snapshot) = destroyLogicalType native `finally` writeIORef snapshot Nothing
+    release (native, snapshot) = destroyLogicalType native `finally` writeIORef snapshot (Left closedTypeScope)
 
 -- | Run an action in a type scope and close it on every exit path.
 withTypeScope :: (TypeScope -> IO a) -> IO a
@@ -77,16 +81,16 @@ scopedTypeRep :: TypeScope -> IO DuckDBV2FactoryHandle -> IO DuckDBV2LogicalType
 scopedTypeRep (TypeScope scope) acquireFactory create = modifyMVarMasked scope \case
   Nothing -> closedTypeScope
   Just entries -> bracketOnError create destroyLogicalType \native -> do
-    snapshot <- newIORef Nothing
+    snapshot <- newIORef (Left acquireFactory)
     let readType = withMVar scope \case
           Nothing -> closedTypeScope
           Just _ ->
             readIORef snapshot >>= \case
-              Just logical -> pure logical
-              Nothing -> do
-                factory <- acquireFactory
+              Right logical -> pure logical
+              Left acquire -> do
+                factory <- acquire
                 logical <- logicalTypeToRep factory native >>= evaluate
-                writeIORef snapshot (Just logical)
+                writeIORef snapshot (Right logical)
                 pure logical
     pure (Just ((native, snapshot) : entries), liftConversion readType)
 

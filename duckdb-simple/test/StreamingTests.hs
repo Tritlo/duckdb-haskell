@@ -20,7 +20,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Database.DuckDB.FFI as Retained (c_duckdb_vector_size)
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (FieldValue (..))
+import Database.DuckDB.Simple.FromField (Field (fieldType), FieldValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..))
 import Database.DuckDB.Simple.Internal (
   DuckDBV2ResultHandle (..),
@@ -114,6 +114,12 @@ nativeStreamingTests =
     , testCase "nextRowWith runs the supplied parser" $ withDb \conn ->
         withStatement conn "SELECT 20, 22" \stmt ->
           Streaming.nextRowWith ((+) <$> field <*> field) stmt >>= (@?= Just (42 :: Int64))
+    , testGroup "decoder cursor ownership" $
+        map (uncurry decoderCursorTests) [("materialized", nextRowWith), ("streaming", Streaming.nextRowWith)]
+    , testCase "eager decoder cannot read uncached native metadata after connection close" $ withDb \conn -> do
+        let parser = fieldWith \column -> liftConversion (close conn) >> fieldType column
+        err <- expectSqlError (queryWith_ parser conn "SELECT 42")
+        assertBool "expected closed connection" ("connection is closed" `Text.isInfixOf` sqlErrorMessage err)
     , testCase "a fetch failure follows an already delivered batch" $ withDb \conn -> do
         void $ execute_ conn "SET streaming_buffer_size = '64KB'"
         failNext <- newIORef False
@@ -213,6 +219,39 @@ nativeStreamingTests =
                 (name <> ": " <> show sql)
                 [(key, Variant (variantObject [("n", FieldInt64 key)]), pointWkb key) | key <- keys]
                 (sortOn (\(key, _, _) -> key) [(key, value, rawGeometryWKB geometry) | (key, value, geometry) <- rows])
+    ]
+
+-- | Check operations on the same statement from inside its decoder.
+decoderCursorTests :: String -> (RowParser Int64 -> Statement -> IO (Maybe Int64)) -> TestTree
+decoderCursorTests name next =
+  testGroup
+    name
+    [ testCase "a nested fetch consumes the next row" $ withDb \conn ->
+        withStatement conn "SELECT i FROM range(1,4) t(i)" \stmt -> do
+          let parser = fieldWith \column -> do
+                liftConversion (next field stmt >>= (@?= Just 2))
+                fromField column
+          next parser stmt >>= (@?= Just 1)
+          next field stmt >>= (@?= Just 3)
+    , testCase "reset on the last row leaves the statement idle" $ withDb \conn ->
+        withStatement conn "SELECT 42" \stmt -> do
+          let parser = fieldWith \column -> do
+                liftConversion (clearStatementBindings stmt)
+                fromField column
+          next parser stmt >>= (@?= Just 42)
+          next field stmt >>= (@?= Just 42)
+    , testCase "decoder failure preserves a replacement cursor" $ withDb \conn ->
+        withStatement conn "SELECT ?::BIGINT + i FROM range(2) t(i)" \stmt -> do
+          bind stmt [toField (10 :: Int64)]
+          let parser = fieldWith \_ -> liftConversion do
+                bind stmt [toField (20 :: Int64)]
+                next field stmt >>= (@?= Just 20)
+                throwIO (userError "decoder failed after rebind")
+          outcome <- try (next parser stmt)
+          case outcome of
+            Left (err :: IOException) -> assertBool "original decoder error" ("decoder failed after rebind" `isInfixOf` show err)
+            Right _ -> assertFailure "expected the decoder to fail"
+          next field stmt >>= (@?= Just 21)
     ]
 
 -- | Read the rows of a query with each read function of the library.

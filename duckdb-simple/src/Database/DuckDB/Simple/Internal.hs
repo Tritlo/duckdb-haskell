@@ -403,6 +403,14 @@ The cursor owns each native chunk that it holds. fetchChunk writes a new chunk
 to the cursor before it reads the metadata of the chunk or makes the readers.
 Thus a release of the cursor also releases the chunk. finalizeStream closes the metadata scope, then releases
 the current chunk, the pending chunks, and the result.
+
+An effectful decoder can fetch again, reset the statement, or close it.
+consumeStream copies the field values and advances the cursor before it runs
+the decoder. It releases the chunk at its last row. Field metadata belongs to
+the result, not the chunk, and a reset or close invalidates that metadata.
+The decoder can also start a new execution and then fail. Error cleanup
+compares the metadata scopes by identity: each execution owns a distinct
+scope, so cleanup cannot release a replacement result.
 -}
 
 -- | Cursor state. Exhaustion persists until the caller resets the statement.

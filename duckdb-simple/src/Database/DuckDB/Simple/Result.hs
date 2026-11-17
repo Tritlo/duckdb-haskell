@@ -55,6 +55,9 @@ foldStatementWith mode parser stmt initial step =
 nextRowWith :: ResultMode -> RowParser r -> Statement -> IO (Maybe r)
 nextRowWith mode parser stmt@Statement{statementStream} =
   withStatementHandle stmt \_ -> mask \restore -> do
+    let consume stream =
+          restore (consumeStream statementStream parser stmt stream)
+            `onException` exhaustStatementStream statementStream (statementStreamTypes stream)
     state <- readIORef statementStream
     case state of
       StatementStreamExhausted -> pure Nothing
@@ -64,11 +67,8 @@ nextRowWith mode parser stmt@Statement{statementStream} =
           Nothing -> writeIORef statementStream StatementStreamExhausted >> pure Nothing
           Just stream -> do
             writeIORef statementStream (StatementStreamActive stream)
-            restore (consumeStream statementStream parser stmt stream)
-              `onException` exhaustStatementStream statementStream
-      StatementStreamActive stream ->
-        restore (consumeStream statementStream parser stmt stream)
-          `onException` exhaustStatementStream statementStream
+            consume stream
+      StatementStreamActive stream -> consume stream
 
 -- | Release an active cursor and allow the statement to execute again. Then
 -- clear the schema cache of the statement. See Note [Statement schemas] in
@@ -84,30 +84,28 @@ consumeStream streamRef parser stmt stream = mask \restore -> do
     Just _ -> pure stream
   writeIORef streamRef (StatementStreamActive loaded)
   case statementStreamChunk loaded of
-    Nothing -> exhaustStatementStream streamRef >> pure Nothing
+    Nothing -> exhaustStatementStream streamRef (statementStreamTypes loaded) >> pure Nothing
     Just chunk -> do
       fields <-
         restore $ buildMaterializedRow (statementStreamColumns loaded) (statementStreamChunkReaders chunk) (statementStreamChunkIndex chunk)
-      parsed <- restore (runConversion (parseRow parser fields))
-      case parsed of
+      let nextIndex = statementStreamChunkIndex chunk + 1
+      if nextIndex < statementStreamChunkSize chunk
+        then writeIORef streamRef (StatementStreamActive loaded{statementStreamChunk = Just chunk{statementStreamChunkIndex = nextIndex}})
+        else do
+          writeIORef streamRef (StatementStreamActive loaded{statementStreamChunk = Nothing})
+          finalizeChunk chunk
+      restore (runConversion (parseRow parser fields)) >>= \case
         Errors rowErr -> throwIO $ rowErrorsToSqlError (statementQuery stmt) rowErr
-        Ok value -> do
-          let nextIndex = statementStreamChunkIndex chunk + 1
-          if nextIndex < statementStreamChunkSize chunk
-            then writeIORef streamRef (StatementStreamActive loaded{statementStreamChunk = Just chunk{statementStreamChunkIndex = nextIndex}})
-            else do
-              writeIORef streamRef (StatementStreamActive loaded{statementStreamChunk = Nothing})
-              finalizeChunk chunk
-          pure (Just value)
+        Ok value -> pure (Just value)
 
--- | Release the cursor and retain its exhausted state until an explicit reset.
+-- | Release the cursor only if it still belongs to this execution.
 -- See Note [Statement cursor] in "Database.DuckDB.Simple.Internal".
-exhaustStatementStream :: IORef StatementStreamState -> IO ()
-exhaustStatementStream ref = mask_ do
-  state <- atomicModifyIORef' ref (StatementStreamExhausted,)
-  case state of
-    StatementStreamActive stream -> finalizeStream stream
-    _ -> pure ()
+exhaustStatementStream :: IORef StatementStreamState -> TypeScope -> IO ()
+exhaustStatementStream ref types = mask_ do
+  owned <- atomicModifyIORef' ref \case
+    StatementStreamActive stream | statementStreamTypes stream == types -> (StatementStreamExhausted, Just stream)
+    state -> (state, Nothing)
+  mapM_ finalizeStream owned
 
 startStatementStream :: ResultMode -> Statement -> IO (Maybe StatementStream)
 startStatementStream mode stmt = withQueryError (statementQuery stmt) . withResultWindow (statementConnection stmt) (mapM_ finalizeStream) $ mask_ do
@@ -144,7 +142,7 @@ startResultStream mode conn result = mask_ do
         release
         pure Nothing
       else do
-        columns <- withTypeCache conn \cache -> collectResultColumns types (typeCacheCasts cache) result
+        columns <- collectResultColumns types (withTypeCache conn (pure . typeCacheCasts)) result
         case mode of
           MaterializedResult -> do
             gather
@@ -268,15 +266,15 @@ withStreamRows conn query acquire decode = withQueryError query $
       atomicModifyIORef' pending (\case chunk : rest | chunk == expected -> (rest, Just chunk); chunks -> (chunks, Nothing))
         >>= maybe (throwInternalError (Text.pack "internal error: the owned chunks do not match the chunk fold")) pure
 
-collectResultColumns :: TypeScope -> DuckDBV2FactoryHandle -> DuckDBV2ResultHandle -> IO [StatementStreamColumn]
-collectResultColumns types factory result =
+collectResultColumns :: TypeScope -> IO DuckDBV2FactoryHandle -> DuckDBV2ResultHandle -> IO [StatementStreamColumn]
+collectResultColumns types acquireFactory result =
   bracket (output (c_duckdb_v2_result_get_schema result)) (destroy c_duckdb_v2_schema_destroy) \schema -> do
     count <- fromIntegral <$> output (c_duckdb_v2_schema_get_count schema)
     forM [0 .. count - 1] \idx -> alloca \name -> do
       borrowed <- output (c_duckdb_v2_schema_get_field schema (fromIntegral idx) name)
       columnName <- peek name >>= readIdentifier
       -- The result scope owns the copied type. The schema closes after this loop.
-      columnType <- scopedTypeRep types (pure factory) (output (c_duckdb_v2_logical_type_copy borrowed))
+      columnType <- scopedTypeRep types acquireFactory (output (c_duckdb_v2_logical_type_copy borrowed))
       StatementStreamColumn idx columnName columnType <$> newIORef Nothing <*> newIORef IntMap.empty
 
 buildMaterializedRow :: [StatementStreamColumn] -> [Int -> IO FieldValue] -> Int -> IO [Field]

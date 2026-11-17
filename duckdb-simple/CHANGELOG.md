@@ -219,10 +219,10 @@ for the upgrade instructions.
   same way, and its README named it only for prompt cancellation. A program
   that is not linked with `-threaded` now gets an `SQLError` of the type
   `ErrorInputInvalid` when it registers a callback for a database with the
-  DuckDB setting `threads` above 1. The error tells to link the program with
-  `-threaded`, or to set `threads` to 1 before the registration. The library
-  reads the setting at the registration, so a later `SET threads` is not
-  checked. A program linked with `-threaded` has no change.
+  DuckDB setting `threads` above 1. COPY format callbacks and log sinks
+  require `-threaded` even when `threads` is 1: DuckDB can call them on its
+  asynchronous workers. For other registrations the library reads the setting
+  at registration and cannot detect a later `SET threads`.
 - Add `connectionAggregateStripes` to `ConnectionOptions`. It sets the number
   of stripes in the state table of each typed aggregate that `createAggregate`
   registers through the connection. The

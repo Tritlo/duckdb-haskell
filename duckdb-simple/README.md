@@ -919,7 +919,9 @@ rules of a list, and an empty `Map` binds as an empty MAP of its key and value
 types. DuckDB compares two MAP values pair by pair in their order, so
 `WHERE m = ?` finds a stored MAP only when it has the same pairs in ascending
 key order. DuckDB rejects a NULL key and two equal keys, for example two NaN
-keys of a `Map Double`.
+keys of a `Map Double`. When reading a MAP, a decoder rejects keys that become
+equal after conversion. For example, the integer keys 1 and 2 both decode as
+`True` in a `Map Bool v`.
 
 ### Infinite dates and timestamps
 
@@ -1504,14 +1506,14 @@ an aggregate function, a table function, a COPY format, a replacement scan, a
 pragma, or a log sink, must be linked with `ghc-options: -threaded`. DuckDB can
 call a callback from several of its threads at the same time. Without
 `-threaded`, the GHC runtime does not support calls from several operating
-system threads at the same time, so the program can crash. Without `-threaded`,
-a program is safe only when each database that runs callbacks has the DuckDB
-setting `threads` at 1 before a callback runs, and the program never raises it
-later. Then DuckDB calls each callback on the thread of the query. Without
-`-threaded`, the registration of a callback raises an `SQLError` of the type
-`ErrorInputInvalid` when the database has the setting `threads` above 1 at that
-time. The library cannot see a later `SET threads`, also on another connection
-of the instance, because it does not read the SQL text of a statement.
+system threads at the same time, so the program can crash.
+
+Without `-threaded`, registering a COPY format with callbacks or a log sink
+raises `ErrorInputInvalid` regardless of the settings. DuckDB can open a COPY
+file on an asynchronous worker, which can also write to the log sink.
+For other callbacks, registration raises `ErrorInputInvalid` when the DuckDB
+setting `threads` is above 1. This check only reads the setting at registration.
+It cannot prevent another connection from raising the thread count later.
 
 With `-threaded`, each call of a callback needs a capability of the GHC runtime.
 With one capability, which is the default, a callback from a second DuckDB

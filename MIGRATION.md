@@ -332,6 +332,9 @@ The SQL workflow stays the same. These changes can affect your code:
   incompatible column. Read `Double` or `Float`, or write `c::VARCHAR` for the
   text of DuckDB, for example `0.01`. Version 0.3 gave the text of `show`, for
   example `1.0e-2`.
+- Reading a MAP as `Map k v` now fails if two keys convert to the same Haskell
+  key. Earlier versions kept only the last entry. Choose a key type that keeps
+  the values distinct.
 - A VARCHAR read as `ByteString` raises the error of an incompatible column.
   Read `Text`, or write `encode(c)` for the UTF-8 bytes that version 0.3 gave.
 - An ENUM read as an integer type (`Int`, `Int8` to `Int64`, `Word`, `Word8` to

@@ -200,9 +200,9 @@ extension, and compares the CSV rows. Each registration kind has a case that
 uses the registered object in SQL. The cases also check scalar results, 10,000
 input rows, NULLs, and overflow. Error cases make a Haskell callback fail in the
 scalar functions, the aggregate step and combine, the table function, the
-cast, the replacement scan, COPY TO, COPY FROM, and the file readers. After
-each error, a valid statement runs in the same process. `TRY_CAST` keeps the
-NULL that the cast callback writes before it reports the error. One case runs
+replacement scan, COPY TO, COPY FROM, and the file readers. After each
+error, a valid statement runs in the same process. A separate case checks
+that an explicit GEOMETRY-to-BLOB cast uses the registered callback. One case runs
 a second `LOAD` in the same database instance. DuckDB records the extension
 name in that instance and skips a later `LOAD` of the same name. Another case
 opens a new instance in the same CLI process and loads the extension there.

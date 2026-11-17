@@ -56,6 +56,7 @@ import Database.DuckDB.FFI.V2 (
   c_duckdb_v2_factory_create_type_from_text,
   c_duckdb_v2_logical_type_is_equal,
   c_duckdb_v2_logical_type_to_text,
+  c_duckdb_v2_value_cast,
   c_duckdb_v2_value_create_null,
   c_duckdb_v2_vector_set_size,
   c_duckdb_v2_vector_set_value,
@@ -689,9 +690,7 @@ valueRegressionTests =
           , ([precise json, coarse json], [precise json, structure json nanos (TimeOfDay 3 4 5)])
           ]
           \(items, expected) -> check items >>= (@?= [Only expected])
-        -- The default native cast cannot put TIME into a TIME alias. This
-        -- input fails before collection inference. Keep the native limitation
-        -- separate from the supported temporal promotion above.
+        -- Keep the native cast failure as a control for public vector writes.
         nativeAlias <- try $ withConnectionHandle conn \native -> withConnectionFactory native \factory ->
           bracket (logicalTypeFromRep factory (LogicalTypeAlias "TIME" time)) destroyLogicalType \logical ->
             withOwnedVector factory logical \vector -> do
@@ -705,8 +704,13 @@ valueRegressionTests =
                 assertBool (Text.unpack sqlErrorMessage) ("Unimplemented type for cast (TIME -> TIME)" `Text.isInfixOf` sqlErrorMessage)
               Right _ -> assertFailure "expected the native TIME alias cast limit"
         rejectsAlias nativeAlias
-        forM_ [[aliasedCoarse, precise json], [precise json, aliasedCoarse]] \items ->
-          try (check items) >>= rejectsAlias
+        nativeCast <- try $ withConnectionHandle conn \native -> withConnectionFactory native \factory ->
+          bracket (logicalTypeFromRep factory (LogicalTypeAlias "TIME" time)) destroyLogicalType \logical ->
+            bracket (toDuckValue factory (TimeOfDay 3 4 5)) destroyValue \value ->
+              bracket (R.output (c_duckdb_v2_value_cast factory value logical)) destroyValue (const (pure ()))
+        rejectsAlias nativeCast
+        check [aliasedCoarse, precise json] >>= (@?= [Only [structure json nanos (TimeOfDay 3 4 5), precise json]])
+        check [precise json, aliasedCoarse] >>= (@?= [Only [precise json, structure json nanos (TimeOfDay 3 4 5)]])
         let plainSql = "{'k': '{}'::VARCHAR, 't': TIME '03:04:05'}"
             annotatedSql = "{'k': '{}'::JSON, 't': '03:04:05.123456789'::TIME_NS}"
         forM_
@@ -722,6 +726,39 @@ valueRegressionTests =
                   Right _ -> assertFailure (label <> ": expected the native common-type error")
             rejected "native SQL" native
             rejected "bound list" bound
+    , testCase "TIME aliases bind exact scalar and nested payloads under session settings" $ withConnection ":memory:" \conn -> do
+        let time = LogicalTypeScalar LogicalTypeIdTime
+            varchar = LogicalTypeScalar LogicalTypeIdVarchar
+            check rep payload = do
+              let original = singleField rep payload
+              (query conn "SELECT ?" (Only original) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only original])
+        forM_ ["UTC", "Europe/Stockholm", "America/New_York"] \zone -> do
+          _ <- execute conn "SET TimeZone = ?" (Only (zone :: Text))
+          forM_ ["TIME", "clock_alias"] \name -> do
+            let alias = LogicalTypeAlias name time
+                members = listArray (0, 0) [UnionMemberType "t" alias]
+            forM_
+              [ FieldNull
+              , FieldTime (TimeOfDay 0 0 0)
+              , FieldTime (TimeOfDay 0 0 0.000001)
+              , FieldTime (TimeOfDay 12 34 56.123456)
+              , FieldTime (TimeOfDay 23 59 59.999999)
+              , FieldTime (TimeOfDay 24 0 0)
+              ]
+              \payload -> do
+                check alias payload
+                check (LogicalTypeList alias) (FieldList [payload, FieldNull])
+                check (LogicalTypeArray alias 2) (FieldArray (listArray (0, 1) [payload, FieldNull]))
+                check (LogicalTypeMap varchar alias) (FieldMap [(FieldText "t", payload)])
+                let nested = singleField alias payload
+                check (structValueTypeRep nested) (FieldStruct nested)
+                let union = UnionValue 0 "t" payload members
+                check (unionValueTypeRep union) (FieldUnion union)
+            let precise = singleField alias (FieldTime (TimeOfDay 12 34 56.123456789))
+                truncated = singleField alias (FieldTime (TimeOfDay 12 34 56.123456))
+            (query conn "SELECT ?" (Only precise) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only truncated])
+            forM_ [TimeOfDay 25 0 0, TimeOfDay 24 0 0.000001, TimeOfDay 12 60 0] \invalid ->
+              assertRangeError (query conn "SELECT ?" (Only (singleField alias (FieldTime invalid))) :: IO [Only FieldValue])
     , testCase "a LIST parameter fails at an element of the wrong type after earlier elements" $ withConnection ":memory:" \conn -> do
         let struct =
               singleField (LogicalTypeList (LogicalTypeScalar LogicalTypeIdBigInt)) (FieldList [FieldInt64 1, FieldInt64 2, FieldText "x", FieldInt64 4])

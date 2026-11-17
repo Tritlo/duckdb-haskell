@@ -103,7 +103,7 @@ import Foreign.Marshal.Alloc (alloca, allocaBytes)
 import Foreign.Marshal.Array (withArray)
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
-import Foreign.Storable (peek)
+import Foreign.Storable (peek, poke)
 import GHC.Exts (Ptr (..))
 import GHC.Num.Integer (integerLog2, integerToAddr)
 import GHC.TypeLits (KnownNat, natVal)
@@ -1599,8 +1599,8 @@ tupleValueDuckValue builder@ValueBuilder{builderFactory = factory} TupleValue{tu
         output (c_duckdb_v2_value_create_tuple factory (ConstPtr valuePtr) (fromIntegral (length values)))
 
 -- | Preserve declared field types through an owned vector. Scalar VARCHAR
--- values do not retain collations, and a value of an alias type is a value of
--- its base type, but their enclosing composite type keeps both. See
+-- values do not retain collations. Most alias values use their base type,
+-- but their enclosing composite type keeps both. See
 -- Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
 declaredCompositeValue
   :: ValueBuilder
@@ -1698,12 +1698,35 @@ unionValueDuckValue builder@ValueBuilder{builderFactory = factory, builderType =
           else checked (c_duckdb_v2_vector_set_null member 0)
       output (c_duckdb_v2_vector_get_value vector 0)
 
+{- Note [TIME alias values]
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+DuckDB 2.0.0 rejects the default cast from TIME to a TIME alias. The public
+API specifies that an alias keeps its base representation. TIME vector data
+and value_get_time both use int64 microseconds since midnight. Thus a checked
+TIME payload can be written through vector_get_data_mutable without a cast.
+vector_get_value preserves the declared alias. The owned vector has one FLAT
+row, and its validity is set explicitly. NULL uses value_create_null instead.
+-}
+
 -- | Construct a value with explicit logical metadata, including typed NULL.
 fieldValueWithTypeDuckValue
   :: ValueBuilder -> LogicalTypeRep -> FieldValue -> IO DuckDBV2ValueHandle
 fieldValueWithTypeDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} rep FieldNull = bracket (makeType rep) destroyLogicalType \logical ->
   output (c_duckdb_v2_value_create_null factory logical)
 fieldValueWithTypeDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} rep value = case (rep, value) of
+  (LogicalTypeAlias _ base, FieldTime time)
+    | withoutAliases base == LogicalTypeScalar LogicalTypeIdTime ->
+        -- See Note [TIME alias values].
+        bracket (timeOfDayDuckValue factory time) destroyValue \native -> do
+          micros <- output (c_duckdb_v2_value_get_time native)
+          bracket (makeType rep) destroyLogicalType \logical -> withOwnedVector factory logical \vector -> do
+            checked (c_duckdb_v2_vector_flatten vector)
+            checked (c_duckdb_v2_vector_set_size vector 1)
+            raw <- output (c_duckdb_v2_vector_get_data_mutable vector)
+            poke (castPtr raw) micros
+            validity <- output (c_duckdb_v2_vector_flat_get_validity_mutable vector)
+            peek validity >>= poke validity . (.|. 1)
+            output (c_duckdb_v2_vector_get_value vector 0)
   -- A value of the base type. DuckDB casts it to the alias type. See
   -- Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
   (LogicalTypeAlias _ base, _) -> fieldValueWithTypeDuckValue builder base value

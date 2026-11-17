@@ -401,7 +401,7 @@ Each row gives a Haskell type and these facts:
 | `Maybe a` | as `a`, or NULL | as `a` | NULL, or as `a` | as `a` |
 | `G.Geometry` | GEOMETRY without a CRS | | GEOMETRY | argument, result |
 | `RawGeometry` | GEOMETRY with its CRS | none (14) | GEOMETRY | none |
-| `Variant` | VARIANT | | VARIANT, and the values that a VARIANT can hold (13) | result |
+| `Variant` | VARIANT | | VARIANT, and the values that a VARIANT can hold (13) | argument, result |
 | `FieldValue` | the type of its constructor (11) | none | each type | none |
 | `Null` | `"NULL"` (12) | | NULL | argument, result (12) |
 
@@ -570,9 +570,7 @@ in "Reads" raises the error of an incompatible column. See [Errors](#errors).
 
 A function registered with `createFunction` declares the "Declared" type, or
 the "Binds as" type if "Declared" is empty, for each argument and its result.
-An argument type needs `FromField` and a declaration. The registration raises
-an error for an argument type that is or contains VARIANT, and for a type with
-no declaration. A result
+An argument type needs `FromField` and a declaration. A result
 type needs `ToDuckValue` and a declaration. Some result types write each value
 directly into the data of the result vector: `Bool` (BOOLEAN), an integer of 8
 to 64 bits (TINYINT to BIGINT, UTINYINT to UBIGINT), `Float` (FLOAT), `Double`
@@ -1292,14 +1290,16 @@ value and cast it in SQL, as in `?::VARIANT`.
 A `Variant` result reads only a value that a VARIANT can hold: note 13 of
 [Types](#types) gives the shapes, and the refusal of a JSON type.
 
-The library uses a separate helper connection for VARIANT decoder metadata.
+For query results the library uses a separate helper connection for VARIANT decoder metadata.
 It caches one prepared VARIANT metadata statement and the types for VARIANT
 casts. It batches VARIANT metadata queries. It constructs VARIANT types
 directly through the native factory. This preserves an explicit stream on the
 caller's connection. The helper connection has the settings of the database,
 not the caller's session settings. Metadata preparation needs an expression
 depth of 11. A GLOBAL `max_expression_depth` below 11 fails preparation with a
-Binder Error, including preparation for COPY TO. A prepared plan can remain
+Binder Error, including preparation for a connection's COPY TO. Extension COPY TO
+and typed callback arguments use an independent instance with default expression
+depth. A prepared plan on a query helper can remain
 usable after the limit is lowered. The query for unusual object keys still
 binds on each execution and can fail at a lower limit.
 
@@ -1461,10 +1461,8 @@ run an `IO` action.
 An argument type needs `FromField` and `DuckDBColumnType` instances. Its SQL
 type is the `duckdbTypeDeclaration` of the type, as for a column of a typed row.
 A newtype with its own column type name (`duckdbColumnTypeFor`), for example
-`DECIMAL(18,3)`, gives that text. An argument type that is or contains VARIANT
-raises an error at registration, because the argument reader does not read
-VARIANT. Scalar and aggregate functions registered on a connection can read a
-GEOMETRY argument, including inside a list or a STRUCT. They read it as a
+`DECIMAL(18,3)`, gives that text. Scalar and aggregate functions registered on
+a connection can read a GEOMETRY argument, including inside a list or a STRUCT. They read it as a
 GEOMETRY result, so a registered cast does not change it. A scalar function
 registered by an extension reads it in the same way. An aggregate function
 registered by an extension rejects a GEOMETRY argument at registration, because
@@ -1674,16 +1672,21 @@ for a `SizedArray`, records, sum types, and `StructValue`, `TupleValue`, and
 `UnionValue`. An aggregate argument has the VARIANT and GEOMETRY rules of
 [User-Defined Functions](#user-defined-functions).
 
-Each typed registration rejects an argument type that its argument reader cannot
-read, with an `SQLError` of the type `ErrorInputInvalid` at registration. A
-callback has no connection, so no argument reader reads VARIANT. Thus a type
-that is or contains VARIANT cannot be an argument of `createFunction` or
-`createAggregate`, a parameter of `createTableFunction` or
-`registerPragmaFunction`, or the type of a custom option with an update
-function. A later release may read a VARIANT argument. The check sees only the
-declared type: a pragma parameter of the type ANY can get a VARIANT value, and
-that call fails. A custom option without an update function can have such a
-type, and `getConfigValue` reads its value.
+Typed scalar and aggregate functions, table functions, pragmas (including ANY
+parameters), and custom option updates accept VARIANT values and nested VARIANT
+fields. Use `Variant` to receive the same `FieldValue` as a query result, or
+`Maybe Variant` to distinguish SQL NULL. For example:
+
+```haskell
+createFunction conn "variant_identity" (id :: Variant -> Variant)
+```
+
+The decoder uses SQL to inspect VARIANT values. For a callback argument it
+opens a private DuckDB instance for each VARIANT vector and copies the rows
+before closing it. The helper has no access to the host's catalog, settings,
+or registered casts. A concrete SQL argument type avoids this work when all
+rows have a known type. A decoding error fails the calling statement under
+the usual callback error rules.
 
 `registerReplacementScan` gives the parts of an unknown table name to the
 function. The function can give a SELECT statement that DuckDB reads instead.

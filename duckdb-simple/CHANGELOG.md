@@ -101,12 +101,9 @@ for the upgrade instructions.
   ARRAY parameter does.
 - An argument of `createFunction` can have each type with `FromField` and
   `DuckDBColumnType`, for example a record through `ViaDuckDB`, a list, a `Map`,
-  or a newtype with its own column type name. `FunctionArg` is gone. An
-  argument type that is or contains VARIANT raises an `SQLError` of the type
-  `ErrorInputInvalid` at registration, because no argument reader reads VARIANT,
-  also for `createAggregate`, for a parameter of `createTableFunction` and of
-  `registerPragmaFunction`, and for a custom option with an update function. A
-  pragma parameter of the type ANY can get a VARIANT value, and that call fails.
+  or a newtype with its own column type name. `FunctionArg` is gone. Typed
+  scalar and aggregate functions, table functions, pragmas and custom option
+  updates accept VARIANT arguments, including inside composite types.
   A GEOMETRY argument reads, also in `createAggregate`. An aggregate function of
   an extension refuses a GEOMETRY argument at registration, because its update
   callback has no factory to read the value.
@@ -138,8 +135,8 @@ for the upgrade instructions.
   `registerReplacementScan`, `registerCustomType`,
   `registerMultiFileFunction`, `registerCopyToFunction`,
   `registerCopyFromFunction`, `registerCopyFunction`,
-  `registerPragmaFunction`, and `registerCustomOption`. A COPY TO function of
-  an extension cannot read a VARIANT column.
+  `registerPragmaFunction`, and `registerCustomOption`. An extension's COPY TO
+  callback can read VARIANT columns.
 - A typed registration has more overhead for each row than raw vector access.
   Use the V2 modules for speed, projection and filter pushdown,
   parallel table scans, and scalar functions with a bind callback or variadic
@@ -398,9 +395,8 @@ for the upgrade instructions.
   `Int64`, a bad `ConnectionOptions` field, SQL text with no statement or with
   more than one statement, a parameter index out of bounds, a column index of
   `columnName` out of bounds, a bad name or argument of a registration, a
-  catalog lookup, a configuration option, or a log sink, the column count of a
-  COPY FROM table, and a VARIANT argument of a typed function, a table function,
-  a pragma, a COPY function, or a custom option. An error about a statement has
+  catalog lookup, a configuration option, or a log sink, and the column count of a
+  COPY FROM table. An error about a statement has
   the query of the statement, and each other error has no query. A value outside
   the range of its SQL type raises `SQLError` with the type
   `ErrorTypeConversion` when it binds, the type of the "Conversion Error" that

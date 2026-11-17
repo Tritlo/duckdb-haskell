@@ -466,9 +466,9 @@ The SQL workflow stays the same. These changes can affect your code:
   `duckdbTypeDeclaration` of the type. The argument types of version 0.3 keep
   their SQL types. `Function.argumentTypes` gives
   `[Either Text TypeDeclaration]` in place of `[DuckDBType]`. An argument type
-  that is or contains VARIANT or GEOMETRY was a compile error. A VARIANT
-  argument is now an `SQLError` at registration, and a GEOMETRY argument
-  reads. A `SizedArray n a` declares the ARRAY of size `n` (see the entry on
+  that is or contains VARIANT or GEOMETRY was a compile error. Scalar
+  functions now accept both, including in nested arguments. A `SizedArray n a`
+  declares the ARRAY of size `n` (see the entry on
   `Array Int a`). DuckDB casts a LIST of the same length to that ARRAY with no
   error.
 - A result of `createFunction` has the SQL type of its Haskell type. In

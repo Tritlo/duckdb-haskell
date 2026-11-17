@@ -1461,13 +1461,9 @@ run an `IO` action.
 An argument type needs `FromField` and `DuckDBColumnType` instances. Its SQL
 type is the `duckdbTypeDeclaration` of the type, as for a column of a typed row.
 A newtype with its own column type name (`duckdbColumnTypeFor`), for example
-`DECIMAL(18,3)`, gives that text. Scalar and aggregate functions registered on
-a connection can read a GEOMETRY argument, including inside a list or a STRUCT. They read it as a
-GEOMETRY result, so a registered cast does not change it. A scalar function
-registered by an extension reads it in the same way. An aggregate function
-registered by an extension rejects a GEOMETRY argument at registration, because
-its update callback has no factory to read the value. See
-[Typed registration](#typed-registration).
+`DECIMAL(18,3)`, gives that text. Arguments use the same conversion as query
+results, including nested values. Registered casts do not change how the
+library reads GEOMETRY arguments. See [Typed registration](#typed-registration).
 
 The SQL type of the result is the `duckdbTypeDeclaration` of the result type:
 an `Int16` result is SMALLINT, and a `Float` result is FLOAT. DuckDB computes
@@ -1644,11 +1640,13 @@ DuckDB threads wait for each other only when they change the same stripe.
 for each aggregate that `createAggregate` registers through the connection.
 The default is `defaultAggregateStripes`, 64. No result depends on the number.
 
-A typed aggregate in a loadable extension creates a helper instance on its
-first metadata read. The registration shares that instance across queries
-until the last native callback owner releases it. The helper uses `threads=1`
-and `async_threads=0`, with no background worker pool. A connection aggregate
-uses its existing instance.
+Scalar and aggregate registrations create a private helper instance when an
+argument needs VARIANT decoding. A loadable extension also uses this helper
+for type metadata and GEOMETRY reads. The registration shares the instance
+across queries until the last native callback owner releases it. Each VARIANT
+vector uses a separate connection and decoder state. The helper uses
+`threads=1` and `async_threads=0`, with no background worker pool. A registration
+on a connection uses its existing instance for type metadata and GEOMETRY reads.
 
 `createTableFunction` registers a table function that gives its rows as a
 list. DuckDB reads only the columns that the query uses, also in `WHERE` and
@@ -1669,24 +1667,13 @@ tableExample conn = do
 The type of a column, a parameter, or an aggregate argument comes from
 `duckdbTypeDeclaration`: notes 8, 9, and 10 of [Types](#types) give the rule
 for a `SizedArray`, records, sum types, and `StructValue`, `TupleValue`, and
-`UnionValue`. An aggregate argument has the VARIANT and GEOMETRY rules of
-[User-Defined Functions](#user-defined-functions).
+`UnionValue`. Arguments use the same conversion as query results.
 
-Typed scalar and aggregate functions, table functions, pragmas (including ANY
-parameters), and custom option updates accept VARIANT values and nested VARIANT
-fields. Use `Variant` to receive the same `FieldValue` as a query result, or
-`Maybe Variant` to distinguish SQL NULL. For example:
-
-```haskell
-createFunction conn "variant_identity" (id :: Variant -> Variant)
-```
-
-The decoder uses SQL to inspect VARIANT values. For a callback argument it
-opens a private DuckDB instance for each VARIANT vector and copies the rows
-before closing it. The helper has no access to the host's catalog, settings,
-or registered casts. A concrete SQL argument type avoids this work when all
-rows have a known type. A decoding error fails the calling statement under
-the usual callback error rules.
+The decoder uses SQL to inspect VARIANT values. For callback arguments it
+copies the rows into a private DuckDB instance. The helper has no access to
+the host's catalog, settings, or registered casts. A concrete SQL argument type
+avoids this work when all rows have a known type. A decoding error fails the
+calling statement under the usual callback error rules.
 
 `registerReplacementScan` gives the parts of an unknown table name to the
 function. The function can give a SELECT statement that DuckDB reads instead.

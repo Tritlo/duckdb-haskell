@@ -67,11 +67,8 @@ for the upgrade instructions.
   and result functions. DuckDB gives the finalize callback no factory, so the
   result type must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT,
   DOUBLE, or VARCHAR.
-- Add `V2.Registration.registerAggregateFunctionWithCleanup` for cleanup
-  owned by an aggregate's native callback resources. A typed extension
-  aggregate creates a metadata helper only when needed. It shares the helper
-  across queries until the last native callback owner releases it. The helper
-  has no background worker pool.
+- `V2.Registration.registerAggregateFunctionWithCleanup` runs a cleanup
+  action when DuckDB releases the last reference to the aggregate's callbacks.
 - `createTableFunction` registers a Haskell function that gives the rows of a
   table function as a list. DuckDB reads the list one chunk at a time. It reads
   only the columns that the query uses, and the first column for a query such
@@ -101,12 +98,8 @@ for the upgrade instructions.
   ARRAY parameter does.
 - An argument of `createFunction` can have each type with `FromField` and
   `DuckDBColumnType`, for example a record through `ViaDuckDB`, a list, a `Map`,
-  or a newtype with its own column type name. `FunctionArg` is gone. Typed
-  scalar and aggregate functions, table functions, pragmas and custom option
-  updates accept VARIANT arguments, including inside composite types.
-  A GEOMETRY argument reads, also in `createAggregate`. An aggregate function of
-  an extension refuses a GEOMETRY argument at registration, because its update
-  callback has no factory to read the value.
+  or a newtype with its own column type name. `FunctionArg` is gone.
+  Arguments use the same conversion as query results, including nested values.
 - A result of `createFunction` can have each type with `ToDuckValue`. Its SQL
   type is the `duckdbTypeDeclaration` of the type: an `Int16` result is
   SMALLINT, a `Word16` result is USMALLINT, and a `Float` result is FLOAT, in
@@ -135,8 +128,7 @@ for the upgrade instructions.
   `registerReplacementScan`, `registerCustomType`,
   `registerMultiFileFunction`, `registerCopyToFunction`,
   `registerCopyFromFunction`, `registerCopyFunction`,
-  `registerPragmaFunction`, and `registerCustomOption`. An extension's COPY TO
-  callback can read VARIANT columns.
+  `registerPragmaFunction`, and `registerCustomOption`.
 - A typed registration has more overhead for each row than raw vector access.
   Use the V2 modules for speed, projection and filter pushdown,
   parallel table scans, and scalar functions with a bind callback or variadic

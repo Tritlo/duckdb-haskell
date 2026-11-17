@@ -1969,10 +1969,6 @@ contains with this rule:
 - Why a VARIANT accepts only a value without a CRS. A VARIANT keeps a
   GEOMETRY without its CRS. DuckDB removes the CRS when it casts a GEOMETRY
   with a CRS to VARIANT, and it gives no error.
-
-- Why earlier versions raised an error. DuckDB 1.5 does not have a cast from
-  BLOB to GEOMETRY. Thus duckdb-simple 0.3 raised an error for each raw
-  geometry parameter.
 -}
 
 -- | Cast the payload to VARIANT with the default cast of DuckDB. See

@@ -110,10 +110,8 @@ import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 -- t'Database.DuckDB.Simple.ToField.DuckDBColumnType' instances. The SQL type of
 -- an argument is the 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of
 -- its type. An argument type with no declaration raises an @SQLError@ at
--- registration. A VARIANT argument decodes as it does in a query result,
--- including inside composite types. A GEOMETRY argument
--- reads as a GEOMETRY result does, also inside a list or a STRUCT, for example
--- as a @Geometry@.
+-- registration. Arguments use the same conversion as query results, including
+-- nested values.
 createFunction :: (Function f) => Connection -> Text -> f -> IO ()
 createFunction conn = createFunctionOn (ConnectionTarget conn)
 
@@ -131,7 +129,6 @@ createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 -- or a sum type with 'Database.DuckDB.Simple.Generic.ViaDuckDB' instances is a
 -- STRUCT or a UNION column. A type with no declaration, for example
 -- 'Database.DuckDB.Simple.LogicalRep.StructValue', is an error at registration.
--- A parameter can contain VARIANT or GEOMETRY.
 --
 -- 'TypedRow' of @params@ gives the parameter types. Use @()@ for no parameter.
 -- The parameters are positional only. DuckDB casts each argument to its
@@ -182,11 +179,9 @@ createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 -- type of each argument is the
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of its column in
 -- 'TypedRow'. A type with no declaration is an error at registration, as for
--- 'createTableFunction'. A VARIANT or GEOMETRY argument reads
--- as for 'createFunction', also when DuckDB runs the update callback on several
--- threads. An aggregate function of an extension refuses a GEOMETRY argument
--- at registration, because its update callback has no factory to read the
--- value. The SQL return type is the
+-- 'createTableFunction'. Arguments use the same conversion as query results,
+-- also when DuckDB runs the update callback on several threads. The SQL return
+-- type is the
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of the result type,
 -- for example SMALLINT for 'Data.Int.Int16' and FLOAT for 'Float'. A 'Maybe'
 -- result has the SQL type of its value, and 'Nothing' gives NULL.

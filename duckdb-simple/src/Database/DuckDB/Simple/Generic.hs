@@ -518,9 +518,8 @@ this value as {}. The value is not NULL.
   same value in a field.
 
 - The decoders also accept NULL for a product type with no fields and for the
-  payload of a constructor with no fields. In version 0.3, genericToFieldValue
-  gave NULL for a product type with no fields, and the payload of a
-  constructor with no fields was NULL.
+  payload of a constructor with no fields. NULL decodes as the value with
+  no fields.
 -}
 
 -- | Product encoding: single-constructor datatypes become STRUCT values. See
@@ -672,7 +671,7 @@ instance (Constructor c, GStruct f, GStructDecode f) => GSum (M1 C c f) where
     | idx /= 0 = decodingError ("duckdb-simple: union tag mismatch (expected 0, got " <> show idx <> ")")
     | otherwise =
         case payload of
-          -- Version 0.3 wrote this payload. See Note [Types without fields].
+          -- NULL also decodes as a value with no fields. See Note [Types without fields].
           FieldNull -> M1 . fst <$> gStructDecodeList (Proxy @(f _)) []
           FieldStruct structVal -> do
             ordered <- either decodingError pure (orderStructFields (gStructTypes (Proxy @(f _))) structVal)
@@ -798,7 +797,7 @@ class GFromField' (isSum :: Bool) f where
 
 instance (GStruct f, GStructDecode f) => GFromField' 'False (M1 D meta (M1 C c f)) where
   gFromField' _ = \case
-    -- Version 0.3 wrote this value. See Note [Types without fields].
+    -- NULL also decodes as a value with no fields. See Note [Types without fields].
     FieldNull -> M1 . M1 . fst <$> gStructDecodeList (Proxy @(f _)) []
     FieldStruct sv -> do
       ordered <- either decodingError pure (orderStructFields (gStructTypes (Proxy @(f _))) sv)

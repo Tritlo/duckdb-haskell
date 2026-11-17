@@ -52,11 +52,18 @@ The decoder does not cast objects to MAP values. Object keys use DuckDB's
 native lexicographic order. Arrays retain element order. Native factories
 construct VARIANT types directly.
 
+Each scalar or aggregate registration opens its own private helper instance
+on demand and reuses it across calls. Each VARIANT vector uses a separate
+connection and decoder state. DuckDB releases the helper when it releases the
+last reference to the callbacks. See Note [Function argument readers] in
+`Database.DuckDB.Simple.Typed`.
+
 GEOMETRY has no committed vector layout. The reader casts each GEOMETRY vector
 to BLOB with the factory of the instance, which has only the built-in casts,
-and copies the WKB rows. In a callback of an extension, which has no instance,
-the reader writes each row to a BLOB vector with `duckdb_v2_vector_set_value`,
-whose default cast also has only the built-in casts.
+and copies the WKB rows. Extension scalar and aggregate functions use the
+private instance factory for this cast and for type metadata. Other extension
+callbacks write each row to a BLOB vector with `duckdb_v2_vector_set_value`
+and the callback context. This operation uses the built-in default cast.
 
 A connection makes the CRS names in `connectionGeometryCRS` available to
 nested parameters, including typed NULLs and empty collections. When the

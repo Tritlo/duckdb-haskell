@@ -99,9 +99,9 @@ The SQL workflow stays the same. These changes can affect your code:
   `DuckDBErrorConversion` becomes `ErrorTypeConversion`,
   `DuckDBErrorInvalidInput` becomes `ErrorInputInvalid`, and
   `DuckDBErrorInterrupt` becomes `ErrorRuntimeInterrupt`.
-- `SQLError` has a fourth field, `sqlErrorBody :: Maybe Text`. Code that builds
-  an `SQLError` with positional arguments, or matches it by position, gets a
-  compile error. Use record syntax, for example
+- `SQLError` has a fourth field, `sqlErrorBody :: Maybe Text`. Update positional
+  constructors and patterns to include it, or use record syntax. For example,
+  construct the error with
   `SQLError {sqlErrorMessage = text, sqlErrorType = Nothing, sqlErrorQuery = Nothing, sqlErrorBody = Nothing}`,
   and match only the fields that you need, for example
   `SQLError {sqlErrorType}`.
@@ -465,9 +465,7 @@ The SQL workflow stays the same. These changes can affect your code:
   with `FromField` and `DuckDBColumnType` instances. Its SQL type is the
   `duckdbTypeDeclaration` of the type. The argument types of version 0.3 keep
   their SQL types. `Function.argumentTypes` gives
-  `[Either Text TypeDeclaration]` in place of `[DuckDBType]`. An argument type
-  that is or contains VARIANT or GEOMETRY was a compile error. Scalar
-  functions now accept both, including in nested arguments. A `SizedArray n a`
+  `[Either Text TypeDeclaration]` in place of `[DuckDBType]`. A `SizedArray n a`
   declares the ARRAY of size `n` (see the entry on
   `Array Int a`). DuckDB casts a LIST of the same length to that ARRAY with no
   error.

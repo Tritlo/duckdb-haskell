@@ -1701,7 +1701,7 @@ unionValueDuckValue builder@ValueBuilder{builderFactory = factory, builderType =
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 DuckDB 2.0.0 rejects the default cast from TIME to a TIME alias. The public
 API specifies that an alias keeps its base representation. TIME vector data
-and value_get_time both use int64 microseconds since midnight. Thus a checked
+uses int64 microseconds since midnight, as encodeTimeOfDay does. Thus a checked
 TIME payload can be written through vector_get_data_mutable without a cast.
 vector_get_value preserves the declared alias. The owned vector has one FLAT
 row, and its validity is set explicitly. NULL uses value_create_null instead.
@@ -1714,18 +1714,17 @@ fieldValueWithTypeDuckValue ValueBuilder{builderFactory = factory, builderType =
   output (c_duckdb_v2_value_create_null factory logical)
 fieldValueWithTypeDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} rep value = case (rep, value) of
   (LogicalTypeAlias _ base, FieldTime time)
-    | withoutAliases base == LogicalTypeScalar LogicalTypeIdTime ->
+    | withoutAliases base == LogicalTypeScalar LogicalTypeIdTime -> do
         -- See Note [TIME alias values].
-        bracket (timeOfDayDuckValue factory time) destroyValue \native -> do
-          micros <- output (c_duckdb_v2_value_get_time native)
-          bracket (makeType rep) destroyLogicalType \logical -> withOwnedVector factory logical \vector -> do
-            checked (c_duckdb_v2_vector_flatten vector)
-            checked (c_duckdb_v2_vector_set_size vector 1)
-            raw <- output (c_duckdb_v2_vector_get_data_mutable vector)
-            poke (castPtr raw) micros
-            validity <- output (c_duckdb_v2_vector_flat_get_validity_mutable vector)
-            peek validity >>= poke validity . (.|. 1)
-            output (c_duckdb_v2_vector_get_value vector 0)
+        micros <- encodeTimeOfDay time
+        bracket (makeType rep) destroyLogicalType \logical -> withOwnedVector factory logical \vector -> do
+          checked (c_duckdb_v2_vector_flatten vector)
+          checked (c_duckdb_v2_vector_set_size vector 1)
+          raw <- output (c_duckdb_v2_vector_get_data_mutable vector)
+          poke (castPtr raw) micros
+          validity <- output (c_duckdb_v2_vector_flat_get_validity_mutable vector)
+          peek validity >>= poke validity . (.|. 1)
+          output (c_duckdb_v2_vector_get_value vector 0)
   -- A value of the base type. DuckDB casts it to the alias type. See
   -- Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
   (LogicalTypeAlias _ base, _) -> fieldValueWithTypeDuckValue builder base value
@@ -2346,10 +2345,10 @@ timeOfDayUnits units tod@(TimeOfDay hours minutes seconds) = do
   -- The two texts name the two cases.
   when (hours < 0 || minutes < 0 || minutes > 59 || seconds < 0 || seconds >= 61) $
     throwConversionError "invalid time of day"
-  let value = diffTimeToPicoseconds (timeOfDayToTime tod) `div` (1000000000000 `div` units)
-  when (value > 86400 * units) $
+  let picos = diffTimeToPicoseconds (timeOfDayToTime tod)
+  when (hours > 24 || picos > 86400 * 1000000000000) $
     throwConversionError "time of day out of range"
-  pure value
+  pure (picos `div` (1000000000000 `div` units))
 
 -- | Transfer a newly constructed value to the statement on success.
 bindDuckValue :: Statement -> DuckDBIdx -> IO DuckDBV2ValueHandle -> IO ()

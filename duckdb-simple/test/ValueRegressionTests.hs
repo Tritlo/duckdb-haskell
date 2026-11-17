@@ -47,7 +47,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import Data.Time.Calendar (Day, addDays, diffDays, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), hoursToTimeZone, utc, utcToLocalTime)
+import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), hoursToTimeZone, minutesToTimeZone, utc, utcToLocalTime)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI.V2 (
@@ -86,6 +86,7 @@ import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToBaseRep, logicalTypeToRep)
 import qualified Database.DuckDB.Simple.V2.Registration as R
+import Database.DuckDB.Simple.Variant (Variant (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
 import Foreign.Marshal.Array (withArray)
@@ -1120,6 +1121,20 @@ valueRegressionTests =
           >>= (@?= [("INTERVAL[]", [value, negative])])
         let array = sized [value, negative] :: SizedArray 2 IntervalValue
         (query conn "SELECT typeof(?), ?" (array, array) :: IO [(Text, [IntervalValue])]) >>= (@?= [("INTERVAL[2]", [value, negative])])
+    , testCase "MAP keys must remain distinct in field and generic decoding" $ withConnection ":memory:" \conn -> do
+        let genericKeyMap entry = fieldType entry >>= \logical -> duckFromTypedField logical (fieldValue entry)
+            check parser = do
+              let get sql = queryWith_ (fieldWith parser) conn sql :: IO [Map.Map Bool Int]
+              get "SELECT MAP {0:10, 1:20}" >>= (@?= [Map.fromList [(False, 10), (True, 20)]])
+              try (get "SELECT MAP {1:10, 2:20}") >>= \case
+                Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("duplicate MAP key after conversion" `Text.isInfixOf` sqlErrorMessage)
+                Right rows -> assertFailure ("expected duplicate MAP key error, got " <> show rows)
+        check fromField
+        check genericKeyMap
+    , testCase "a JSON alias on an INTEGER reads as a VARIANT integer" $ withConnection ":memory:" \conn -> do
+        let value = singleField (LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdInteger)) (FieldInt32 17)
+        (query conn "SELECT (?).value, (?).value::VARIANT" (value, value) :: IO [(Variant, Variant)])
+          >>= (@?= [(Variant (FieldInt32 17), Variant (FieldInt32 17))])
     , testCase "a TimeWithZone from a Data.Time zone reads back with that zone" $ withConnection ":memory:" \conn -> do
         let zone = hoursToTimeZone 2
             value = timeWithZone (TimeOfDay 12 34 0) zone
@@ -2299,6 +2314,9 @@ valueRegressionTests =
         let value = TimeWithZone (TimeOfDay 12 0 0) maxBound
             struct = singleField (LogicalTypeScalar LogicalTypeIdTimeTz) (FieldTimeTZ value)
         assertRangeError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
+        forM_ [71582789, -71582789, minBound, maxBound] \minutes ->
+          assertRangeError
+            (query conn "SELECT ?::TIMETZ" (Only (timeWithZone (TimeOfDay 12 0 0) (minutesToTimeZone minutes))) :: IO [Only TimeWithZone])
     , testCase "invalid TIME input returns controlled error" $ withConnection ":memory:" \conn ->
         assertRangeError (query conn "SELECT ?" (Only (TimeOfDay 1000000000 0 0)) :: IO [Only TimeOfDay])
     , testCase "nested types decode the same in each chunk and each read mode" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do

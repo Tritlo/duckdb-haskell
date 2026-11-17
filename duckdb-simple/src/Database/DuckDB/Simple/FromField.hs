@@ -57,6 +57,7 @@ import qualified Data.Geometry as G
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Ord (clamp)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -267,10 +268,14 @@ data TimeWithZone = TimeWithZone
   deriving (Eq, Show)
 
 -- | Make a t'TimeWithZone' from a time of day and a "Data.Time" zone. The offset
--- is the minutes of the zone times 60. DuckDB does not store the name and the
--- summer flag of a zone, so the value does not keep them.
+-- is the minutes of the zone times 60. If the seconds exceed the 'Int32'
+-- range, keep the nearest bound. Binding rejects either bound as an invalid
+-- TIMETZ offset. DuckDB does not store the zone name or the summer flag.
 timeWithZone :: TimeOfDay -> TimeZone -> TimeWithZone
-timeWithZone time zone = TimeWithZone time (fromIntegral (timeZoneMinutes zone) * 60)
+timeWithZone time zone = TimeWithZone time (fromInteger (clamp bounds32 seconds))
+  where
+    seconds = toInteger (timeZoneMinutes zone) * 60
+    bounds32 = (toInteger (minBound @Int32), toInteger (maxBound @Int32))
 
 -- | Give the "Data.Time" zone of the offset of a t'TimeWithZone'. A 'TimeZone'
 -- holds whole minutes, so the seconds of an offset are dropped: the offset
@@ -964,10 +969,15 @@ instance (KnownNat n, Typeable a, FromField a) => FromField (SizedArray n a) whe
           count = length elements
 
 -- | Reads MAP. Each key reads as @k@, and each value reads as @v@.
+-- Keys must remain distinct after conversion.
 instance (Ord k, Typeable k, Typeable v, FromField k, FromField v) => FromField (Map k v) where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldMap pairs -> Map.fromList <$> traverse (uncurry parsePair) (zip [0 :: Int ..] pairs)
+      FieldMap pairs -> do
+        result <- Map.fromList <$> traverse (uncurry parsePair) (zip [0 :: Int ..] pairs)
+        if Map.size result == length pairs
+          then pure result
+          else returnError ConversionFailed f "duplicate MAP key after conversion"
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
     where

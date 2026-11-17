@@ -800,7 +800,8 @@ nanosecondTimeTests =
             either (\err -> assertBool (label <> ": " <> show err) (expected `Text.isInfixOf` sqlErrorMessage err)) (const (pure ())) outcome
             assertRangeError (either throwIO pure outcome)
       forM_
-        [ ("24:00:01", TimeOfDay 24 0 1, "time of day out of range")
+        [ ("24:00:00 + 1 ps", TimeOfDay 24 0 0.000000000001, "time of day out of range")
+        , ("24:00:01", TimeOfDay 24 0 1, "time of day out of range")
         , ("23:59:60.5", TimeOfDay 23 59 60.5, "time of day out of range")
         , ("25:00:00", TimeOfDay 25 0 0, "time of day out of range")
         , ("23:61:00", TimeOfDay 23 61 0, "invalid time of day")

@@ -65,7 +65,8 @@ instance FromField Variant where
           then pure (Variant fieldValue)
           else returnError Incompatible field (Text.pack "a VARIANT does not hold a value of this shape; write c::VARIANT")
     where
-      isJson (LogicalTypeAlias name _) = name == Text.pack "JSON"
+      isJson (LogicalTypeAlias name (LogicalTypeScalar LogicalTypeIdVarchar)) = name == Text.pack "JSON"
+      isJson (LogicalTypeAlias name LogicalTypeCollatedVarchar{}) = name == Text.pack "JSON"
       isJson _ = False
       column = if Text.null fieldName then Text.pack "c" else fieldName
 

@@ -410,8 +410,10 @@ instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
       (duckLogicalType (Proxy @v))
   duckFromField = duckFromTypedField (LogicalTypeScalar LogicalTypeIdVariant)
   duckFromTypedField logical (FieldMap pairs) = do
-    decodedPairs <- traverse decodePair pairs
-    pure (Map.fromList decodedPairs)
+    result <- Map.fromList <$> traverse decodePair pairs
+    if Map.size result == length pairs
+      then pure result
+      else decodingError "duplicate MAP key after conversion"
     where
       (keyType, valueType) = mapEntryTypes logical
       decodePair (kfv, vfv) = do

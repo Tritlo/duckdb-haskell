@@ -166,8 +166,11 @@ defaultValue value = DefaultValue (\factory -> toDuckValue factory value)
 -- | One parameter. Native V2 validates parameter order, names, and defaults.
 data FunctionParameter = FunctionParameter
   { parameterName :: Text
+  -- ^ The parameter name.
   , parameterType :: TypeDeclaration
+  -- ^ The declared parameter type.
   , parameterDefault :: Maybe DefaultValue
+  -- ^ The optional default value.
   , parameterKind :: DuckDBV2FunctionParameterKind
   }
 

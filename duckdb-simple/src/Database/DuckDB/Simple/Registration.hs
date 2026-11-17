@@ -12,7 +12,11 @@ module Database.DuckDB.Simple.Registration (
   TypeDeclaration (..),
   DefaultValue,
   defaultValue,
-  FunctionParameter (parameterName, parameterType, parameterDefault),
+  -- See Note [Abstract parameter selectors].
+  FunctionParameter,
+  parameterName,
+  parameterType,
+  parameterDefault,
   parameter,
   registerCustomType,
   Replacement (..),
@@ -33,6 +37,14 @@ import Database.DuckDB.Simple.V2.Registration (
   registerCustomType,
  )
 import qualified Database.DuckDB.Simple.V2.Registration as V2
+
+{- Note [Abstract parameter selectors]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Haddock 2.33.0 omits selector declarations from bundled exports when the
+constructor is hidden. Export the selectors separately so the index has
+matching destinations. GHC retains the parent type of each selector.
+Bundled imports and record updates still work.
+-}
 
 -- | Register a replacement scan on a connection. DuckDB calls the function
 -- while it plans a query on this connection that reads a table that the catalog

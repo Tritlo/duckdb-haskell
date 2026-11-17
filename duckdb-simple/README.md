@@ -1055,9 +1055,10 @@ literal (see [Arrays and Lists](#arrays-and-lists)). They read the parameter
 type, so that a list read from a `TIME_NS[]` column binds back with its
 nanoseconds.
 
-Preserved alias metadata does not guarantee native cast support. Binding an
-unaliased `TIME` value to an alias of `TIME` inside a composite raises an
-`SQLError` in DuckDB 2.0.0.
+TIME aliases keep their alias and exact microsecond value when they bind
+inside a composite. The library uses public vector storage because the
+default TIME-to-alias cast fails in DuckDB 2.0.0. Other aliases require native
+cast support.
 
 Some values bind with another type than the column that they came from. A
 `FieldTimestamp` binds as a `TIMESTAMP`, or as a `TIMESTAMP_NS` when it has

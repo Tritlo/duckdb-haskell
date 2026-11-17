@@ -101,8 +101,9 @@ These places keep the alias:
   the native default cast supports its aliases, for example STRUCT(k JSON).
 
 Alias metadata does not imply native cast support. DuckDB 2.0.0 cannot cast a
-TIME value to an alias of TIME through the default cast. Binding such a value
-in a composite raises the native SQLError. LogicalTypeRep stores the alias
+TIME value to an alias of TIME through the default cast. The library writes
+TIME alias payloads through public vector storage. See Note [TIME alias values]
+in "Database.DuckDB.Simple.ToField". LogicalTypeRep stores the alias
 name and public type parameters. It does not store other C++ extension metadata.
 
 Use withoutAliases to compare base types.

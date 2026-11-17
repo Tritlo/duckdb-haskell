@@ -504,8 +504,8 @@ tests =
           (query conn "SELECT ?" (Only (nullShape "OGC:CRS84"))) >>= (@?= [Only (nullShape "OGC:CRS84")])
           (query_ conn "SELECT 42::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (FieldInt32 42))])
           countQueries crsQuery >>= (@?= 0)
-          -- The log also records the queries of the helper connection.
-          countQueries "variant_typeof" >>= (@?= 1)
+          -- The log records metadata preparation and execution on the helper connection.
+          countQueries "variant_typeof" >>= (@?= 2)
     , testCase "a custom CRS runs one CRS query when the connection opens, and a VARIANT read runs none" $
         withLoggedInstance \inst countQueries ->
           bracket (connectWithOptions inst defaultConnectionOptions{connectionGeometryCRS = ["local grid"]}) close \conn -> do
@@ -513,7 +513,7 @@ tests =
             (query conn "SELECT ?" (Only (nullShape "local grid"))) >>= (@?= [Only (nullShape "local grid")])
             (query_ conn "SELECT 42::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (FieldInt32 42))])
             countQueries crsQuery >>= (@?= 1)
-            countQueries "variant_typeof" >>= (@?= 1)
+            countQueries "variant_typeof" >>= (@?= 2)
     , testCase "a configured recognized CRS binds in either spelling" $
         withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["ogc:crs84"]} \conn ->
           forM_ ["ogc:crs84", "OGC:CRS84"] \crs -> (query conn "SELECT ?" (Only (nullShape crs))) >>= (@?= [Only (nullShape "OGC:CRS84")])

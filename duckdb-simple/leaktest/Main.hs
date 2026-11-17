@@ -348,20 +348,19 @@ checkCallbacks batches =
       after <- readUsage
       reportOptional ("open connection, " <> show (n * 100) <> " callback cycles") before after
 
--- | Make the reader of a VARIANT result fail on the database of the
--- connection. The VARIANT reader runs its metadata query on a helper
--- connection, and that query needs an expression depth of 11. A GLOBAL depth
--- of 10 thus fails the reader while it reads the chunk. The SESSION depth of
--- the connection lets its own queries run. No value from SQL fails in a result
--- decoder, and no user cast changes a reader of the library.
+-- | Make VARIANT metadata preparation and object extraction fail. A prepared
+-- metadata plan can survive a lower expression depth. 'rejectedQuery' uses an
+-- unusual key, so its extraction query still binds on each execution and fails
+-- at depth 3. Set the caller's SESSION depth first, so its control statements
+-- can still bind after the GLOBAL depth changes.
 breakVariantReads :: Connection -> IO ()
 breakVariantReads conn = do
-  void (execute_ conn "SET GLOBAL max_expression_depth = 10")
   void (execute_ conn "SET SESSION max_expression_depth = 1000")
+  void (execute_ conn "SET GLOBAL max_expression_depth = 3")
 
 -- | A query whose result fails in the VARIANT reader after 'breakVariantReads'.
 rejectedQuery :: Query
-rejectedQuery = "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': 42::BIGINT::VARIANT} FROM range(100000) t(i)"
+rejectedQuery = "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': json_object('', i)::VARIANT} FROM range(100000) t(i)"
 
 -- | Require an error without retaining the exception or its native resources.
 expectFailure :: IO a -> IO ()

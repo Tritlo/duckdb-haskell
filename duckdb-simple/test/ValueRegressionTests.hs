@@ -2184,16 +2184,21 @@ valueRegressionTests =
         withEnvironment \environment -> withInstance environment [] \instance' ->
           withConnectionOn instance' \conn -> withConnectionOn instance' \other -> do
             _ <- execute_ conn "SET SESSION max_expression_depth = 1000"
-            -- The first chunk reads. Then a GLOBAL depth of 10 fails the
-            -- metadata query of the VARIANT reader for the next chunk. See the
-            -- case before this one.
+            -- Metadata reuses its prepared plan. The unusual key needs the
+            -- extraction query, which binds again for each chunk. A lower
+            -- GLOBAL depth fails that bind after the first chunk.
             let step count (Only (_ :: FieldValue)) = do
-                  _ <- if count == 0 then execute_ other "SET GLOBAL max_expression_depth = 10" else pure 0
+                  when (count == 0) $ do
+                    _ <- execute_ other "SET GLOBAL max_expression_depth = 3"
+                    pure ()
                   pure (count + 1)
-            try (Streaming.fold_ conn "SELECT 42::BIGINT::VARIANT FROM range(10000)" (0 :: Int) step) >>= \case
+            let rows = "SELECT json_object('', i)::VARIANT FROM range(10000) t(i)"
+            try (Streaming.fold_ conn rows (0 :: Int) step) >>= \case
               Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("expression depth" `Text.isInfixOf` sqlErrorMessage)
               Right count -> assertFailure ("expected the error of the VARIANT reader, got " <> show count <> " rows")
             (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
+            _ <- execute_ conn "SET GLOBAL max_expression_depth = 1000"
+            (length <$> (query_ conn rows :: IO [Only FieldValue])) >>= (@?= 10000)
     , testCase "ENUM labels read as the cast to VARCHAR in each chunk, execution, list, and map key" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
         -- 5000 rows are three chunks. Each row has another label of a
         -- dictionary of 16-bit or 32-bit indexes. See Note [ENUM labels] in

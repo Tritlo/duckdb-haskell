@@ -99,6 +99,17 @@ tests paths =
           ]
           [["native_batches", "10000", "1", "10000", "50005000"], ["null", "preserved"], ["text", "true"]]
           []
+    , testCase "VARIANT arguments in scalar and aggregate callbacks" $
+        checkProcess
+          paths
+          [ "SET threads=4;"
+          , "SELECT 'object', haskell_variant_echo(v) = v FROM (SELECT '{\"\":[3, null], \"nested\":{\"x\":true}}'::JSON::VARIANT AS v);"
+          , "SELECT 'sum', haskell_variant_sum(i::VARIANT) FROM range(4097) AS t(i);"
+          , "SELECT haskell_variant_sum('text'::VARIANT);"
+          , "SELECT 'recovered', haskell_variant_sum(v) FROM (VALUES (7::BIGINT::VARIANT), (NULL::VARIANT)) AS t(v);"
+          ]
+          [["object", "true"], ["sum", "8390656"], ["recovered", "7"]]
+          ["haskell_variant_sum expects BIGINT payloads"]
     , testCase "a GEOMETRY argument" $
         checkProcess
           paths
@@ -232,7 +243,9 @@ tests paths =
         quoted <- sqlLiteral file
         checkProcess
           paths
-          [ "COPY (SELECT CASE WHEN i % 1000 = 7 THEN NULL ELSE i END AS value FROM range(3000) AS t(i)) TO " <> quoted <> " (FORMAT haskell_lines);"
+          [ "COPY (SELECT (CASE WHEN i % 1000 = 7 THEN NULL ELSE i END)::VARIANT AS value FROM range(3000) AS t(i)) TO "
+              <> quoted
+              <> " (FORMAT haskell_lines);"
           , "CREATE TABLE copied (value BIGINT);"
           , "COPY copied FROM " <> quoted <> " (FORMAT haskell_lines);"
           , "SELECT 'copy_from', count(*), count(value), sum(value) FROM copied;"
@@ -240,7 +253,7 @@ tests paths =
           , "SELECT 'after_copy_error', 42;"
           ]
           [["copy_from", "3000", "2997", "4495479"], ["after_copy_error", "42"]]
-          ["haskell_lines writes exactly one BIGINT column"]
+          ["haskell_lines writes one BIGINT or VARIANT column with BIGINT or NULL values"]
         written <- readFile file
         written @?= unlines [if i `mod` 1000 == 7 then "" else show i | i <- [0 .. 2999 :: Int]]
     , testGroup

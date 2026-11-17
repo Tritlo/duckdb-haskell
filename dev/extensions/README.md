@@ -46,8 +46,9 @@ has the typed registrations of the connection API: `createAggregate`,
 `createTableFunction`, `registerReplacementScan`,
 `registerCustomType`, `registerMultiFileFunction`, `registerCopyToFunction`,
 `registerCopyFromFunction`, and `registerCopyFunction`. These functions take
-the `Extension` value. A COPY TO function of an extension cannot read a VARIANT
-column. A replacement scan of an extension belongs to the instance.
+the `Extension` value. Typed callbacks can read VARIANT arguments, including
+aggregate updates, and COPY TO can read VARIANT columns. A replacement scan
+of an extension belongs to the instance.
 `Extension.extensionTarget` gives the `RegistrationTarget` for the functions of
 the V2 modules, for example
 `Database.DuckDB.Simple.V2.Registration.registerAggregateFunctionWith`. Use it

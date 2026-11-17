@@ -28,12 +28,23 @@ import Database.DuckDB.Simple.Function (FunctionResult)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeId (LogicalTypeIdBigInt), LogicalTypeRep (..))
 import Database.DuckDB.Simple.Registration (Replacement (..), TypeDeclaration (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue)
+import Database.DuckDB.Simple.Variant (Variant (..))
 
 -- | Register an aggregate, a table function, a custom type, a replacement scan,
 -- a COPY format, and a multi-file reader.
 register :: Extension -> IO ()
 register extension = do
   registerSum extension
+  Extension.createFunction extension "haskell_variant_echo" (id :: Variant -> Variant)
+  Extension.createAggregate extension "haskell_variant_sum" $
+    Aggregate
+      { aggregateInitial = 0 :: Int64
+      , aggregateStep = \total (Only (Variant payload)) -> case payload of
+          FieldInt64 value -> addOrThrow "haskell_variant_sum" total value
+          _ -> throwIO (userError "haskell_variant_sum expects BIGINT payloads")
+      , aggregateCombine = addOrThrow "haskell_variant_sum"
+      , aggregateResult = pure
+      }
   registerArgumentTypes extension
   registerSquares extension
   Extension.registerCustomType extension "haskell_amount" (TypeExpression "BIGINT")
@@ -123,7 +134,8 @@ replaceMissing name = case name of
   _ -> pure Nothing
 
 -- | Register the COPY format @haskell_lines@ in both directions. A file has one
--- BIGINT value on each line. An empty line is NULL. One registration gives the two
+-- BIGINT value on each line. It can also write a VARIANT column of BIGINT
+-- values. An empty line is NULL. One registration gives the two
 -- directions, because DuckDB keeps only the first registration of a name.
 registerLines :: Extension -> IO ()
 registerLines extension = Extension.registerCopyFunction extension "haskell_lines" copyTo (readLines . Copy.copyFromPath)
@@ -131,7 +143,7 @@ registerLines extension = Extension.registerCopyFunction extension "haskell_line
     copyTo =
       Copy.CopyTo
         { Copy.copyToBind = \info ->
-            unless (Copy.copyBindColumnTypes info == [Copy.LogicalTypeIdBigInt]) $ throwIO (userError oneColumn)
+            unless (Copy.copyBindColumnTypes info `elem` [[Copy.LogicalTypeIdBigInt], [Copy.LogicalTypeIdVariant]]) $ throwIO (userError oneColumn)
         , Copy.copyToInit = \info -> writeFile (Copy.copyInitFilePath info) "" >> pure (Copy.copyInitFilePath info)
         , Copy.copyToSink = \info rows -> mapM line rows >>= appendFile (Copy.copySinkGlobalState info) . unlines
         , Copy.copyToFinalize = \_ -> pure ()
@@ -139,7 +151,7 @@ registerLines extension = Extension.registerCopyFunction extension "haskell_line
     line [Field{fieldValue = FieldInt64 value}] = pure (show value)
     line [Field{fieldValue = FieldNull}] = pure ""
     line _ = throwIO (userError oneColumn)
-    oneColumn = "haskell_lines writes exactly one BIGINT column"
+    oneColumn = "haskell_lines writes one BIGINT or VARIANT column with BIGINT or NULL values"
 
 -- | Register the table function @haskell_read_line_file(path)@. It reads one
 -- file in the format of @haskell_lines@. Then register the multi-file function

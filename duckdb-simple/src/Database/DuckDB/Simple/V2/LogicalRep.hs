@@ -150,7 +150,7 @@ logicalTypeFromRepWith factory resolve = create
     constructRep = \case
       LogicalTypeScalar LogicalTypeIdVariant -> fromName (Text.pack "VARIANT")
       LogicalTypeScalar LogicalTypeIdGeometry -> fromText (Text.pack "GEOMETRY")
-      LogicalTypeScalar LogicalTypeIdSQLNull -> fromText (Text.pack "\"NULL\"")
+      LogicalTypeScalar LogicalTypeIdSQLNull -> fromName (Text.pack "NULL")
       LogicalTypeScalar dtype -> construct (logicalTypeIdToNative dtype) [] []
       LogicalTypeCollatedVarchar collation -> construct DuckDBV2LogicalTypeIdVarchar [Text.pack "collation"] [text collation]
       LogicalTypeGeometry Nothing -> fromText (Text.pack "GEOMETRY")

@@ -17,10 +17,10 @@ module Database.DuckDB.Simple.V2.Config (
 
 import Database.DuckDB.Simple.Callback (
   attachOpaque,
+  checkTargetThreads,
   guardContext,
   install,
   installOptional,
-  targetConfig,
   withCallbackResources,
   withTarget,
  )
@@ -41,7 +41,7 @@ registerCustomOptionWith target configure callback =
     c_duckdb_v2_extension_register_custom_option
     \option register ->
       withCallbackResources
-        (targetConfig target)
+        (checkTargetThreads target)
         ( \allocate -> installOptional callback \update ->
             install
               allocate

@@ -23,7 +23,15 @@ module Database.DuckDB.Simple.V2.Pragma (
 import Control.Monad (when)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.DuckDB.Simple.Callback (attachOpaque, guardContext, install, runCallback, targetConfig, withCallbackResources, withTarget)
+import Database.DuckDB.Simple.Callback (
+  attachOpaque,
+  checkTargetThreads,
+  guardContext,
+  install,
+  runCallback,
+  withCallbackResources,
+  withTarget,
+ )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.Registration (
   ContextCallback,
@@ -87,7 +95,7 @@ registerPragmaFunctionWith target configure callback =
     c_duckdb_v2_extension_register_pragma_function
     \function register ->
       withCallbackResources
-        (targetConfig target)
+        (checkTargetThreads target)
         ( \allocate -> case callback of
             QueryPragma action ->
               install

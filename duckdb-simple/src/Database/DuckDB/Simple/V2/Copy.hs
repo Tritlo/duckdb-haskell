@@ -10,6 +10,7 @@
 -- The registration user-data slot is reserved for callback cleanup. Use closures
 -- for registration data and 'setCallbackState' for bind, init, and batch state.
 -- Transfer state to each slot once. Use an @IORef@ to change existing state.
+-- COPY format callbacks require the threaded GHC runtime (@-threaded@).
 -- Batch preparation may run concurrently. Flushes for one output file are serial.
 -- Destroy a collection acquired with @copy_to_batch_take_input@ after use.
 -- Multi-file functions use the callbacks of a registered single-file table
@@ -50,7 +51,7 @@ import Database.DuckDB.Simple.Callback (
   install,
   installAll,
   installOptional,
-  targetConfig,
+  requireWorkerCallbackRuntime,
   withCallbackResources,
   withTarget,
  )
@@ -117,7 +118,7 @@ registerCopyFunctionWith target configure to from =
     c_duckdb_v2_extension_register_copy_function
     \function register ->
       withCallbackResources
-        (targetConfig target)
+        (requireWorkerCallbackRuntime "COPY")
         (\allocate -> installAll (toInstallers allocate function to <> fromInstallers allocate function from))
         (attachOpaque (c_duckdb_v2_copy_function_set_user_data function))
         \installCallbacks -> do

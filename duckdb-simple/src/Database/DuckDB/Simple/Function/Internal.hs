@@ -47,11 +47,11 @@ import Database.DuckDB.Simple.Callback (
   Allocator,
   RegistrationTarget,
   attachOpaque,
+  checkTargetThreads,
   install,
   installAll,
   runCallback,
   targetCastFactory,
-  targetConfig,
   transferCallbackState,
   withCallbackResources,
   withRegistrationFactory,
@@ -313,7 +313,7 @@ registerScalarFunction target name proxy installers = do
       c_duckdb_v2_extension_register_scalar_function
       \scalarFun register ->
         withCallbackResources
-          (targetConfig target)
+          (checkTargetThreads target)
           (\allocate -> installAll (installers casts allocate scalarFun))
           (attachOpaque (c_duckdb_v2_scalar_function_set_user_data scalarFun))
           \installCallbacks -> do

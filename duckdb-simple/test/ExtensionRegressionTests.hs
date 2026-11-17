@@ -288,6 +288,17 @@ extensionRegressionTests =
         withConnection ":memory:" \conn -> do
           createFunction conn "throw_bad_display" (throwIO BrokenDisplay :: IO Int64)
           assertSqlErrorContaining "Haskell callback failed" (query_ conn "SELECT throw_bad_display()" :: IO [Only Int64])
+    , testCase "a failing exception category cannot turn a callback failure into success" $
+        withConnection ":memory:" \conn -> do
+          let failure = SQLError "bad category" (error "category failed") Nothing Nothing
+          createFunction conn "bad_category" (throwIO failure :: IO Int64)
+          result <- try (query_ conn "SELECT bad_category()" :: IO [Only Int64])
+          case result of
+            Left err -> do
+              sqlErrorType err @?= Just ErrorInputInvalid
+              assertBool (show err) ("Haskell callback failed" `Text.isInfixOf` sqlErrorMessage err)
+            Right rows -> assertFailure ("expected a callback failure, got " <> show rows)
+          query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "scalar async exceptions become SQL errors" $
         withConnection ":memory:" \conn -> do
           createFunction conn "throw_async_scalar" (throwIO ThreadKilled :: IO Int64)

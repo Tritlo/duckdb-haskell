@@ -10,7 +10,9 @@ module Database.DuckDB.Simple.Callback (
   RegistrationTarget (..),
   withRegistrationFactory,
   targetCastFactory,
-  targetConfig,
+  checkTargetThreads,
+  checkQueryThreads,
+  requireWorkerCallbackRuntime,
   withTarget,
   Allocator,
   install,
@@ -76,11 +78,9 @@ targetCastFactory target = case target of
   ConnectionTarget connection -> Just <$> withTypeCache connection (pure . typeCacheCasts)
   ExtensionTarget _ _ -> pure Nothing
 
--- | Borrow the config of a registration target: the config of the connection,
--- or the config of the context of an extension. The handle is valid while the
--- target is.
-targetConfig :: RegistrationTarget -> IO DuckDBV2ConfigHandle
-targetConfig target = case target of
+-- | Check the query thread count of a connection or extension registration.
+checkTargetThreads :: RegistrationTarget -> IO ()
+checkTargetThreads target = checkQueryThreads $ case target of
   ConnectionTarget connection -> withConnectionHandle connection (output . c_duckdb_v2_connection_get_config)
   ExtensionTarget _ context -> output (c_duckdb_v2_context_get_config context)
 
@@ -172,28 +172,28 @@ in "Database.DuckDB.Simple.Copy.Internal".
 
 -- | Acquire callbacks and transfer their cleanup to a DuckDB object.
 -- The object must be non-null. Its destructor must run after the action. The
--- first argument reads the config of the database that runs the callbacks. See
+-- first argument checks whether the runtime supports the callbacks. See
 -- Note [Callback ownership] and Note [Callbacks without the threaded runtime].
 withCallbackResources
-  :: IO DuckDBV2ConfigHandle
+  :: IO ()
   -> (Allocator -> IO r)
   -> (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ())
   -> (r -> IO b)
   -> IO b
-withCallbackResources config = withCallbackResourcesFinally config (pure ())
+withCallbackResources checkRuntime = withCallbackResourcesFinally checkRuntime (pure ())
 
 -- | Run a final action before the callback resources are released.
 -- This includes acquisition and registration failure. Contain final-action errors.
 -- A registration that acquires a callback checks the runtime before it
 -- registers. See Note [Callbacks without the threaded runtime].
 withCallbackResourcesFinally
-  :: IO DuckDBV2ConfigHandle
+  :: IO ()
   -> IO ()
   -> (Allocator -> IO r)
   -> (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ())
   -> (r -> IO b)
   -> IO b
-withCallbackResourcesFinally config finalizer acquire attach action = mask \restore -> do
+withCallbackResourcesFinally checkRuntime finalizer acquire attach action = mask \restore -> do
   cleanups <- newIORef []
   let cleanup = ignoreCallbackExceptions finalizer `finally` (readIORef cleanups >>= sequence_)
       allocate make = do
@@ -203,7 +203,7 @@ withCallbackResourcesFinally config finalizer acquire attach action = mask \rest
         pure ptr
   resources <- acquire allocate `onException` cleanup
   acquired <- readIORef cleanups
-  unless (null acquired) (requireThreadedRuntime config) `onException` cleanup
+  unless (null acquired) checkRuntime `onException` cleanup
   stable <- newStablePtr cleanup `onException` cleanup
   -- A setter that fails has not taken the pointer, so this handler frees it.
   -- See Note [Callback ownership].
@@ -221,9 +221,14 @@ over 2,000,000 rows with the setting threads = 4 ("schedule: re-entered
 unsafely", a segmentation fault, or a heap corruption). With threads = 1, or
 with -threaded, it crashed in none of 20 runs.
 
-Thus each registration that acquires a callback calls requireThreadedRuntime
-before it registers (withCallbackResourcesFinally). With the threaded runtime
-the check is one Bool test and no native call. Without it, the check reads the
+COPY can open an output file on an asynchronous worker even with threads = 1.
+A log sink can receive the file-open log entry on that worker. Both kinds of
+registration require -threaded regardless of the current settings. Another
+connection can change async_threads after registration.
+
+Each other registration that acquires a callback calls checkQueryThreads.
+With the threaded runtime the check is one Bool test and no native call.
+Without it, the check reads the
 setting threads of the database that runs the callbacks (four native calls: the
 config, the option value, its BIGINT, and the release of the value) and raises
 the input error of the library when the setting is above 1. A registration with
@@ -242,8 +247,8 @@ thread.
 -- | Raise the input error of the library when the GHC runtime is not threaded
 -- and the database that the config belongs to runs more than one thread. See
 -- Note [Callbacks without the threaded runtime].
-requireThreadedRuntime :: IO DuckDBV2ConfigHandle -> IO ()
-requireThreadedRuntime config = unless rtsSupportsBoundThreads do
+checkQueryThreads :: IO DuckDBV2ConfigHandle -> IO ()
+checkQueryThreads config = unless rtsSupportsBoundThreads do
   handle <- config
   threads <- withIdentifier (Text.pack "threads") \key -> alloca \scope ->
     bracket
@@ -258,6 +263,13 @@ requireThreadedRuntime config = unless rtsSupportsBoundThreads do
               <> " threads: link the program with -threaded, or set the DuckDB setting threads to 1 before you register a callback"
           )
       )
+
+-- | Reject registrations whose callbacks can run on independent native workers.
+-- See Note [Callbacks without the threaded runtime].
+requireWorkerCallbackRuntime :: Text -> IO ()
+requireWorkerCallbackRuntime kind =
+  unless rtsSupportsBoundThreads $
+    throwInvalidArgument (kind <> Text.pack " callbacks require a program linked with -threaded")
 
 -- | Transfer one state value to a DuckDB callback state slot.
 -- Use each slot once. See Note [Callback ownership].
@@ -286,7 +298,7 @@ readCallbackState getter = do
 -- except the flush function of a log sink when DuckDB destroys the sink. See
 -- Note [Errors that leave a callback] for the code and the text of an error.
 runCallback :: Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
-runCallback = runCallbackAs callbackError
+runCallback = runCallbackAs DuckDBV2ErrorApi callbackError
 
 -- | 'runCallback' with another native error code for each failure. The code
 -- replaces the type of each exception, also the type of an t'SQLError', and the
@@ -294,12 +306,13 @@ runCallback = runCallbackAs callbackError
 -- Note [The error code of a failed cast] in
 -- "Database.DuckDB.Simple.V2.Registration".
 runCallbackWith :: DuckDBV2Error -> Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
-runCallbackWith code = runCallbackAs \failure -> (code, Text.pack (failureText failure))
+runCallbackWith code = runCallbackAs code \failure -> (code, Text.pack (failureText failure))
 
 -- | Run a callback action. For an exception, write the code and the text that
--- the first argument gives into the error slot.
-runCallbackAs :: (SomeException -> (DuckDBV2Error, Text)) -> Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
-runCallbackAs describe err action = mask \restore -> do
+-- the description gives into the error slot. Use the fallback code if the
+-- description throws.
+runCallbackAs :: DuckDBV2Error -> (SomeException -> (DuckDBV2Error, Text)) -> Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
+runCallbackAs fallback describe err action = mask \restore -> do
   outcome <- try (withCallbackMark (restore action))
   case outcome of
     Right () -> pure ()
@@ -312,10 +325,11 @@ runCallbackAs describe err action = mask \restore -> do
             if info == nullHandle
               then pure ()
               else do
-                let (code, text) = describe failure
-                c_duckdb_v2_error_info_set_code info code >>= checkCode
+                c_duckdb_v2_error_info_set_code info fallback >>= checkCode
                 withText (Text.pack "Haskell callback failed") $ \message ->
                   c_duckdb_v2_error_info_set_text info message >>= checkCode
+                let (code, text) = describe failure
+                when (code /= fallback) $ c_duckdb_v2_error_info_set_code info code >>= checkCode
                 withText text $ \message ->
                   c_duckdb_v2_error_info_set_text info message >>= checkCode
 

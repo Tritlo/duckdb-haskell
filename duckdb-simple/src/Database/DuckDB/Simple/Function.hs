@@ -13,9 +13,8 @@
 -- A program that registers a callback must be linked with @-threaded@. DuckDB
 -- can call a callback from several of its threads at the same time, and the
 -- runtime of GHC without @-threaded@ does not support that: the program can
--- crash. Without @-threaded@, set the DuckDB setting @threads@ to 1 on each
--- database that runs callbacks, before a callback runs. Without @-threaded@, the
--- registration of a callback raises an t'Database.DuckDB.Simple.SQLError' of
+-- crash. Without @-threaded@, the registration of a function in this module
+-- raises an t'Database.DuckDB.Simple.SQLError' of
 -- the type 'Database.DuckDB.Simple.ErrorInputInvalid' when the setting
 -- @threads@ is above 1. The section \"User-Defined Functions\" of the README
 -- gives the rule.

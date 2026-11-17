@@ -36,6 +36,7 @@ import Database.DuckDB.Simple.Callback (
   attachOpaque,
   install,
   installAll,
+  requireWorkerCallbackRuntime,
   runCallback,
   withCallbackResourcesFinally,
  )
@@ -67,7 +68,8 @@ data LogEntry = LogEntry
 registerLogStorage :: Connection -> Text -> (LogEntry -> IO ()) -> IO ()
 registerLogStorage conn name write = registerLogSink conn name write (pure ())
 
--- | Register an instance log sink through a live connection.
+-- | Register an instance log sink through a live connection. Log sinks require
+-- the threaded GHC runtime (@-threaded@), including with one query thread.
 -- Callbacks can run concurrently on native threads. They must not log or change
 -- logging settings. Native logging discards callback errors after containment.
 -- The flush action also runs when DuckDB releases the sink. If the registration
@@ -76,7 +78,6 @@ registerLogSink :: Connection -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
 registerLogSink conn name write flush = withDatabaseHandle conn \instance_ ->
   withInstanceFactory instance_ \factory ->
     registerSink
-      (withConnectionHandle conn (output . c_duckdb_v2_connection_get_config))
       factory
       (checked . c_duckdb_v2_instance_register_log_sink instance_)
       name
@@ -89,7 +90,6 @@ registerInstanceLogSink :: Instance -> Text -> (LogEntry -> IO ()) -> IO () -> I
 registerInstanceLogSink instance_ name write flush = withInstanceHandle instance_ \native ->
   withInstanceFactory native \factory ->
     registerSink
-      (output (c_duckdb_v2_instance_get_config native))
       factory
       (checked . c_duckdb_v2_instance_register_log_sink native)
       name
@@ -102,7 +102,6 @@ registerLogSinkOn target name write flush = case target of
   ConnectionTarget conn -> registerLogSink conn name write flush
   ExtensionTarget extension context -> withContextFactory context \factory ->
     registerSink
-      (output (c_duckdb_v2_context_get_config context))
       factory
       (checked . c_duckdb_v2_extension_register_log_sink extension)
       name
@@ -111,12 +110,12 @@ registerLogSinkOn target name write flush = case target of
 
 -- | Transfer callback ownership to the native sink and release its builder.
 registerSink
-  :: IO DuckDBV2ConfigHandle -> DuckDBV2FactoryHandle -> (DuckDBV2LogSinkHandle -> IO ()) -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
-registerSink config factory register name write flush = do
+  :: DuckDBV2FactoryHandle -> (DuckDBV2LogSinkHandle -> IO ()) -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
+registerSink factory register name write flush = do
   when (Text.null name || Text.any (== '\0') name) $ throwInvalidArgument "log sink name must be nonempty and must not contain NUL"
   bracket (output (c_duckdb_v2_log_sink_create factory)) (destroy c_duckdb_v2_log_sink_destroy) \sink ->
     withCallbackResourcesFinally
-      config
+      (requireWorkerCallbackRuntime "log sink")
       flush
       ( \allocate ->
           installAll

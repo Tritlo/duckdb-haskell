@@ -7,6 +7,7 @@ pkgs.mkShell {
   packages = [
     pkgs.haskell.compiler.ghc9141
     pkgs.cabal-install
+    pkgs.python3
     nativeDuckDB
     pkgs.pkg-config
     pkgs.zlib

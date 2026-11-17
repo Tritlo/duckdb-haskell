@@ -1,0 +1,2 @@
+# Keep the context prefixes in unified patches.
+*.patch whitespace=-blank-at-eol

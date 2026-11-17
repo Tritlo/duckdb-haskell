@@ -12,6 +12,8 @@ checks, client headers, and upstream license.
 - `build-ghc-matrix.sh` runs local Docker builds. Generate the bindings first.
   It writes logs to `ci-logs/`.
 - `nix/` contains pinned development, generation, and CI environments.
+- `haddock/` contains the release renderer patch, its two-instance fixture,
+  and the documentation archive checker.
 - `v2-migration.md` describes the V2 backend contracts and native limits.
 - `extensions/` prepares a loadable Haskell extension for the pinned release.
   Its packer uses `runghc` with GHC's bundled packages. Its test suite
@@ -28,3 +30,14 @@ CI caches the generated files by generator, toolchain, headers, and expected
 checksums. An exact cache hit skips Nix setup and generation. Every run checks
 the header digests and the generated checksums before it uploads the generated
 artifact. A cache miss runs the pinned generator.
+
+Release documentation uses GHC 9.14.1 and standalone Haddock 2.33.0 from the
+same compiler source pin. `nix/haddock.nix` applies the instance permalink
+patch without rebuilding GHC. The patch scopes method anchors by instance id
+and links method names to their class definitions.
+
+The archive gate checks
+local documentation fragments, one permalink per instance and method, and
+unique instance ids. It also checks local source fragments. Other duplicate
+ids are audit-only fields. External dependency fragments are outside the
+archive check.

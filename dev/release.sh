@@ -32,7 +32,13 @@ esac
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd -- "$repo_dir"
+release_ghc=ghc-9.14.1
+if [ "$("$release_ghc" --numeric-version 2>/dev/null)" != "9.14.1" ]; then
+  echo "Release documentation requires GHC 9.14.1. Run: nix-shell dev/nix/shell.nix" >&2
+  exit 1
+fi
 nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
+haddock_dir=$(nix-build dev/nix/haddock.nix --no-out-link --max-jobs 1 --cores 1)
 
 case "$package" in
   all) packages=(duckdb-ffi duckdb-simple) ;;
@@ -42,7 +48,7 @@ esac
 # Cabal looks for dependency interfaces in the ordinary documentation directory.
 # The Hackage build writes to a separate directory with the package version.
 if [ "$package" = "duckdb-simple" ] || [ "$package" = "all" ]; then
-  cabal haddock duckdb-ffi
+  cabal haddock -w "$release_ghc" --with-haddock="$haddock_dir/bin/haddock" duckdb-ffi
 fi
 
 # Build each archive before the first upload. A build failure uploads nothing.
@@ -56,8 +62,9 @@ for name in "${packages[@]}"; do
   # Haddock does not remove the pages of a module that the package no longer
   # has. Remove the old documentation, or the archive contains these pages.
   rm -rf dist-newstyle/build/*/*/"$name"-[0-9]*/doc/html/"$name"-[0-9]*-docs
-  cabal haddock --haddock-for-hackage "$name"
+  cabal haddock -w "$release_ghc" --with-haddock="$haddock_dir/bin/haddock" --haddock-for-hackage "$name"
   cabal sdist "$name"
+  python3 dev/haddock/check_links.py dist-newstyle/"$name"-[0-9]*-docs.tar.gz
 done
 
 # All archives exist at this point. Stop here for a rehearsal without an upload.

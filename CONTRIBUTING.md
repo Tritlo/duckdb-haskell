@@ -44,6 +44,10 @@ The source archives contain the generated Haskell modules and C ABI checks.
 Package users do not need Nix, LLVM, or hs-bindgen. The release script uploads
 candidates by default. Use `--publish` for an authorized release.
 
+Run the release from `nix-shell dev/nix/shell.nix`. Release documentation uses
+GHC 9.14.1 and a matching patched Haddock. The script checks the documentation
+archives before it asks for credentials. See `dev/README.md` for the check scope.
+
 Build all components before running the tests. With Cabal 3.16 and 3.18,
 `cabal test all` on a clean tree can skip building the tests for a package
 with a custom setup.

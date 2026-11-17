@@ -915,13 +915,14 @@ testAggregateResultTypes = withConnection ":memory:" \conn -> do
 
 -- | Read each BIGINT and NULL from a VARIANT list in aggregate update.
 testAggregateVariant :: Assertion
-testAggregateVariant = withConnectionWithConfig ":memory:" [("threads", "4")] \conn -> do
+testAggregateVariant = withEnvironment \environment -> withInstance environment [("threads", "4")] \instance' -> do
   let step total (Only values) = case values of
         [Just (Variant (FieldInt64 number)), Nothing] -> pure (total + number)
         _ -> fail ("unexpected VARIANT list: " <> show values)
-  createAggregate conn "variant_sum" countAggregate{aggregateStep = step}
-  query_ conn "SELECT variant_sum([i::VARIANT, NULL::VARIANT]), sum(i)::BIGINT FROM range(5000) t(i)"
-    >>= (@?= [(12497500 :: Int64, 12497500 :: Int64)])
+  withConnectionOn instance' \registering -> createAggregate registering "variant_sum" countAggregate{aggregateStep = step}
+  withConnectionOn instance' \other ->
+    query_ other "SELECT variant_sum([i::VARIANT, NULL::VARIANT]), sum(i)::BIGINT FROM range(5000) t(i)"
+      >>= (@?= [(12497500 :: Int64, 12497500 :: Int64)])
 
 -- | An aggregate that counts its rows. Change 'aggregateStep' for another
 -- argument type.

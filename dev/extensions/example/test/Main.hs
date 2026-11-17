@@ -119,17 +119,32 @@ tests paths =
           ]
           [["point_x", "1.0"], ["null_x", "true"], ["rows_x", "5000", "12497500.0"]]
           []
+    , testCase "GEOMETRY aggregate arguments, nested values, NULLs, and chunks" $
+        checkProcess
+          paths
+          [ "SET threads=4;"
+          , "SELECT 'point_sum', haskell_point_x_sum(g) FROM (VALUES ('POINT (1 2)'::GEOMETRY), (NULL::GEOMETRY), ('POINT (3 4)'::GEOMETRY)) AS t(g);"
+          , "SELECT 'null_sum', haskell_point_x_sum(NULL::GEOMETRY);"
+          , "SELECT 'nested_sum', haskell_points_x_sum(g) FROM (VALUES (['POINT (1 2)'::GEOMETRY, NULL::GEOMETRY, 'POINT (3 4)'::GEOMETRY]), (NULL::GEOMETRY[])) AS t(g);"
+          , "SELECT 'rows_sum', haskell_point_x_sum(('POINT (' || i || ' 0)')::GEOMETRY) FROM range(5000) AS t(i);"
+          , "SELECT 'nested_rows_sum', haskell_points_x_sum([('POINT (' || i || ' 0)')::GEOMETRY, NULL::GEOMETRY]) FROM range(5000) AS t(i);"
+          ]
+          [["point_sum", "4.0"], ["null_sum", "0.0"], ["nested_sum", "4.0"], ["rows_sum", "12497500.0"], ["nested_rows_sum", "12497500.0"]]
+          []
     , testCase "a GEOMETRY argument does not run a registered cast from GEOMETRY to BLOB" $
         -- The variable makes the extension register a native cast from GEOMETRY to
         -- BLOB that writes NULL and counts its calls (src/TestCast.hs). The reads
         -- come first, so the count after them must be 0. The CAST after them shows
-        -- that the cast was registered.
+        -- that the registered cast runs.
         checkProcessWith
           [("DUCKDB_HASKELL_DEMO_GEOMETRY_CAST", "1")]
           paths
           [ "SELECT 'point_x', haskell_point_x('POINT (1 2)'::GEOMETRY);"
           , "SELECT 'null_x', haskell_point_x(NULL::GEOMETRY) IS NULL;"
           , "SELECT 'rows_x', count(*), sum(haskell_point_x(('POINT (' || i || ' 0)')::GEOMETRY)) FROM range(5000) AS t(i);"
+          , "SELECT 'aggregate_sum', haskell_point_x_sum(g) FROM (VALUES ('POINT (1 2)'::GEOMETRY), (NULL::GEOMETRY)) AS t(g);"
+          , "SELECT 'aggregate_chunks', haskell_point_x_sum(('POINT (' || i || ' 0)')::GEOMETRY) FROM range(5000) AS t(i);"
+          , "SELECT 'nested_aggregate_chunks', haskell_points_x_sum([('POINT (' || i || ' 0)')::GEOMETRY, NULL::GEOMETRY]) FROM range(5000) AS t(i);"
           , "SELECT 'calls_after_reads', haskell_geometry_cast_calls();"
           , "SELECT 'cast_blob', CAST('POINT (1 2)'::GEOMETRY AS BLOB) IS NULL;"
           , "SELECT 'calls_after_cast', haskell_geometry_cast_calls() > 0;"
@@ -137,6 +152,9 @@ tests paths =
           [ ["point_x", "1.0"]
           , ["null_x", "true"]
           , ["rows_x", "5000", "12497500.0"]
+          , ["aggregate_sum", "1.0"]
+          , ["aggregate_chunks", "12497500.0"]
+          , ["nested_aggregate_chunks", "12497500.0"]
           , ["calls_after_reads", "0"]
           , ["cast_blob", "true"]
           , ["calls_after_cast", "true"]

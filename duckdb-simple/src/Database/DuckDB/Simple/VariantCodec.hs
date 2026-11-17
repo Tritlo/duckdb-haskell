@@ -97,8 +97,13 @@ owner of the helper connection destroys the state before the connection.
 
 - A connection's COPY TO reader uses a helper connection of that instance
   for each vector. An extension's COPY TO reader and typed argument readers
-  use a private instance. See Note [VARIANT reads inside callbacks] in
+  use a private instance. Scalar and aggregate functions reuse that instance
+  across vectors. See Note [VARIANT reads inside callbacks] in
   "Database.DuckDB.Simple.Materialize".
+
+TODO: When V2 exposes VARIANT tags and children directly, use those accessors
+to replace the metadata and object extraction queries. Preserve exact scalar
+types and object keys, including empty keys and keys containing NUL.
 
 The decoder casts with the factory of the instance (variantCasts). It decodes
 each value that contains no VARIANT, such as a cast result, with the same

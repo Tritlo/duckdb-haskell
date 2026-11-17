@@ -119,12 +119,13 @@ connection. Even a new connection to the host instance can need a lock that
 the caller holds, for example during SET GLOBAL. An extension has no host
 instance handle at all.
 
-Use a separate environment and instance for the vector. The decoder needs
-only built-in types, casts and system functions; it does not attach a database.
-It copies the logical rows before returning, so no helper handle escapes.
-No callback shares mutable statement state with another. A vector that has no
-VARIANT leaf needs no helper. See Note [VARIANT decoding] in
-"Database.DuckDB.Simple.VariantCodec".
+The decoder uses an instance with only built-in types, casts and system
+functions. A scalar or aggregate registration opens its instance on demand.
+Each vector uses a separate connection on that instance. Other typed
+callbacks, including extension COPY TO, open a private instance for each
+VARIANT vector. The decoder copies the rows before it closes the connection.
+See Note [Function argument readers] in "Database.DuckDB.Simple.Typed"
+and Note [VARIANT decoding] in "Database.DuckDB.Simple.VariantCodec".
 -}
 
 -- | Decode a callback's VARIANT vector independently of the invoking database.
@@ -428,22 +429,17 @@ their result:
   (getConfigDefaultValue) read a GEOMETRY value with the factory of the
   instance, and so does queryMetrics. The type cache of the connection keeps
   that factory (typeCacheCasts in "Database.DuckDB.Simple.TypeCache"). The
-  callbacks of a registration on a connection read a GEOMETRY value with the
-  same factory: the value of an option
-  update, the arguments of a pragma, a scalar function, a typed aggregate, or a
-  table function, and the rows of a COPY TO function. The
-  registration takes the factory (targetCastFactory in
-  "Database.DuckDB.Simple.Callback"). An extension target has no instance, so
-  the same callbacks of an extension read with the factory of the callback
-  context (ContextFactory). The casts of that factory include the user casts.
-  Thus prepareGeometryReader does not cast the vector with it. It writes each
-  row to a BLOB vector with the default cast (withDefaultCastVector in
-  "Database.DuckDB.Simple.Native"), as the values below do. Without this rule,
-  a cast from GEOMETRY to BLOB whose callback reads its argument with the
-  library would run the same cast again to read the argument. This recursion
-  would not end. The update callback of an aggregate function has no context
-  and thus no factory, so a typed aggregate of an extension refuses a GEOMETRY
-  argument at registration.
+  callbacks registered on a connection use the same factory.
+  A scalar or aggregate function registered by a loadable extension uses
+  its private instance factory. See Note [Function argument readers] in
+  "Database.DuckDB.Simple.Typed". Both paths cast the whole vector.
+  Other extension callbacks have a context factory, which includes user
+  casts. For those callbacks, withDefaultCastVector writes each row to a
+  BLOB vector with the default cast ("Database.DuckDB.Simple.Native").
+  This prevents a user cast from GEOMETRY to BLOB from calling itself when
+  its callback reads a GEOMETRY argument.
+  TODO: When V2 exposes WKB directly, copy it from the input vector and
+  remove the intermediate BLOB cast.
 - withObjectChildren and withCast cast VARIANT values to the types of their
   payloads ("Database.DuckDB.Simple.VariantCodec"). The codec also reads a
   GEOMETRY payload. It uses the factory of the instance of its helper

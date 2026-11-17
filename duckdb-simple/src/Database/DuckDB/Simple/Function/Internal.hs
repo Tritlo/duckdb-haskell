@@ -51,9 +51,8 @@ import Database.DuckDB.Simple.Callback (
   install,
   installAll,
   runCallback,
-  targetCastFactory,
   transferCallbackState,
-  withCallbackResources,
+  withCallbackResourcesFinally,
   withRegistrationFactory,
   withTarget,
  )
@@ -64,12 +63,11 @@ import Database.DuckDB.Simple.FromField (
   FromField (..),
  )
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), TypeDeclaration, logicalTypeSQL)
-import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory, readFactoryHandle)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
-import Database.DuckDB.Simple.TypeScope (TypeScope, withTypeScope)
-import Database.DuckDB.Simple.Typed (argumentName, conversionMessage, prepareArgumentReader, rowDeclarations)
+import Database.DuckDB.Simple.TypeScope (withTypeScope)
+import Database.DuckDB.Simple.Typed (ArgumentReader, argumentName, conversionMessage, newArgumentReader, rowDeclarations)
 import Database.DuckDB.Simple.V2.Registration (withTypeDeclaration)
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 import Foreign.Marshal.Utils (copyBytes, fillBytes)
@@ -255,22 +253,22 @@ instance {-# OVERLAPPABLE #-} (FromField a, DuckDBColumnType a, Function r) => F
 -- | Register a typed function on a connection or a loading extension.
 createFunctionOn :: forall f. (Function f) => RegistrationTarget -> Text -> f -> IO ()
 createFunctionOn target name fn =
-  registerScalarFunction target name (Proxy @f) \casts allocate function ->
+  registerScalarFunction target name (Proxy @f) \readArgument allocate function ->
     [ install
         allocate
         DuckDBV2ScalarFunctionExecCallbackFn
-        (DuckDBV2ScalarFunctionExecCallbackFn_Aux (scalarFunctionHandler casts fn))
+        (DuckDBV2ScalarFunctionExecCallbackFn_Aux (scalarFunctionHandler readArgument fn))
         (c_duckdb_v2_scalar_function_set_exec_callback function)
     ]
 
 -- | Register a typed function with per-worker state on a connection or extension.
 createFunctionWithStateOn :: forall s f. (Function f) => RegistrationTarget -> Text -> IO s -> (s -> f) -> IO ()
 createFunctionWithStateOn target name initState mkFn =
-  registerScalarFunction target name (Proxy @f) \casts allocate function ->
+  registerScalarFunction target name (Proxy @f) \readArgument allocate function ->
     [ install
         allocate
         DuckDBV2ScalarFunctionExecCallbackFn
-        (DuckDBV2ScalarFunctionExecCallbackFn_Aux (scalarFunctionHandlerWithState casts mkFn))
+        (DuckDBV2ScalarFunctionExecCallbackFn_Aux (scalarFunctionHandlerWithState readArgument mkFn))
         (c_duckdb_v2_scalar_function_set_exec_callback function)
     , install
         allocate
@@ -284,14 +282,14 @@ createFunctionWithStateOn target name initState mkFn =
 -- name and the declarations of the arguments and the result come before the
 -- read of the state of the target, so their input errors win over a closed
 -- connection. The last argument gives the install actions of the
--- callbacks for the builder, from the factory of 'targetCastFactory'. Their
+-- callbacks for the builder, with the reader for this registration. Their
 -- setters run after the properties. See 'installAll'.
 registerScalarFunction
   :: (Function f)
   => RegistrationTarget
   -> Text
   -> Proxy f
-  -> (Maybe DuckDBV2FactoryHandle -> Allocator -> DuckDBV2ScalarFunctionHandle -> [IO (IO ())])
+  -> (ArgumentReader -> Allocator -> DuckDBV2ScalarFunctionHandle -> [IO (IO ())])
   -> IO ()
 registerScalarFunction target name proxy installers = do
   when (Text.null name || Text.any (== '\0') name) $
@@ -299,7 +297,7 @@ registerScalarFunction target name proxy installers = do
   -- See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
   parameters <- rowDeclarations name ["argument " <> argumentName index | index <- [0 ..]] (argumentTypes proxy)
   [result] <- rowDeclarations name ["result"] [returnType proxy]
-  casts <- targetCastFactory target
+  (readArgument, closeReader) <- newArgumentReader target
   -- withTarget keeps its factory private. Borrow another one for the signature types.
   withRegistrationFactory target \factory ->
     withTarget
@@ -309,9 +307,10 @@ registerScalarFunction target name proxy installers = do
       c_duckdb_v2_connection_register_scalar_function
       c_duckdb_v2_extension_register_scalar_function
       \scalarFun register ->
-        withCallbackResources
+        withCallbackResourcesFinally
           (checkTargetThreads target)
-          (\allocate -> installAll (installers casts allocate scalarFun))
+          closeReader
+          (\allocate -> installAll (installers readArgument allocate scalarFun))
           (attachOpaque (c_duckdb_v2_scalar_function_set_user_data scalarFun))
           \installCallbacks -> do
             withIdentifier name $ checked . c_duckdb_v2_scalar_function_set_name scalarFun
@@ -332,13 +331,13 @@ registerScalarFunction target name proxy installers = do
 scalarFunctionHandler
   :: forall f
    . (Function f)
-  => Maybe DuckDBV2FactoryHandle -> f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
-scalarFunctionHandler casts fn info context err = runCallback err (executeScalarFunction casts fn info context)
+  => ArgumentReader -> f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+scalarFunctionHandler readArgument fn info context err = runCallback err (executeScalarFunction readArgument fn info context)
 
 -- | Run one call of a scalar function.
 executeScalarFunction
-  :: forall f. (Function f) => Maybe DuckDBV2FactoryHandle -> f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()
-executeScalarFunction casts fn info context = withTypeScope \scope -> withContextFactory context \contextFactory -> do
+  :: forall f. (Function f) => ArgumentReader -> f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()
+executeScalarFunction readArgument fn info context = withTypeScope \scope -> do
   let expected = length (argumentTypes (Proxy @f))
   columnCount <- allocaArray 4 $ \counts -> do
     checked (c_duckdb_v2_scalar_function_exec_get_arg_count info counts (advancePtr counts 1) (advancePtr counts 2) (advancePtr counts 3))
@@ -347,7 +346,8 @@ executeScalarFunction casts fn info context = withTypeScope \scope -> withContex
     throwInternalError (Text.pack ("function expected " <> show expected <> " arguments but received " <> show columnCount))
   rawRowCount <- output (c_duckdb_v2_scalar_function_exec_get_row_count info)
   let rowCount = fromIntegral rawRowCount :: Int
-  readers <- mapM (makeColumnReader scope (callbackReadFactory casts contextFactory) info) [0 .. expected - 1]
+  readers <- forM [0 .. expected - 1] \index ->
+    output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral index)) >>= readArgument scope index
   rows <- forM [0 .. rowCount - 1] $ \row -> forM readers ($ row)
   results <- mapM (`applyFunction` fn) rows
   outVec <- output (c_duckdb_v2_scalar_function_exec_get_result info)
@@ -356,13 +356,13 @@ executeScalarFunction casts fn info context = withTypeScope \scope -> withContex
 scalarFunctionHandlerWithState
   :: forall s f
    . (Function f)
-  => Maybe DuckDBV2FactoryHandle
+  => ArgumentReader
   -> (s -> f)
   -> DuckDBV2ScalarFunctionExecInfoHandle
   -> DuckDBV2ContextHandle
   -> Ptr DuckDBV2ErrorInfoHandle
   -> IO ()
-scalarFunctionHandlerWithState casts mkFn info context err = runCallback err do
+scalarFunctionHandlerWithState readArgument mkFn info context err = runCallback err do
   statePtr <- output (c_duckdb_v2_scalar_function_exec_get_init_data info)
   when (statePtr == nullPtr) $
     throwInternalError "scalar function state was not initialised"
@@ -370,19 +370,12 @@ scalarFunctionHandlerWithState casts mkFn info context err = runCallback err do
   -- one signature for initState :: IO s and mkFn :: s -> f. Thus the init
   -- callback stores a StablePtr of the same type s that this cast gives.
   state <- deRefStablePtr (castPtrToStablePtr (castPtr statePtr) :: StablePtr s)
-  executeScalarFunction casts (mkFn state) info context
+  executeScalarFunction readArgument (mkFn state) info context
 
 scalarFunctionInitHandler :: IO s -> DuckDBV2ScalarFunctionInitInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
 scalarFunctionInitHandler initState info _context err = runCallback err do
   state <- initState
   transferCallbackState (attachOpaque (c_duckdb_v2_scalar_function_init_set_init_data info)) state
-
--- | Prepare the reader of one argument. A GEOMETRY value reads with the
--- factory, at each depth of the type.
-makeColumnReader :: TypeScope -> ReadFactory -> DuckDBV2ScalarFunctionExecInfoHandle -> Int -> IO (Int -> IO Field)
-makeColumnReader scope factory info columnIndex =
-  output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex))
-    >>= prepareArgumentReader scope (pure (readFactoryHandle factory)) (Just factory) columnIndex
 
 -- | Write the results of one call to the result vector. Set the size, then
 -- flatten, then read the pointers. A row of a result that is not raw borrows

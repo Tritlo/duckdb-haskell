@@ -14,6 +14,7 @@ module Advanced (register) where
 
 import Control.Exception (throwIO)
 import Control.Monad (unless, when)
+import qualified Data.Geometry as G
 import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -35,6 +36,7 @@ import Database.DuckDB.Simple.Variant (Variant (..))
 register :: Extension -> IO ()
 register extension = do
   registerSum extension
+  registerGeometryAggregates extension
   Extension.createFunction extension "haskell_variant_echo" (id :: Variant -> Variant)
   Extension.createAggregate extension "haskell_variant_sum" $
     Aggregate
@@ -65,6 +67,29 @@ registerSum extension =
       , aggregateCombine = addOrThrow "haskell_sum"
       , aggregateResult = pure
       }
+
+-- | Register aggregates that add point X coordinates in GEOMETRY arguments.
+-- The list aggregate ignores NULL list elements.
+registerGeometryAggregates :: Extension -> IO ()
+registerGeometryAggregates extension = do
+  Extension.createAggregate extension "haskell_point_x_sum" $
+    Aggregate
+      { aggregateInitial = 0 :: Double
+      , aggregateStep = \total (Only geometry) -> pure (total + pointX geometry)
+      , aggregateCombine = \a b -> pure (a + b)
+      , aggregateResult = pure
+      }
+  Extension.createAggregate extension "haskell_points_x_sum" $
+    Aggregate
+      { aggregateInitial = 0 :: Double
+      , aggregateStep = \total (Only geometries) -> pure (total + sum (map (maybe 0 pointX) geometries))
+      , aggregateCombine = \a b -> pure (a + b)
+      , aggregateResult = pure
+      }
+  where
+    pointX :: G.Geometry -> Double
+    pointX (G.PointGeometry (G.PointXY (G.XY x _))) = x
+    pointX _ = 0
 
 -- | A BIGINT argument whose decoder reads its native metadata.
 newtype ArgumentType = ArgumentType Int64

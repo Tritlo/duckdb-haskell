@@ -12,7 +12,8 @@
 -- Description : Lossless VARIANT binding and result conversion through the V2 API.
 module VariantRegressionTests (tests) where
 
-import Control.Exception (bracket, try)
+import Control.Concurrent (myThreadId, throwTo)
+import Control.Exception (AsyncException (..), bracket, try)
 import Control.Monad (forM, forM_, void, when)
 import Data.Array (elems, listArray)
 import qualified Data.ByteString as BS
@@ -207,8 +208,14 @@ tests =
             sqlErrorType err @?= Just ErrorInputInvalid
             sqlErrorMessage err @?= "duckdb-simple: VARIANT objects need unique keys"
           Right _ -> assertFailure "expected the unique key check to reject two empty keys"
-    , testCase "metadata conversion ignores shadowing macros" $ withConnection ":memory:" \conn -> do
-        -- The connection keeps the parsed metadata statement of the first decode.
+    , testCase "metadata conversion recovers after preparation failure and ignores shadowing macros" $ withConnection ":memory:" \conn -> do
+        void (execute_ conn "SET GLOBAL max_expression_depth = 10")
+        failed <- try (query_ conn "SELECT 42::VARIANT" :: IO [Only Variant])
+        void (execute_ conn "SET GLOBAL max_expression_depth = 1000")
+        case failed of
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorQueryBinder
+          Right _ -> assertFailure "expected the metadata preparation depth error"
+        -- The connection keeps the prepared metadata statement of the first successful decode.
         (query_ conn "SELECT {'a': 42::TINYINT}::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (variantObject [("a", FieldInt8 42)]))])
         void (execute_ conn "CREATE MACRO variant_typeof(x) AS 'VARCHAR'")
         void (execute_ conn "CREATE MACRO list_transform(x,y) AS [42]")
@@ -284,6 +291,13 @@ tests =
     , testGroup
         "heterogeneous folds cross chunk boundaries"
         [ testCase mode $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+            -- Cancel after metadata and the first chunk have been decoded.
+            cancelled <- try $ foldRows conn "SELECT i::VARIANT FROM range(5000) t(i)" (0 :: Int64) \n (Only (Variant actual)) -> do
+              actual @?= FieldInt64 0
+              self <- myThreadId
+              throwTo self UserInterrupt
+              pure n
+            (cancelled :: Either AsyncException Int64) @?= Left UserInterrupt
             count <- foldRows
               conn
               "SELECT CASE WHEN i % 3 = 0 THEN i::VARIANT WHEN i % 3 = 1 THEN 'text'::VARIANT ELSE {'n': i, 'xs': [NULL, i]}::VARIANT END FROM range(5000) t(i)"
@@ -380,6 +394,17 @@ tests =
         check
           "SELECT CASE WHEN i % 2 = 0 THEN json_object('', i, 'n', i + 1) ELSE json_object('', i, 'a', i + 1, 'b', i + 2) END::VARIANT FROM range(4) t(i)"
           [two 0, three 1, two 2, three 3]
+        forM_
+          [ []
+          , [FieldNull, FieldInt8 3, FieldText "two"]
+          , [FieldList [], variantObject []]
+          , [FieldList [FieldInt64 7, FieldNull], three 4]
+          , []
+          , [FieldInt64 9]
+          ]
+          \payloads ->
+            (query conn "SELECT unnest(?::VARIANT[])" (Only (map Variant payloads)) :: IO [Only Variant])
+              >>= (@?= map (Only . Variant) payloads)
     , testCase "filtered and reordered rows use the right child offsets" $ withConnection ":memory:" \conn -> do
         rows <- query_ conn "SELECT {'n': i, 'xs': [i, i + 1]}::VARIANT FROM range(10000) t(i) WHERE i % 97 = 0 ORDER BY i DESC LIMIT 40"
         let expected =

@@ -1290,12 +1290,15 @@ A `Variant` result reads only a value that a VARIANT can hold: note 13 of
 [Types](#types) gives the shapes, and the refusal of a JSON type.
 
 The library uses a separate helper connection for VARIANT decoder metadata.
-It caches the parsed VARIANT metadata statement and the types for VARIANT
+It caches one prepared VARIANT metadata statement and the types for VARIANT
 casts. It batches VARIANT metadata queries. It constructs VARIANT types
 directly through the native factory. This preserves an explicit stream on the
 caller's connection. The helper connection has the settings of the database,
-not the caller's session settings, so a GLOBAL `max_expression_depth` below 11 makes each VARIANT read,
-and each COPY TO of a VARIANT column, fail with a Binder Error.
+not the caller's session settings. Metadata preparation needs an expression
+depth of 11. A GLOBAL `max_expression_depth` below 11 fails preparation with a
+Binder Error, including preparation for COPY TO. A prepared plan can remain
+usable after the limit is lowered. The query for unusual object keys still
+binds on each execution and can fail at a lower limit.
 
 New DuckDB 2.0 databases use storage format 2.0, which supports VARIANT columns.
 The library does not change an existing database's storage compatibility

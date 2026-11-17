@@ -111,9 +111,6 @@ lifetimes, registration cleanup, and materialized cursor behavior.
 
 ## Measured performance
 
-The later [prepared metadata comparison](benchmarks/pr35-variant-profile.md)
-records the VARIANT baseline at `e4d9c843` and the prepared-statement follow-up.
-
 The 2026-11-16 comparison uses V1 bindings at `08feb05d`, the V2 baseline at
 `9f85ab5a`, and the selected V2 implementation at `6949a6b3`. Text, GEOMETRY,
 and BIGNUM collection reads benefit from V2 in these cases. Parameter queries

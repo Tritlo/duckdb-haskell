@@ -32,6 +32,7 @@ import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep)
 import Database.DuckDB.Simple.Variant (variantObject)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
+import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (nullPtr)
 
 {- Note [VARIANT decoding]
@@ -391,7 +392,7 @@ queryMetadata
   -> IO [(Text, [Text])]
 queryMetadata plainVector state values = withVariantList state values \list -> do
   statement <- metadataStatement state
-  withArray [list] \items ->
+  with list \items ->
     withResultVector
       (output (c_duckdb_v2_prepared_statement_execute statement (ConstPtr nullPtr) (ConstPtr items) 1))
       \vector ->

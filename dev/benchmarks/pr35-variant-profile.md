@@ -1,7 +1,8 @@
 # VARIANT profile protocol
 
 The baseline is commit `e4d9c8434db0e50260e3f5ce6ff967606d9d4967`.
-Both retained V1 and V2 comparisons refer to DuckDB 2.0.0.
+The new measurements compare the V2 baseline and candidate. Retained V1 was
+not rerun. The historical V1/V2 matrix uses DuckDB 2.0.0.
 The 2026-11-16 wall-clock comparisons in `dev/v2-migration.md` are historical.
 They do not measure this baseline.
 
@@ -81,7 +82,7 @@ a performance claim. Exclusive `threadPaused` cost was 17,263,226 instructions
 (2.68% of the whole process). Haskell allocation is measured separately in the
 native runs above.
 
-The library source is unchanged. A candidate is to replace the existing parsed
+The baseline has no library source changes. A candidate is to replace the existing parsed
 metadata statement with one prepared statement. The public API can report
 whether that plan is reusable. Measure that property and the resulting cost
 before retaining the change. The unusual-key extraction statement binds
@@ -101,3 +102,85 @@ The existing decoder retains a parsed statement to avoid repeated parsing.
 The source gives no reason to require a new bind and plan for every metadata
 execution. This probe establishes that the engine can reuse this metadata
 plan. It does not yet measure a changed decoder.
+
+## Prepared metadata result
+
+The selected change retains one prepared metadata statement in the existing
+slot. It releases the parsed AST after preparation. The extraction statement
+and cast types keep their existing behavior. The helper connection and the
+instance factory remain the same. A failed preparation leaves the slot empty.
+The cache owns a new prepared statement before temporary handles are closed.
+
+The [alternating samples](pr35-variant-prepared.csv) contain 70 actions and
+700,000 checked rows. Each process performs one warm-up and one measured
+action. The first implementation alternates in each round. The
+[metadata](pr35-variant-prepared.json) records the order and executable hashes.
+The compiler, driver, dependency IDs, package flags, and native library match.
+Only generated output paths differ between the saved Cabal plans. The
+registered library paths point to the `-O2` build in both compilations.
+The load average was 0.53 at the start and 0.95 at the end.
+
+| Shape | Baseline median ms | Prepared median ms | Change |
+| --- | ---: | ---: | ---: |
+| Scalar | 44.550 | 38.045 | -14.6% |
+| Array | 416.581 | 366.521 | -12.0% |
+| Object | 444.274 | 397.035 | -10.6% |
+| Unusual keys | 1,502.167 | 1,537.410 | +2.3% |
+| Mixed | 298.056 | 285.068 | -4.4% |
+
+The unusual-key result has no clear improvement. Four of its seven paired
+rounds favor the candidate. These timings do not establish a regression or
+an improvement for that case. Haskell allocation is nearly unchanged in all
+five shapes. The change removes native planning work.
+
+The matched scalar Callgrind whole-process count fell from 643,415,499 to
+538,647,893 instructions (16.3%). Native inclusive statement execution changed
+from 149,940,554 instructions to 2,136,742 instructions, plus 15,215,660 for
+prepared execution. Those counts overlap other categories. They include
+fixture setup and the outer query. The same Callgrind limitations apply to
+both profiles. No separate additive metadata/cast/allocation breakdown is
+claimed.
+
+The existing VARIANT regressions now check failed metadata preparation,
+subsequent recovery, and repeated heterogeneous and empty inputs. They cancel
+materialized and streaming folds after the first decoded row, then check a
+heterogeneous fold on the same connection. This exercises reuse after
+post-metadata cancellation. It does not interrupt a native helper query.
+
+To reproduce the alternating run, preserve the baseline executable before
+building the candidate with the same options. Run the comparison under the
+pinned shell and one capped scope:
+
+```sh
+python3 dev/benchmarks/pr35-variant-compare.py \
+  /absolute/path/to/baseline /absolute/path/to/candidate /tmp/variant-comparison
+```
+
+## Validation scope
+
+The ordinary checks passed: 835 high-level tests, 97 retained-API tests,
+74 V2 tests, the non-threaded check, and the default leak suite with ten
+batches. The repository requires the full ordinary suite. The existing
+failure-injection fixtures now use unusual-key extraction after metadata has
+been prepared. The extraction query still binds on each execution. Tests
+require the reader error and check subsequent reuse; they do not replace an
+error assertion with a success assertion. Metadata log assertions account for
+preparation and execution.
+
+Prepared-plan reuse changes binding-time configuration sensitivity. A lower
+GLOBAL expression-depth limit can leave a prepared metadata plan usable.
+Initial preparation, native rebinds, and unusual-key extraction can still fail
+at their own bind points. The README and decoder Note describe this behavior.
+The runtime candidate was held fixed during the fixture updates.
+
+Five focused cases passed under Valgrind: failed preparation and recovery,
+materialized and streaming cancellation followed by cache reuse, repeated
+key layouts, and later extraction failure followed by reuse. Valgrind reported
+zero errors and zero definite, indirect, or possible lost bytes. It reported
+4,621,964 reachable bytes in 30 blocks. Peak scoped memory was 1,773 MiB.
+The sustained `all 100` leak run was not repeated. Fourmolu checked all touched
+Haskell files, and cabal-gild checked both package files.
+
+The implementation is commit `12992f47`. Its exact runtime source SHA256 is
+recorded with the comparison metadata. The measured runtime source stayed
+unchanged during the regression-fixture updates.

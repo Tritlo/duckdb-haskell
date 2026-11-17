@@ -1,0 +1,449 @@
+{
+  "load_before": [
+    0.533203125,
+    0.6865234375,
+    0.68798828125
+  ],
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23
+  ],
+  "order": [
+    [
+      1,
+      "scalar",
+      "baseline"
+    ],
+    [
+      1,
+      "scalar",
+      "candidate"
+    ],
+    [
+      1,
+      "array",
+      "baseline"
+    ],
+    [
+      1,
+      "array",
+      "candidate"
+    ],
+    [
+      1,
+      "object",
+      "baseline"
+    ],
+    [
+      1,
+      "object",
+      "candidate"
+    ],
+    [
+      1,
+      "unusual",
+      "baseline"
+    ],
+    [
+      1,
+      "unusual",
+      "candidate"
+    ],
+    [
+      1,
+      "mixed",
+      "baseline"
+    ],
+    [
+      1,
+      "mixed",
+      "candidate"
+    ],
+    [
+      2,
+      "scalar",
+      "candidate"
+    ],
+    [
+      2,
+      "scalar",
+      "baseline"
+    ],
+    [
+      2,
+      "array",
+      "candidate"
+    ],
+    [
+      2,
+      "array",
+      "baseline"
+    ],
+    [
+      2,
+      "object",
+      "candidate"
+    ],
+    [
+      2,
+      "object",
+      "baseline"
+    ],
+    [
+      2,
+      "unusual",
+      "candidate"
+    ],
+    [
+      2,
+      "unusual",
+      "baseline"
+    ],
+    [
+      2,
+      "mixed",
+      "candidate"
+    ],
+    [
+      2,
+      "mixed",
+      "baseline"
+    ],
+    [
+      3,
+      "scalar",
+      "baseline"
+    ],
+    [
+      3,
+      "scalar",
+      "candidate"
+    ],
+    [
+      3,
+      "array",
+      "baseline"
+    ],
+    [
+      3,
+      "array",
+      "candidate"
+    ],
+    [
+      3,
+      "object",
+      "baseline"
+    ],
+    [
+      3,
+      "object",
+      "candidate"
+    ],
+    [
+      3,
+      "unusual",
+      "baseline"
+    ],
+    [
+      3,
+      "unusual",
+      "candidate"
+    ],
+    [
+      3,
+      "mixed",
+      "baseline"
+    ],
+    [
+      3,
+      "mixed",
+      "candidate"
+    ],
+    [
+      4,
+      "scalar",
+      "candidate"
+    ],
+    [
+      4,
+      "scalar",
+      "baseline"
+    ],
+    [
+      4,
+      "array",
+      "candidate"
+    ],
+    [
+      4,
+      "array",
+      "baseline"
+    ],
+    [
+      4,
+      "object",
+      "candidate"
+    ],
+    [
+      4,
+      "object",
+      "baseline"
+    ],
+    [
+      4,
+      "unusual",
+      "candidate"
+    ],
+    [
+      4,
+      "unusual",
+      "baseline"
+    ],
+    [
+      4,
+      "mixed",
+      "candidate"
+    ],
+    [
+      4,
+      "mixed",
+      "baseline"
+    ],
+    [
+      5,
+      "scalar",
+      "baseline"
+    ],
+    [
+      5,
+      "scalar",
+      "candidate"
+    ],
+    [
+      5,
+      "array",
+      "baseline"
+    ],
+    [
+      5,
+      "array",
+      "candidate"
+    ],
+    [
+      5,
+      "object",
+      "baseline"
+    ],
+    [
+      5,
+      "object",
+      "candidate"
+    ],
+    [
+      5,
+      "unusual",
+      "baseline"
+    ],
+    [
+      5,
+      "unusual",
+      "candidate"
+    ],
+    [
+      5,
+      "mixed",
+      "baseline"
+    ],
+    [
+      5,
+      "mixed",
+      "candidate"
+    ],
+    [
+      6,
+      "scalar",
+      "candidate"
+    ],
+    [
+      6,
+      "scalar",
+      "baseline"
+    ],
+    [
+      6,
+      "array",
+      "candidate"
+    ],
+    [
+      6,
+      "array",
+      "baseline"
+    ],
+    [
+      6,
+      "object",
+      "candidate"
+    ],
+    [
+      6,
+      "object",
+      "baseline"
+    ],
+    [
+      6,
+      "unusual",
+      "candidate"
+    ],
+    [
+      6,
+      "unusual",
+      "baseline"
+    ],
+    [
+      6,
+      "mixed",
+      "candidate"
+    ],
+    [
+      6,
+      "mixed",
+      "baseline"
+    ],
+    [
+      7,
+      "scalar",
+      "baseline"
+    ],
+    [
+      7,
+      "scalar",
+      "candidate"
+    ],
+    [
+      7,
+      "array",
+      "baseline"
+    ],
+    [
+      7,
+      "array",
+      "candidate"
+    ],
+    [
+      7,
+      "object",
+      "baseline"
+    ],
+    [
+      7,
+      "object",
+      "candidate"
+    ],
+    [
+      7,
+      "unusual",
+      "baseline"
+    ],
+    [
+      7,
+      "unusual",
+      "candidate"
+    ],
+    [
+      7,
+      "mixed",
+      "baseline"
+    ],
+    [
+      7,
+      "mixed",
+      "candidate"
+    ]
+  ],
+  "executables": {
+    "baseline": {
+      "path": "/tmp/variant-profile-baseline/probe",
+      "sha256": "ec09437ebd0811d1bf8d664070595c84e9edd4d558399ed71f8a19e8268a0f27"
+    },
+    "candidate": {
+      "path": "/tmp/variant-profile-candidate/probe",
+      "sha256": "0dfc7ab0adc4ed16f6242955f0722d09effa9996c5d89d34b0f7127ac55f79c3"
+    }
+  },
+  "load_after": [
+    0.95361328125,
+    0.77978515625,
+    0.72412109375
+  ],
+  "driver_sha256": "64f31e34dafa2751c0dc5ee7f19431a69607fd315bf78d71c103f982dd2041cb",
+  "candidate_source_sha256": "3e21c30b4e5b3bf0a7fcfd340f5bf57689a925ad4d65e828722468a037b991ce",
+  "dependencies_equal_baseline_ignoring_build_paths": true,
+  "native_path": "/nix/store/y72xxpiza7xmdc7n718gwj9ssm46sgcr-duckdb-2.0.0/lib/libduckdb.so",
+  "native_sha256": "f5b924a0cfbb6896a4fde2856957609f413ad72abfae0f44004050468f220912",
+  "compiler": "The Glorious Glasgow Haskell Compilation System, version 9.14.1",
+  "options": "-O2; +RTS -N1 -T; DuckDB threads=1; one warm-up and one checked action per process; seven alternating rounds for each shape",
+  "baseline_source_commit": "e4d9c8434db0e50260e3f5ce6ff967606d9d4967",
+  "profile": {
+    "whole_process_instructions": 538647893,
+    "baseline_whole_process_instructions": 643415499,
+    "raw_profile": "/tmp/variant-profile-candidate/scalar.callgrind",
+    "raw_profile_sha256": "3b63e4bd185890722cb5e53541066a5ba308c9409c2f106ba2b9bd6a2ffa6f76",
+    "command": "valgrind --tool=callgrind --callgrind-out-file=scalar.callgrind probe scalar 3000 1 +RTS -N1 -T",
+    "native_inclusive_instructions": {
+      "duckdb_v2_vector_get_value": 95667547,
+      "duckdb_v2_value_cast": 34616600,
+      "duckdb_v2_prepared_statement_execute": 15215660,
+      "duckdb_v2_statement_execute": 2136742
+    },
+    "limits": [
+      "Inclusive counts overlap.",
+      "Haskell inclusive counts are invalid because the inferred call graph contains cycles.",
+      "Callgrind warned about brk segment overflow; the process completed and all value checks passed.",
+      "No baseline subtraction removes startup or table construction."
+    ]
+  },
+  "regression_scope": "85 VARIANT tests; preparation failure recovery; post-metadata first-row cancellation followed by heterogeneous fold on same cache. No helper-query interruption probe.",
+  "candidate_source_commit": "12992f47b039e6a89a2bcfea1bb1b844439603b9",
+  "validation": {
+    "high_level_tests": 835,
+    "retained_api_tests": 97,
+    "v2_api_tests": 74,
+    "nonthreaded": "pass",
+    "default_leak_suite": "all modes, 10 batches, pass",
+    "focused_valgrind_tests": 5,
+    "valgrind_errors": 0,
+    "definitely_lost_bytes": 0,
+    "indirectly_lost_bytes": 0,
+    "possibly_lost_bytes": 0,
+    "still_reachable_bytes": 4621964,
+    "still_reachable_blocks": 30,
+    "valgrind_peak_mib": 1773,
+    "fourmolu": "check passed on all touched Haskell files",
+    "cabal_gild": "check passed on both package files",
+    "full_ordinary_command": "#!/usr/bin/env bash\nset -euo pipefail\nexport GHC_ENVIRONMENT=- DUCKDB_TEST_VERSION=2.0.0 TASTY_NUM_THREADS=1\ncd /tmp/duckdb-pr35-variant-performance\ncabal build all --offline --enable-optimization=2 --disable-documentation -j1 > /tmp/variant-profile-candidate/build-all.log 2>&1\ncabal test all --test-show-details=direct --offline --enable-optimization=2 --disable-documentation -j1 > /tmp/variant-profile-candidate/test-all.log 2>&1\n",
+    "focused_valgrind_command": "#!/usr/bin/env bash\nset -euo pipefail\nexport DUCKDB_TEST_VERSION=2.0.0 DUCKDB_LEAK_RSS_CHECK=0\ncd /tmp/duckdb-pr35-variant-performance\nvalgrind --vgdb=no --fair-sched=yes --leak-check=full --show-leak-kinds=definite,indirect,possible --errors-for-leak-kinds=definite,indirect --error-exitcode=97 --undef-value-errors=no --num-callers=30 --log-file=/tmp/variant-profile-candidate/memcheck.log dist-newstyle/build/x86_64-linux/ghc-9.14.1/duckdb-simple-1.0.0.0/t/duckdb-simple-test/opt/build/duckdb-simple-test/duckdb-simple-test --num-threads=1 --pattern '/metadata conversion recovers/ || /heterogeneous folds cross chunk boundaries/ || /a failure of the reader of a later chunk/ || /different key counts/' +RTS -N1 > /tmp/variant-profile-candidate/memcheck-tests.log\n",
+    "scope": "Full ordinary tests passed after necessary prepared-plan fixture updates; default leak was rebuilt/rerun after its analogous fixture update. No all100 run. No direct interruption inside native helper SQL."
+  }
+}

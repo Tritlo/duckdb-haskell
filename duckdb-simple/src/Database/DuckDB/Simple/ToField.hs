@@ -1526,6 +1526,7 @@ withValueType ValueBuilder{builderFactory = factory, builderType = makeType} tar
     bracket (makeType (LogicalTypeScalar LogicalTypeIdSQLNull)) destroyLogicalType \plainNull ->
       reverse <$> foldM (keep plainNull) [] values
   case present of
+    [value] -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType action
     value : rest -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \logical -> do
       -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
       expected <- logicalTypeToBaseRep logical

@@ -687,7 +687,9 @@ valueRegressionTests =
             check items =
               (query conn (Query ("SELECT ?::" <> target)) (Only (map UnadaptedStruct items)) :: IO [Only [StructValue FieldValue]])
         forM_
-          [ ([coarse json, precise json], [structure json nanos (TimeOfDay 3 4 5), precise json])
+          [ ([coarse json], [structure json nanos (TimeOfDay 3 4 5)])
+          , ([precise json], [precise json])
+          , ([coarse json, precise json], [structure json nanos (TimeOfDay 3 4 5), precise json])
           , ([precise json, coarse json], [precise json, structure json nanos (TimeOfDay 3 4 5)])
           ]
           \(items, expected) -> check items >>= (@?= [Only expected])

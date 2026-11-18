@@ -1612,10 +1612,7 @@ declaredCompositeValue
   -> IO DuckDBV2ValueHandle
 declaredCompositeValue _ rep create | not (needsDeclaredType rep) = create
 declaredCompositeValue ValueBuilder{builderFactory = factory, builderType = makeType} rep create = bracket create destroyValue \value ->
-  bracket (makeType rep) destroyLogicalType \logical -> withOwnedVector factory logical \vector -> do
-    checked (c_duckdb_v2_vector_set_size vector 1)
-    checked (c_duckdb_v2_vector_set_value vector 0 value)
-    output (c_duckdb_v2_vector_get_value vector 0)
+  bracket (makeType rep) destroyLogicalType (defaultCast factory value)
 
 -- | Test whether a type tree contains a VARCHAR collation or an alias.
 needsDeclaredType :: LogicalTypeRep -> Bool

@@ -572,6 +572,8 @@ for the upgrade instructions.
   an incompatible column. Earlier versions wrapped the value, which DuckDB's cast
   to VARIANT changes. A type that is or contains JSON, at any depth, also raises
   that error, because DuckDB casts JSON to VARIANT by parsing the text.
+- Preserve the previous set of bindings when positional or named parameter
+  validation or conversion fails.
 - Allow session variables to supply omitted named parameters. Too few named
   parameters no longer raise `FormatError`. Too many named parameters still
   raise it.

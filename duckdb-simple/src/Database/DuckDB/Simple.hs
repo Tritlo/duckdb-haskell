@@ -403,7 +403,9 @@ Binding resets the cursor before it validates the new parameters.
 -- | Replace all bindings after the action constructs every value successfully.
 -- See Note [Atomic parameter bindings].
 replaceStatementBindings :: Statement -> (Statement -> IO ()) -> IO ()
-replaceStatementBindings stmt action = withStatementHandle stmt \_ ->
+replaceStatementBindings stmt action = do
+  -- Check the statement before staging. A conversion keeps its own error context.
+  withStatementHandle stmt (const (pure ()))
   bracket (newIORef IntMap.empty) clearBoundValues \staged -> do
     action stmt{statementBindings = staged}
     mask_ do

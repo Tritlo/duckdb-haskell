@@ -444,6 +444,9 @@ The SQL workflow stays the same. These changes can affect your code:
 - A session variable can supply a named parameter that you omit. DuckDB
   raises an error when no variable has that name. Too few named parameters no
   longer raise `FormatError`. Too many named parameters still raise it.
+- If parameter validation or conversion fails in `bind` or `bindNamed`, the
+  statement keeps its previous bindings. Version 0.3 could leave some of the
+  new values installed. Both functions reset the cursor before binding.
 - `deleteFunction` raises `SQLError` for a function made with `createFunction`.
   DuckDB does not permit deletion of functions registered through the C API,
   and version 0.3 ignored that error. Remove the call, or catch the error. The

@@ -95,7 +95,13 @@ import Database.DuckDB.Simple.LogicalRep (
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Database.DuckDB.Simple.Types (Null (..))
-import Database.DuckDB.Simple.V2.LogicalRep (bindingLogicalType, logicalTypeFromRep, logicalTypeToBaseRep, logicalTypeToRep)
+import Database.DuckDB.Simple.V2.LogicalRep (
+  bindingLogicalType,
+  logicalTypeFromRep,
+  logicalTypeToBaseRep,
+  logicalTypeToRep,
+  logicalTypesEqual,
+ )
 import Database.DuckDB.Simple.Variant (Variant (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CDouble (..), CFloat (..))
@@ -1408,15 +1414,21 @@ constructor:
   filter compares each NULL type with one temporary unaliased SQLNULL type.
   Native equality distinguishes aliases, including the alias "NULL". When
   each remaining element has the type of the first one, that type is the
-  element type. The check uses native equality to keep aliases,
-  and base type trees to distinguish collations that native equality ignores.
+  element type. The check uses native equality to keep aliases and ENUM dictionaries.
+  logicalTypesEqual checks the metadata that equality omits. In DuckDB 2.0.0,
+  VARCHAR equality ignores collations. STRUCT and UNION names compare without
+  ASCII case. GEOMETRY CRS definitions can compare equal through a shared
+  identifier. The metadata check keeps exact names, collations, and definitions.
+  It visits child types but reads no ENUM labels.
 - When the types are different, but timestampTypeForTarget gives each of them
   the same nanosecond type for the target, that type is the element type. For
   example, a FieldTime with digits below a microsecond binds as a TIME_NS for a
   TIME_NS[] parameter, and one with no such digits binds as a TIME. DuckDB has
   no common type for TIME and TIME_NS, or for TIMESTAMPTZ and TIMESTAMPTZ_NS.
-  This check reads full type trees only when a promotion changes a base type.
-  The promoted trees must also agree on aliases on unchanged leaves.
+  This check reads complete type trees only after the equality check fails
+  and the target contains a nanosecond temporal type. The promoted trees must
+  agree, including aliases on unchanged leaves. At least one type must change.
+  The promotion loop releases each native type before its next iteration.
 - When these types are different, the library names no element type. The
   native constructor then gives the type of a SQL list literal of the elements
   (duckdb_v2.h: "The child type is the common type of the elements, resolved by
@@ -1527,43 +1539,39 @@ withValueType ValueBuilder{builderFactory = factory, builderType = makeType} tar
   case present of
     [value] -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType action
     value : rest -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \logical -> do
-      -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
-      expected <- logicalTypeToBaseRep logical
-      let promoted = timestampTypeForTarget target expected
-          sameTypes (same, samePromoted, changed) element =
-            bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType \elementType -> do
-              actual <- logicalTypeToBaseRep elementType
-              sameNative <-
-                if same && actual == expected
-                  then (/= 0) <$> output (c_duckdb_v2_logical_type_is_equal logical elementType)
-                  else pure False
-              let actualPromoted = timestampTypeForTarget target actual
-                  samePromoted' = samePromoted && actualPromoted == promoted
-                  changed' = changed || actualPromoted /= actual
-              sameNative `seq` samePromoted' `seq` changed' `seq` pure (sameNative, samePromoted', changed')
-          promotedType native = timestampTypeForTarget target <$> logicalTypeToRep factory native
-      (same, samePromoted, changed) <- foldM sameTypes (True, True, promoted /= expected) rest
-      case (same, samePromoted, changed) of
-        (True, _, _) -> action logical
-        (False, True, True) -> do
-          -- Preserve aliases on leaves that the promotion does not change.
-          -- See Note [Element types of a list].
-          fullPromoted <- promotedType logical
-          sameFull <-
-            foldM
-              ( \matches element ->
-                  if matches
-                    then
-                      bracket
-                        (output (c_duckdb_v2_value_get_logical_type element))
-                        destroyLogicalType
-                        (fmap (== fullPromoted) . promotedType)
-                    else pure False
-              )
-              True
-              rest
-          if sameFull then bracket (makeType fullPromoted) destroyLogicalType action else action nullHandle
-        _ -> action nullHandle
+      same <-
+        foldM
+          ( \matches element ->
+              if not matches
+                then pure False
+                else bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType (logicalTypesEqual logical)
+          )
+          True
+          rest
+      let nanoseconds (LogicalTypeScalar dtype) = dtype `elem` [LogicalTypeIdTimeNs, LogicalTypeIdTimestampNs, LogicalTypeIdTimestampTzNs]
+          nanoseconds _ = False
+      if same
+        then action logical
+        else
+          if not (maybe False (containsType nanoseconds) target)
+            then action nullHandle
+            else do
+              original <- logicalTypeToRep factory logical
+              let promoted = timestampTypeForTarget target original
+                  agree changed [] = pure (if changed then Just promoted else Nothing)
+                  agree changed (element : remaining) = do
+                    -- Release this type before the next iteration.
+                    actual <- bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType (logicalTypeToRep factory)
+                    let updated = timestampTypeForTarget target actual
+                    if updated /= promoted
+                      then pure Nothing
+                      else do
+                        let changed' = changed || updated /= actual
+                        changed' `seq` agree changed' remaining
+              common <- agree (promoted /= original) rest
+              case common of
+                Just rep -> bracket (makeType rep) destroyLogicalType action
+                Nothing -> action nullHandle
     -- See Note [Element types of a list].
     [] -> case target of
       Just rep -> bracket (makeType rep) destroyLogicalType action

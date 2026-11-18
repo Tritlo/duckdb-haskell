@@ -12,6 +12,7 @@
 module Database.DuckDB.Simple.V2.LogicalRep (
   logicalTypeToRep,
   logicalTypeToBaseRep,
+  logicalTypesEqual,
   logicalTypeFromRep,
   logicalTypeFromRepWith,
   bindingLogicalType,
@@ -40,7 +41,7 @@ import Foreign.Storable (peek)
 --
 -- > bracket (R.output (c_duckdb_v2_vector_get_logical_type vector)) destroyLogicalType (logicalTypeToRep factory)
 logicalTypeToRep :: DuckDBV2FactoryHandle -> DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
-logicalTypeToRep factory = convertLogicalType (Just factory)
+logicalTypeToRep factory = convertLogicalType (Just factory) ReadEnumDictionary
 
 -- | Copy a native logical type into a Haskell type tree with no alias, at each
 -- depth. Use it when decoding or binding needs only base types. The function
@@ -48,19 +49,34 @@ logicalTypeToRep factory = convertLogicalType (Just factory)
 -- "Database.DuckDB.Simple.LogicalRep". The function does not destroy the
 -- handle.
 logicalTypeToBaseRep :: DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
-logicalTypeToBaseRep = convertLogicalType Nothing
+logicalTypeToBaseRep = convertLogicalType Nothing ReadEnumDictionary
+
+-- | Compare native types, including exact field names, collations, and CRS
+-- definitions. See Note [Element types of a list] in
+-- "Database.DuckDB.Simple.ToField".
+logicalTypesEqual :: DuckDBV2LogicalTypeHandle -> DuckDBV2LogicalTypeHandle -> IO Bool
+logicalTypesEqual left right = do
+  equal <- output (c_duckdb_v2_logical_type_is_equal left right)
+  if equal == 0 then pure False else (==) <$> key left <*> key right
+  where
+    -- Native equality has checked aliases and ENUM dictionaries. The partial
+    -- trees are comparison keys only. They do not leave this function.
+    key = convertLogicalType Nothing OmitEnumDictionary
+
+-- | Select complete dictionaries or private comparison keys.
+data EnumDictionary = ReadEnumDictionary | OmitEnumDictionary
 
 -- | Copy a native logical type into a Haskell type tree. With a factory, keep
 -- each alias. Without a factory, read no type name.
-convertLogicalType :: Maybe DuckDBV2FactoryHandle -> DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
-convertLogicalType factory logical = do
+convertLogicalType :: Maybe DuckDBV2FactoryHandle -> EnumDictionary -> DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
+convertLogicalType factory dictionary logical = do
   dtype <- output (c_duckdb_v2_logical_type_get_id logical)
   let parameter index action = alloca \nameSlot ->
         bracket (output (c_duckdb_v2_logical_type_get_param logical index nameSlot)) (destroy c_duckdb_v2_value_destroy) \value -> do
           name <- peek nameSlot >>= readIdentifier
           action name value
       child index = parameter index \_ value ->
-        bracket (output (c_duckdb_v2_value_get_type value)) destroyLogicalType (convertLogicalType factory)
+        bracket (output (c_duckdb_v2_value_get_type value)) destroyLogicalType (convertLogicalType factory dictionary)
       string index = parameter index \_ value -> output (c_duckdb_v2_value_get_varchar value) >>= readText
       count = output (c_duckdb_v2_logical_type_get_param_count logical) >>= word64ToInt
       fields make = do
@@ -69,7 +85,7 @@ convertLogicalType factory logical = do
           <$> forM
             [0 .. size - 1]
             ( \index -> parameter (fromIntegral index) \name value -> do
-                rep <- bracket (output (c_duckdb_v2_value_get_type value)) destroyLogicalType (convertLogicalType factory)
+                rep <- bracket (output (c_duckdb_v2_value_get_type value)) destroyLogicalType (convertLogicalType factory dictionary)
                 pure (make name rep)
             )
   base <- case dtype of
@@ -92,13 +108,15 @@ convertLogicalType factory logical = do
       LogicalTypeDecimal
         <$> parameter 0 (\_ value -> output (c_duckdb_v2_value_get_utinyint value))
         <*> parameter 1 (\_ value -> output (c_duckdb_v2_value_get_utinyint value))
-    DuckDBV2LogicalTypeIdEnum -> do
-      size <- count
-      -- A dictionary can have many entries, and each entry makes native
-      -- calls. The fold keeps a constant stack. See
-      -- Note [Constant stack at safe calls] in "Database.DuckDB.Simple.Native".
-      LogicalTypeEnum . listArray (0, size - 1) . reverse
-        <$> foldM (\entries index -> (: entries) <$> string (fromIntegral index)) [] [0 .. size - 1]
+    DuckDBV2LogicalTypeIdEnum -> case dictionary of
+      OmitEnumDictionary -> pure (LogicalTypeEnum (listArray (0, -1) []))
+      ReadEnumDictionary -> do
+        size <- count
+        -- A dictionary can have many entries, and each entry makes native
+        -- calls. The fold keeps a constant stack. See
+        -- Note [Constant stack at safe calls] in "Database.DuckDB.Simple.Native".
+        LogicalTypeEnum . listArray (0, size - 1) . reverse
+          <$> foldM (\entries index -> (: entries) <$> string (fromIntegral index)) [] [0 .. size - 1]
     _ -> LogicalTypeScalar <$> logicalTypeIdFromNative dtype
   case factory of
     Nothing -> pure base

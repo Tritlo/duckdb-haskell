@@ -259,7 +259,7 @@ Any other error from the native constructor propagates to the caller.
 
 The fallback opens a separate connection on the same instance. It cannot run
 SQL on the caller connection because the caller can have an active result.
-The query applies fully qualified built-ins to a fixed point and the bound label.
+The query applies fully qualified built-ins to a WKB literal and the bound label.
 The SELECT has a schema before its first execution step. Copy its field type
 while the schema is live. The helper can close without fetching a row.
 Typed NULLs and empty containers use the same resolver as nonempty values.
@@ -300,4 +300,5 @@ queryGeometryType crs instance_ = mask_ $
                 when (count == 0) $ throwInvalidArgument (Text.pack "the type query did not preserve the GEOMETRY CRS")
                 output (c_duckdb_v2_logical_type_copy logical)
   where
-    sql = Text.pack "SELECT system.main.ST_SetCRS(system.main.ST_GeomFromGeoJSON('{\"type\":\"Point\",\"coordinates\":[0,0]}'::VARCHAR), ?)"
+    -- Little-endian WKB for GEOMETRYCOLLECTION EMPTY. The hex literal has type BLOB.
+    sql = Text.pack "SELECT system.main.ST_SetCRS(system.main.ST_GeomFromWKB(X'010700000000000000'), ?)"

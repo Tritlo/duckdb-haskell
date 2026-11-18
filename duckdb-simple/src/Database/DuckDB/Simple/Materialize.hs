@@ -449,14 +449,14 @@ their result:
   one-row vector of the target type and reads it back. vector_set_value uses
   "the non-strict default cast". This is the documented cell writer for
   GEOMETRY and VARIANT, which have no committed view layout. For ENUM, it avoids
-  value_cast, which includes registered casts: a VARCHAR-to-ENUM user cast
-  must not change the label of a FieldEnum. The factory still resolves the
-  target type; only a connection or callback factory can construct a GEOMETRY
+  value_cast, which includes registered casts. A VARCHAR-to-ENUM user cast
+  must not change the label of a FieldEnum. The factory resolves the target
+  type. Only a connection or callback factory can construct a GEOMETRY
   type with a CRS. See Note [Raw GEOMETRY parameters] in
   "Database.DuckDB.Simple.ToField". UNION values use a vector to preserve the
-  explicit member tag; see Note [UNION values] in that module.
-- The bind-time CRS query constructs a point with ST_GeomFromGeoJSON
-  and binds the label as VARCHAR. It needs no user cast. See Note [Bind-time CRS types] in
+  explicit member tag. See Note [UNION values] in that module.
+- The bind-time CRS query passes a BLOB literal to ST_GeomFromWKB and binds
+  the label as VARCHAR. It needs no user cast. See Note [Bind-time CRS types] in
   "Database.DuckDB.Simple.V2.LogicalRep".
 
 These casts still use the cast functions of the session, so a user cast for

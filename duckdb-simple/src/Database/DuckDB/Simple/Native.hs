@@ -521,7 +521,7 @@ Thus a value of a user cannot change the statement. These are the statements:
   are parameters.
 
 - queryGeometryType in "Database.DuckDB.Simple.V2.LogicalRep": a constant
-  SELECT with a fixed point and one parameter for the CRS name.
+  SELECT with a fixed WKB literal and one parameter for the CRS name.
 
 - metadataStatement in "Database.DuckDB.Simple.VariantCodec": a constant
   SELECT. The list of VARIANT values is a parameter.

@@ -608,10 +608,9 @@ Inside a callback, the statement that runs the callback fails with
 the type `ErrorInputInvalid` and the text
 `Invalid Input Error: duckdb-simple: ...`, because a callback does not pass the
 type `ErrorRuntimeInternal`; a cast gives `ErrorTypeMismatch` (see the errors of
-a callback below). The following errors raise an `SQLError` with no type:
-use of a closed environment, instance, connection, or statement;
-a DuckDB library of another version; or a callback state read with the wrong
-type. These errors are not internal checks.
+a callback below). Using a closed environment, instance, connection, or
+statement raises an `SQLError` with no type. A DuckDB version mismatch and
+reading callback state with the wrong type also raise untyped `SQLError`s.
 
 `SQLError` has four fields:
 

@@ -101,7 +101,7 @@ available API. They do not add native symbols.
   uses an explicit `SELECT`.
 - Typed registrations and direct `logicalTypeFromRep` calls require a
   recognized GEOMETRY CRS or a complete definition. Query reads retain custom
-  CRS labels; plain GEOMETRY callback arguments lose their label through the
+  CRS labels. Plain GEOMETRY callback arguments lose their label through the
   cast to the declared type. Reject native type construction that drops CRS
   metadata under `ignore_unknown_crs`.
 - `CatalogEntryType` has no collation kind. `pragma_collations()` gives the

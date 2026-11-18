@@ -422,9 +422,9 @@ tests =
           (query conn "SELECT ?" (Only value) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value])
           _ <- execute conn "INSERT INTO nested VALUES (?)" (Only value)
           (query_ conn "SELECT v FROM nested" :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value, Only value])
-    , testCase "custom CRS and recognized definitions retain metadata" $ do
+    , testCase "custom CRS and recognized definitions retain metadata with extension autoload disabled" $ do
         let crs = "local' íslenska λ"
-        withConnection ":memory:" \conn -> do
+        withConnectionWithConfig ":memory:" [("autoload_known_extensions", "false")] \conn -> do
           [Only point] <- query_ conn "SELECT 'POINT (1 2)'::GEOMETRY" :: IO [Only RawGeometry]
           let annotated = point{rawGeometryCRS = Just crs}
           (query conn "SELECT ?" (Only annotated)) >>= (@?= [Only annotated])

@@ -25,6 +25,9 @@ import Data.Text (Text)
 -- hold this type. A STRUCT, TUPLE, or UNION parameter binds a @FieldGeometry@
 -- value with its CRS. A VARIANT parameter binds one only when it has no CRS. See
 -- Note [Raw GEOMETRY parameters] in "Database.DuckDB.Simple.ToField".
+-- Parameters accept custom CRS labels, including in composite types. Binding a
+-- blank label or a label containing NUL raises an @SQLError@. Typed registrations
+-- require a recognized name or a full definition.
 -- DuckDB can normalize the byte order and CRS definition during import.
 -- The pinned native API requires the same Z/M dimensions for all collection
 -- members, including empty members. Native import rejects mixed member layouts.

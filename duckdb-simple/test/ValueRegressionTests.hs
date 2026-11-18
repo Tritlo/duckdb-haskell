@@ -429,8 +429,8 @@ valueRegressionTests =
             _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE back (v " <> sqlType <> ")"))
             _ <- execute conn "INSERT INTO back VALUES (?)" (Only value)
             (query_ conn (Query ("SELECT v IS NOT DISTINCT FROM " <> source <> " FROM back")) :: IO [Only Bool]) >>= assertEqual label [Only True]
-        -- A custom CRS needs the name on the connection, and SQL gives it through ST_SetCRS.
-        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["local grid"]} \custom -> do
+        -- ST_SetCRS supplies the custom CRS in the result type.
+        withConnection ":memory:" \custom -> do
           _ <- execute_ custom "CREATE TABLE shapes AS SELECT ST_SetCRS('POINT (1 2)'::GEOMETRY, 'local grid') AS v"
           [Only shape] <- query_ custom "SELECT v FROM shapes" :: IO [Only FieldValue]
           ( query custom "SELECT typeof(?), (SELECT typeof(v) FROM shapes), ? IS NOT DISTINCT FROM (SELECT v FROM shapes)" (shape, shape)

@@ -316,8 +316,8 @@ for the upgrade instructions.
 - Read GEOMETRY results through a native cast to BLOB. DuckDB 2.0 rejects WKB
   with mixed Z/M member layouts.
 - `ToDuckValue.toDuckValue`, `logicalTypeFromRep`, and `logicalTypeFromRepWith`
-  take a V2 factory. Composite parameters keep GEOMETRY CRS metadata. A CRS
-  that DuckDB does not recognize raises `SQLError` instead of being dropped.
+  take a V2 factory. Composite parameters keep GEOMETRY CRS metadata, including
+  unknown custom labels resolved through SQL on a helper connection.
 - `logicalTypeFromRep` creates a VARIANT type, and a GEOMETRY type with a CRS
   that DuckDB recognizes. Version 0.3 raised an error for VARIANT and created
   GEOMETRY without the CRS.
@@ -326,11 +326,16 @@ for the upgrade instructions.
   `SQLError`. For example, a STRUCT parameter with a MAP field that has a NULL
   key raises an `SQLError` with the type `ErrorInputInvalid`. Version 0.3
   raised an `IOException`.
-- A connection constructs each name of `connectionGeometryCRS` directly when it
-  opens. It queries a SQL-derived type only for a name that DuckDB does not keep,
-  on the new connection, so the default list runs no query. The connection keeps
-  each type, and a bind copies it. A name that DuckDB drops, for example a blank
-  name, fails the open.
+- Remove `connectionGeometryCRS` from `ConnectionOptions`. Remove the field
+  from record construction and updates, or its argument from positional
+  construction and patterns. Parameters construct recognized CRS names and full
+  definitions directly. Unknown custom labels use a helper SQL query on demand,
+  including in nested types, typed NULLs, empty collections, and inactive UNION
+  members. The library does not keep a permanent cache of custom CRS types.
+  Blank labels and labels with NUL fail when used by a parameter, not when the
+  connection opens. Query reads retain custom labels. Typed registrations and
+  direct `logicalTypeFromRep` calls still require a recognized CRS or a full
+  definition.
 - The library builds a UNION parameter in a one-row UNION vector, because the
   V2 API has no UNION value constructor. This requires flat child vectors.
   DuckDB 2.0.0 supplies them in a new vector, but its header does not guarantee
@@ -407,7 +412,7 @@ for the upgrade instructions.
   the wrong shape or type keeps `ErrorInputInvalid`, also where DuckDB gives
   another type for the same input, for example a UNION tag that is not a member,
   a leaf built from another type, a STRUCT field that does not match its type,
-  or an unknown CRS. A parameter count or a parameter name that does not match
+  or a blank GEOMETRY CRS label. A parameter count or a parameter name that does not match
   the query keeps its `FormatError`. A check in a callback fails the outer
   statement with the type of the check: such a value as the result of a typed
   function or a row of a typed table function gives `ErrorTypeConversion` and
@@ -423,7 +428,7 @@ for the upgrade instructions.
   with an `SQLError` of the type `ErrorInputInvalid` and the text "Invalid Input
   Error: duckdb-simple: ...", because a callback does not pass the type
   `ErrorRuntimeInternal` (a cast gives `ErrorTypeMismatch`). The use of a closed
-  environment, instance, connection, statement, or type cache, a DuckDB library
+  environment, instance, connection, or statement, a DuckDB library
   of another version, and a callback state read with the wrong type are not
   internal checks; they raise an `SQLError` with no type. Version 0.3 raised an
   `IOException` (a `userError`) or an `ErrorCall` for the internal checks, for

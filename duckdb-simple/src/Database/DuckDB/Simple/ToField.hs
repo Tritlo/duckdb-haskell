@@ -70,11 +70,13 @@ import Database.DuckDB.Simple.FromField (
 import Database.DuckDB.Simple.Geometry (RawGeometry (..))
 import Database.DuckDB.Simple.Internal (
   Statement (..),
+  connectionInstance,
   duckDBTypeFromName,
   duckDBTypeToName,
   preparedParameterType,
   storeBoundValue,
-  withTypeCache,
+  withConnectionHandle,
+  withInstanceHandle,
  )
 import Database.DuckDB.Simple.LogicalRep (
   LogicalTypeRep (..),
@@ -92,9 +94,8 @@ import Database.DuckDB.Simple.LogicalRep (
  )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
-import Database.DuckDB.Simple.TypeCache (cachedLogicalType, typeCacheConnection)
 import Database.DuckDB.Simple.Types (Null (..))
-import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep, logicalTypeToBaseRep, logicalTypeToRep)
+import Database.DuckDB.Simple.V2.LogicalRep (bindingLogicalType, logicalTypeFromRep, logicalTypeToBaseRep, logicalTypeToRep)
 import Database.DuckDB.Simple.Variant (Variant (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CDouble (..), CFloat (..))
@@ -122,8 +123,8 @@ data FieldBinding = FieldBinding
   }
 
 -- | A factory and a type constructor of the same scope. The builder of a
--- statement resolves the configured CRS types of its connection. See
--- Note [CRS types of a connection] in "Database.DuckDB.Simple.TypeCache".
+-- statement resolves CRS types when it binds a parameter. See
+-- Note [Bind-time CRS types] in "Database.DuckDB.Simple.V2.LogicalRep".
 data ValueBuilder = ValueBuilder
   { builderFactory :: !DuckDBV2FactoryHandle
   , builderType :: !(LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle)
@@ -522,12 +523,13 @@ duckdbColumnType :: forall a. (DuckDBColumnType a) => Proxy a -> Text
 duckdbColumnType = duckdbColumnTypeFor
 
 -- | Apply a @FieldBinding@ to the given statement/index. The builder takes its
--- factory and its CRS types from the type cache of the statement's connection.
--- See Note [CRS types of a connection] in "Database.DuckDB.Simple.TypeCache".
+-- factory from the statement's connection. See Note [Bind-time CRS types]
+-- in "Database.DuckDB.Simple.V2.LogicalRep".
 bindFieldBinding :: Statement -> DuckDBIdx -> FieldBinding -> IO ()
 bindFieldBinding stmt idx FieldBinding{fieldBindingValue} =
-  withTypeCache (statementConnection stmt) \cache -> withConnectionFactory (typeCacheConnection cache) \factory ->
-    bindDuckValue stmt idx (fieldBindingValue (ValueBuilder factory (cachedLogicalType cache)) (preparedParameterType stmt idx))
+  withConnectionHandle (statementConnection stmt) \connection -> withConnectionFactory connection \factory ->
+    let makeType rep = withInstanceHandle (connectionInstance (statementConnection stmt)) \inst -> bindingLogicalType factory inst rep
+    in  bindDuckValue stmt idx (fieldBindingValue (ValueBuilder factory makeType) (preparedParameterType stmt idx))
 
 -- | Render a bound parameter for error reporting.
 renderFieldBinding :: FieldBinding -> String
@@ -780,7 +782,7 @@ instance ToField RawGeometry where
       ("<geometry length=" <> show (BS.length rawGeometryWKB) <> ">")
       \builder -> rawGeometryDuckValue builder rawGeometryCRS raw
 
--- | Bind the payload as a VARIANT with the type cache of the connection.
+-- | Bind the payload as a VARIANT.
 instance ToField Variant where
   toField value =
     builderValueBinding (show value) \builder -> variantDuckValue builder (variantPayload value)
@@ -1932,8 +1934,8 @@ contains with this rule:
 - rawGeometryDuckValue makes a BLOB value from the WKB bytes. Then it casts
   the BLOB value to the declared GEOMETRY type with the default cast of
   DuckDB (defaultCast).
-  The builder of the statement supplies a type with a configured CRS. See
-  Note [CRS types of a connection] in "Database.DuckDB.Simple.TypeCache".
+  The builder of the statement resolves the CRS when it binds. See
+  Note [Bind-time CRS types] in "Database.DuckDB.Simple.V2.LogicalRep".
 - A declared type that is only the type id GEOMETRY has no CRS. The binding
   uses the plain builder of the factory for it.
 - A VARIANT accepts a raw geometry without a CRS. The payload is a GEOMETRY

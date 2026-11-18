@@ -295,7 +295,11 @@ The SQL workflow stays the same. These changes can affect your code:
   GHC. The program then fails with a missing-field error when the library
   reads such a field. Build options as a record update of
   `defaultConnectionOptions`, for example
-  `defaultConnectionOptions {connectionGeometryCRS = ["OGC:CRS84"]}`.
+  `defaultConnectionOptions {connectionArrowBatchSize = 2048}`.
+- `ConnectionOptions` removes `connectionGeometryCRS`. Remove this field from
+  record construction and record updates. Remove its argument from positional
+  construction and patterns. Parameter binding resolves custom CRS labels on
+  demand. No connection option is needed.
 - A conversion error names the types `TIMESTAMPTZ` and `TIMETZ`, in
   `errSQLType` and in the message of the `SQLError`. Version 0.3 gave
   `TIMESTAMP_TZ` and `TIME_TZ`. Change code that matches the old texts.
@@ -529,9 +533,11 @@ The SQL workflow stays the same. These changes can affect your code:
   Version 0.3 raised an error for it. For a parameter with no known type, such a
   `SizedArray` of generic records through `ViaDuckDB` takes the STRUCT or UNION
   type of the record.
-- A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
-  raises `SQLError`. Version 0.3 bound it without the CRS. Configure custom CRS
-  names through `connectionGeometryCRS`.
+- Composite parameters preserve GEOMETRY CRS metadata. Recognized names and
+  full definitions use native type construction. Unknown custom labels use a
+  helper SQL query when a parameter needs the type. This also applies to nested
+  types, typed NULLs, empty collections, and inactive UNION members. Version
+  0.3 could drop the CRS of labels outside its configured list.
 - A composite parameter that the native value constructor rejects raises an
   `SQLError`. For example, a STRUCT parameter with a MAP field that has a NULL
   key raises an `SQLError` with the type `ErrorInputInvalid`. Version 0.3
@@ -556,8 +562,8 @@ The SQL workflow stays the same. These changes can affect your code:
   `FormatError`. A value of the wrong shape or type keeps `ErrorInputInvalid`,
   also where DuckDB gives another type
   for the same input, for example a UNION tag that is not a member, a leaf built
-  from another type, a STRUCT field that does not match its type, or an unknown
-  CRS. A check in a callback fails the outer statement with the type of the
+  from another type, a STRUCT field that does not match its type, or a blank
+  GEOMETRY CRS label. A check in a callback fails the outer statement with the type of the
   check: such a value as the result of a typed function or a row of a typed
   table function gives `ErrorTypeConversion` and the text
   `Conversion Error: duckdb-simple: ...` (see the entry on a callback that
@@ -566,8 +572,8 @@ The SQL workflow stays the same. These changes can affect your code:
   HUGEINT, UHUGEINT, TIMETZ, time of day, or timestamp value that does not fit
   its type, a STRUCT or UNION value whose fields do not match its types, a
   VARIANT payload that a VARIANT does not keep, a NUL in a logical type name,
-  and a bad name in `connectionGeometryCRS`. Code that catches `IOException`
-  for these errors must catch `SQLError`.
+  and invalid CRS configuration. Catch `SQLError` for the corresponding
+  input checks in version 1.0.
 - The error for a scalar value that does not match its declared type names the
   SQL type, for example `"NULL"` in place of `LogicalTypeIdSQLNull`.
 - A check of the state of the library, or of a vector, a type, or a value that
@@ -576,15 +582,15 @@ The SQL workflow stays the same. These changes can affect your code:
   `SQLError` of the type `ErrorInputInvalid` and the text "Invalid Input Error:
   duckdb-simple: ...", because a callback does not pass the type
   `ErrorRuntimeInternal` (a cast gives `ErrorTypeMismatch`). The use of a closed
-  environment, instance, connection, statement, or type cache, a DuckDB library
+  environment, instance, connection, or statement, a DuckDB library
   of another version, and a callback state read with the wrong type are not
   internal checks; they raise an `SQLError` with no type. Version 0.3 raised an
   `IOException` (a `userError`) or an `ErrorCall` for the internal checks. Code
   that catches either for them must catch `SQLError`.
-- A name in `connectionGeometryCRS` that DuckDB drops, for example a blank
-  name, fails when the connection opens. Version 0.3 read the configured types
-  the first time a parameter needed one, and did not check that a type kept its
-  CRS.
+- A blank CRS label or a label with NUL raises `SQLError` when a parameter
+  uses it. Opening a connection does not validate CRS labels. Version 0.3 read
+  configured types the first time a parameter needed one, and did not check
+  that a type kept its CRS.
 - DuckDB 2.0 rejects a GEOMETRY collection whose members have different Z/M
   layouts. A `Geometry` or a `RawGeometry` parameter with such a collection
   raises the Invalid Input Error of DuckDB "Geometry has inconsistent Z/M
@@ -651,8 +657,9 @@ its WKB and CRS with explicit SQL. Version 1.0 adds a `ToField` instance. See
 The C API of DuckDB 1.5 cannot create a GEOMETRY type with a CRS. In version
 0.3, each connection read GEOMETRY types for a list of CRS definitions the first
 time a parameter needed one, and composite parameters used them. The list
-defaults to `OGC:CRS84`. Set it with `ConnectionOptions`, `openWithOptions`, or
-`withConnectionWithOptions`. In version 0.3, a CRS outside the list bound
+defaulted to `OGC:CRS84`. Version 1.0 removes this list from
+`ConnectionOptions` and resolves custom labels on demand for parameters.
+In version 0.3, a CRS outside the list bound
 without a CRS, and `logicalTypeFromRep` created `GEOMETRY` with no CRS. To
 apply a CRS in these cases, version 0.3 needed an insert into a column with
 that CRS, or a cast in SQL.

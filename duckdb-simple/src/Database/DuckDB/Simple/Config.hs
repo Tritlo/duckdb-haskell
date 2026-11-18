@@ -29,11 +29,18 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Config.Internal (CustomOption (..), registerCustomOptionOn)
 import Database.DuckDB.Simple.FromField (FieldValue)
-import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withInstanceHandle, withTypeCache)
-import Database.DuckDB.Simple.Materialize (ReadFactory (..), VectorReader, materializeValue, prepareVariantReader)
+import Database.DuckDB.Simple.Internal (
+  Connection,
+  Instance,
+  connectionInstance,
+  instanceCastFactory,
+  readConnectionVariant,
+  withConnectionHandle,
+  withInstanceHandle,
+ )
+import Database.DuckDB.Simple.Materialize (ReadFactory (..), materializeValue)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
-import Database.DuckDB.Simple.TypeCache (TypeCache, typeCacheCasts, withVariantState)
 import Database.DuckDB.Simple.V2.Registration (RegistrationTarget (..), TypeDeclaration)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (peek)
@@ -136,10 +143,10 @@ getConfigValue conn name = do
   checkOptionName name
   withConnectionHandle conn \handle -> do
     config <- output (c_duckdb_v2_connection_get_config handle)
-    withTypeCache conn \cache ->
-      withOptionValue config name \value scope -> do
-        copied <- materializeValue (readVariant cache) (InstanceFactory (typeCacheCasts cache)) value
-        pure (copied, scope)
+    casts <- instanceCastFactory (connectionInstance conn)
+    withOptionValue config name \value scope -> do
+      copied <- materializeValue (readConnectionVariant conn) (InstanceFactory casts) value
+      pure (copied, scope)
 
 -- | Copy the typed static default of an option. An unknown option name raises
 -- t'SQLError'. A VARIANT value gives the value that it holds, as in a result. A
@@ -150,19 +157,13 @@ getConfigDefaultValue conn name = do
   checkOptionName name
   withConnectionHandle conn \handle -> do
     config <- output (c_duckdb_v2_connection_get_config handle)
-    withTypeCache conn \cache ->
-      withIdentifier name \key ->
-        bracket (output (c_duckdb_v2_config_get_option_by_name config key)) (destroy c_duckdb_v2_option_destroy) \option ->
-          bracket
-            (output (c_duckdb_v2_option_get_default_value option))
-            (destroy c_duckdb_v2_value_destroy)
-            (materializeValue (readVariant cache) (InstanceFactory (typeCacheCasts cache)))
-
--- | Read a VARIANT value with the helper connection of the type cache, as a
--- result does. See Note [VARIANT decoding] in
--- "Database.DuckDB.Simple.VariantCodec".
-readVariant :: TypeCache -> VectorReader
-readVariant cache vector = withVariantState cache (`prepareVariantReader` vector)
+    casts <- instanceCastFactory (connectionInstance conn)
+    withIdentifier name \key ->
+      bracket (output (c_duckdb_v2_config_get_option_by_name config key)) (destroy c_duckdb_v2_option_destroy) \option ->
+        bracket
+          (output (c_duckdb_v2_option_get_default_value option))
+          (destroy c_duckdb_v2_value_destroy)
+          (materializeValue (readConnectionVariant conn) (InstanceFactory casts))
 
 -- | Set an option from a typed Haskell value. Native code casts it to the option type.
 setConfigValue :: (ToDuckValue a) => Connection -> SettingScope -> Text -> a -> IO ()

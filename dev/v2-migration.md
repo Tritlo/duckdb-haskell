@@ -66,15 +66,15 @@ result encoder can borrow the same factory. Other extension
 callbacks write each row to a BLOB vector with `duckdb_v2_vector_set_value`
 and the callback context. This operation uses the built-in default cast.
 
-A connection makes the CRS names in `connectionGeometryCRS` available to
-nested parameters, including typed NULLs and empty collections. When the
-connection opens, it constructs each name directly. DuckDB keeps recognized
-names and complete definitions. For each other name, the connection reads a
-SQL-derived type with `ST_SetCRS` before the caller can run a statement. The
-connection caches each type, and a bind copies it. A default connection runs no
-query. Helper queries for VARIANT do not interrupt the caller's active stream.
-The backend does not read private payload layouts or convert handles between
-the retained and V2 APIs.
+Parameters construct recognized GEOMETRY CRS names and full definitions
+through the V2 API. For an unknown custom label, they read a SQL-derived type
+with `ST_SetCRS` on a helper connection when the parameter needs it. This
+includes nested types, typed NULLs, empty collections, and inactive UNION
+members. There is no permanent cache of custom CRS types or connection option
+for a CRS list. Blank labels and labels with NUL fail at parameter use.
+Helper queries for CRS types and VARIANT do not interrupt the caller's active
+stream. The backend does not read private payload layouts or convert handles
+between the retained and V2 APIs.
 
 `Database.DuckDB.Simple.Streaming` provides V2 row and Arrow streaming. The
 advanced opaque equality callback remains available through the raw API.
@@ -99,10 +99,11 @@ available API. They do not add native symbols.
   native import raises `SQLError`. Do not promote or remove coordinates.
 - Bare expression statements use the CLI's shell grammar extension. Client SQL
   uses an explicit `SELECT`.
-- Unconfigured GEOMETRY CRS names use direct V2 type construction. This requires
-  a recognized CRS or a complete definition. Configure custom names through
-  `connectionGeometryCRS` to preserve them through the SQL-derived type cache.
-  Do not silently drop CRS metadata when `ignore_unknown_crs` is enabled.
+- Typed registrations and direct `logicalTypeFromRep` calls require a
+  recognized GEOMETRY CRS or a complete definition. Query reads retain custom
+  CRS labels; plain GEOMETRY callback arguments lose their label through the
+  cast to the declared type. Reject native type construction that drops CRS
+  metadata under `ignore_unknown_crs`.
 - `CatalogEntryType` has no collation kind. `pragma_collations()` gives the
   name of each collation, but not its catalog and its schema. Table, view,
   index, sequence, and type lookups use SQL metadata.

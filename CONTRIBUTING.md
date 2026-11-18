@@ -105,9 +105,10 @@ Format Cabal files with `cabal-gild`. Keep names consistent with the surrounding
 module.
 
 Build parameter values with a factory borrowed from the statement's connection.
-Use the managed type cache for configured GEOMETRY types. Run VARIANT metadata
-queries on its helper connection so decoding does not interrupt an active
-stream. Use public V2 operations and SQL metadata.
+Construct recognized GEOMETRY CRS names and full definitions directly. Resolve
+unknown custom labels on demand through SQL on a helper connection. Use a helper
+connection for VARIANT metadata queries too, so these queries do not interrupt
+an active stream. Use public V2 operations and SQL metadata.
 Do not read private payload layouts or convert handles between the two APIs.
 
 ## Native library configuration

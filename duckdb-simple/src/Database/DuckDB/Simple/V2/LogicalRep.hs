@@ -14,18 +14,22 @@ module Database.DuckDB.Simple.V2.LogicalRep (
   logicalTypeToBaseRep,
   logicalTypeFromRep,
   logicalTypeFromRepWith,
+  bindingLogicalType,
   destroyLogicalType,
 ) where
 
-import Control.Exception (bracket, mask_, onException)
+import Control.Exception (bracket, mask_, onException, tryJust)
 import Control.Monad (foldM, forM, when)
 import Data.Array (elems, listArray)
+import Data.Char (isSpace)
+import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
 import Database.DuckDB.Simple.Native
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
+import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek)
 
@@ -143,9 +147,7 @@ logicalTypeFromRepWith factory resolve = create
             then output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr nullPtr) (ConstPtr valuePtr) (fromIntegral (length values)))
             else withIdentifierArray names \namePtr ->
               output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values)))
-    -- The type cache of a connection gives a resolver for configured CRS
-    -- types. See Note [CRS types of a connection] in
-    -- "Database.DuckDB.Simple.TypeCache".
+    -- The binding resolver supplies CRS leaves. See Note [Bind-time CRS types].
     create rep = resolve rep >>= maybe (constructRep rep) pure
     constructRep = \case
       LogicalTypeScalar LogicalTypeIdVariant -> fromName (Text.pack "VARIANT")
@@ -154,14 +156,13 @@ logicalTypeFromRepWith factory resolve = create
       LogicalTypeScalar dtype -> construct (logicalTypeIdToNative dtype) [] []
       LogicalTypeCollatedVarchar collation -> construct DuckDBV2LogicalTypeIdVarchar [Text.pack "collation"] [text collation]
       LogicalTypeGeometry Nothing -> fromText (Text.pack "GEOMETRY")
-      LogicalTypeGeometry (Just crs) -> mask_ do
-        logical <- construct DuckDBV2LogicalTypeIdGeometry [] [text crs]
-        flip onException (destroyLogicalType logical) do
-          count <- output (c_duckdb_v2_logical_type_get_param_count logical)
-          when (count == 0) $
-            throwInvalidArgument
-              (Text.pack "DuckDB did not preserve the requested GEOMETRY CRS; use a recognized identifier or a complete CRS definition")
-          pure logical
+      LogicalTypeGeometry (Just crs) ->
+        directGeometryType factory crs
+          >>= maybe
+            ( throwInvalidArgument
+                (Text.pack "DuckDB did not preserve the requested GEOMETRY CRS; use a recognized identifier or a complete CRS definition")
+            )
+            pure
       LogicalTypeDecimal width scale -> do
         when (width < 1 || width > 38 || scale > width) $
           throwInvalidArgument (Text.pack "invalid DECIMAL width or scale")
@@ -200,3 +201,82 @@ word64ToInt :: (Integral a) => a -> IO Int
 word64ToInt value
   | toInteger value <= toInteger (maxBound :: Int) = pure (fromIntegral value)
   | otherwise = throwInternalError (Text.pack "logical type parameter count exceeds Int range")
+
+-- | Construct an owned binding type. Resolve CRS leaves at every depth.
+-- The factory must belong to a connection on the supplied instance.
+bindingLogicalType
+  :: DuckDBV2FactoryHandle
+  -> DuckDBV2InstanceHandle
+  -> LogicalTypeRep
+  -> IO DuckDBV2LogicalTypeHandle
+bindingLogicalType factory instance_ = logicalTypeFromRepWith factory resolve
+  where
+    resolve (LogicalTypeGeometry (Just crs)) = do
+      direct <- tryJust unrecognized (directGeometryType factory crs)
+      Just <$> case direct of
+        Right (Just logical) -> pure logical
+        _ -> queryGeometryType crs instance_
+    resolve _ = pure Nothing
+    unrecognized err
+      | sqlErrorType err == Just ErrorQueryBinder
+      , Just body <- sqlErrorBody err
+      , Text.pack "Encountered unrecognized coordinate system '" `Text.isPrefixOf` body =
+          Just ()
+      | otherwise = Nothing
+
+{- Note [Bind-time CRS types]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Bindings construct native types from their declarations at every depth. The
+connection factory constructs recognized CRS types directly. For an unknown
+label, DuckDB either reports its specific binder error or drops the CRS when
+ignore_unknown_crs is set. Only these two outcomes use the SQL fallback.
+Malformed definitions and other native errors retain their original errors.
+
+The fallback opens a separate connection on the same instance. It cannot run
+SQL on the caller connection because the caller can have an active result.
+The query applies fully qualified built-ins to a fixed point and the bound label.
+The vector accessor returns an owned logical type. The type survives cleanup
+of the chunk, result, statement, and helper connection. No type map persists.
+Typed NULLs and empty containers use the same resolver as nonempty values.
+-}
+
+-- | Construct a CRS type directly. Return 'Nothing' if DuckDB drops its CRS.
+-- Keep native errors so the binding resolver can select the unknown CRS error.
+directGeometryType :: DuckDBV2FactoryHandle -> Text -> IO (Maybe DuckDBV2LogicalTypeHandle)
+directGeometryType factory crs = mask_ do
+  validateGeometryCRS crs
+  logical <- withText crs \text ->
+    bracket (output (c_duckdb_v2_value_create_varchar factory text)) destroyValue \value ->
+      with value \values ->
+        output (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdGeometry (ConstPtr nullPtr) (ConstPtr values) 1)
+  count <- output (c_duckdb_v2_logical_type_get_param_count logical) `onException` destroyLogicalType logical
+  if count == 0 then destroyLogicalType logical >> pure Nothing else pure (Just logical)
+
+-- | Reject CRS text that cannot identify a coordinate system.
+validateGeometryCRS :: Text -> IO ()
+validateGeometryCRS crs =
+  when (Text.all isSpace crs || Text.any (== '\0') crs) $
+    throwInvalidArgument (Text.pack "a GEOMETRY CRS must be nonblank and must not contain NUL")
+
+-- | Read one owned GEOMETRY type from a short-lived helper connection.
+queryGeometryType :: Text -> DuckDBV2InstanceHandle -> IO DuckDBV2LogicalTypeHandle
+queryGeometryType crs instance_ = mask_ $
+  bracket (output (c_duckdb_v2_connection_create instance_)) (destroy c_duckdb_v2_connection_destroy) \connection ->
+    withSQLStatement connection sql \parsed -> withConnectionFactory connection \factory ->
+      withText crs \name -> bracket (output (c_duckdb_v2_value_create_varchar factory name)) destroyValue \label ->
+        with label \param ->
+          bracket
+            (output (c_duckdb_v2_statement_execute connection parsed (ConstPtr nullPtr) (ConstPtr param) 1))
+            (destroy c_duckdb_v2_result_destroy)
+            \result ->
+              bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
+                when (chunk == nullHandle) $ throwInternalError (Text.pack "the CRS type query returned no row")
+                vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
+                logical <- output (c_duckdb_v2_vector_get_logical_type vector)
+                flip onException (destroyLogicalType logical) do
+                  rep <- logicalTypeToBaseRep logical
+                  case rep of
+                    LogicalTypeGeometry (Just _) -> pure logical
+                    _ -> throwInvalidArgument (Text.pack "the type query did not preserve the GEOMETRY CRS")
+  where
+    sql = Text.pack "SELECT system.main.ST_SetCRS(system.main.ST_GeomFromGeoJSON('{\"type\":\"Point\",\"coordinates\":[0,0]}'::VARCHAR), ?)"

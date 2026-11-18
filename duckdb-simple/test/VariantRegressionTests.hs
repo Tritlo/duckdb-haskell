@@ -12,8 +12,8 @@
 -- Description : Lossless VARIANT binding and result conversion through the V2 API.
 module VariantRegressionTests (tests) where
 
-import Control.Concurrent (myThreadId, throwTo)
-import Control.Exception (AsyncException (..), bracket, try)
+import Control.Concurrent (forkFinally, killThread, myThreadId, newEmptyMVar, putMVar, readMVar, takeMVar, throwTo)
+import Control.Exception (AsyncException (..), bracket, finally, throwIO, try)
 import Control.Monad (forM, forM_, void, when)
 import Data.Array (elems, listArray)
 import qualified Data.ByteString as BS
@@ -35,6 +35,7 @@ import GHC.Float (castDoubleToWord64, castFloatToWord32, castWord64ToDouble)
 import GHC.Generics (Generic)
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
 import TestUtils (NativeTimestamp (..), assertFailureIO, nativeLocalTime, sized)
@@ -49,7 +50,23 @@ tests :: TestTree
 tests =
   testGroup
     "variant integration"
-    [ testGroup
+    [ testCase "separate connections decode VARIANT concurrently" $
+        withEnvironment \env -> withInstance env [] \inst ->
+          withConnectionOn inst \left -> withConnectionOn inst \right -> do
+            start <- newEmptyMVar
+            let worker conn input = do
+                  readMVar start
+                  forM_ [1 .. 20 :: Int] \_ -> roundTrip conn input
+            completions <- forM [(left, FieldList [FieldInt64 42, FieldNull]), (right, variantObject [("", FieldText "right"), ("n", FieldInt64 7)])] \(conn, input) -> do
+              done <- newEmptyMVar
+              thread <- forkFinally (worker conn input) (putMVar done)
+              pure (thread, done)
+            putMVar start ()
+            result <- timeout 10000000 (mapM (takeMVar . snd) completions) `finally` mapM_ (killThread . fst) completions
+            case result of
+              Nothing -> assertFailure "concurrent VARIANT decoding timed out"
+              Just outcomes -> mapM_ (either throwIO pure) outcomes
+    , testGroup
         "scalar payloads decode like native values"
         [ testCase (Text.unpack sql) $ withConnection ":memory:" \conn -> do
             -- Two rows with one tag use the list cast. The round trip uses the cast of one value.

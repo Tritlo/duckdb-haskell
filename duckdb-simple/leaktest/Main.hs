@@ -151,7 +151,7 @@ checkDroppedHandles = do
         weak <- mkWeakIORef token (pure ())
         conn <- open ":memory:"
         createFunction conn "dropped_token" (readIORef token)
-        -- A VARIANT result gives the type cache native state to release.
+        -- Decoding a VARIANT opens the helper that the finalizer must release.
         values <- query conn "SELECT ?" (Only (Variant (FieldInt64 42)))
         unless (values == [Only (Variant (FieldInt64 42))]) (fail "wrong VARIANT payload before the drop")
         replicateM_ before performMajorGC
@@ -189,7 +189,10 @@ checkNewTypes batches =
         roundTrip :: (ToField a, FromField a, Eq a) => String -> a -> IO ()
         roundTrip label value = query conn "SELECT ?" (Only value) >>= \rows -> unless (rows == [Only value]) (fail (label <> " binding failed"))
     let variant = Variant (FieldList [FieldInt64 42, FieldList [FieldNull, FieldText "before\0after"]])
+        custom = geometry{rawGeometryCRS = Just "local' íslenska λ"}
         batch = forM_ [1 .. 100 :: Int] \_ -> do
+          roundTrip "custom CRS" custom
+          expectFailure (query conn "SELECT ?" (Only geometry{rawGeometryCRS = Just " "}) :: IO [Only RawGeometry])
           rows <-
             query
               conn

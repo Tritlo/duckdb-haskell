@@ -426,9 +426,8 @@ their result:
 - Reads. prepareGeometryReader casts a GEOMETRY vector to BLOB. A result, the
   value of an option (getConfigValue), and the default value of an option
   (getConfigDefaultValue) read a GEOMETRY value with the factory of the
-  instance, and so does queryMetrics. The type cache of the connection keeps
-  that factory (typeCacheCasts in "Database.DuckDB.Simple.TypeCache"). The
-  callbacks registered on a connection use the same factory.
+  instance, and so does queryMetrics. Callbacks registered on a connection
+  use the same instance factory.
   A scalar or aggregate function registered by a loadable extension uses
   its private instance factory. See Note [Function argument readers] in
   "Database.DuckDB.Simple.Typed". Both paths cast the whole vector.
@@ -453,9 +452,9 @@ their result:
   the target type, and only the factory of a connection or of a callback
   context can make a GEOMETRY type with a CRS. See Note [Raw GEOMETRY
   parameters] in "Database.DuckDB.Simple.ToField".
-- The type query of a connection with a custom CRS (readNativeTypes in
-  "Database.DuckDB.Simple.TypeCache") binds the empty point as a BLOB value. Its
-  statement has no cast.
+- The bind-time CRS query constructs a point with ST_GeomFromGeoJSON
+  and binds the label as VARCHAR. It needs no user cast. See Note [Bind-time CRS types] in
+  "Database.DuckDB.Simple.V2.LogicalRep".
 
 Why a vector for the values. For GEOMETRY and VARIANT, the header calls
 duckdb_v2_vector_set_value "the only way to write a cell". For an ENUM, the

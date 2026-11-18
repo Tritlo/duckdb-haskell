@@ -159,7 +159,7 @@ instance Exception SQLError
 -- "Database.DuckDB.Simple.ToField"). A callback that waits too long for a
 -- connection lock gets 'ErrorResourceInUse'.
 -- These errors of duckdb-simple have no error type: the use of a closed
--- environment, instance, connection, statement, or type cache, a loaded DuckDB
+-- environment, instance, connection, or statement, a loaded DuckDB
 -- library of another version, a callback state read with the wrong type, and a
 -- result value that does not convert to its Haskell type.
 --
@@ -521,9 +521,8 @@ Thus a value of a user cannot change the statement. These are the statements:
   column from constants. The catalog name, the schema name, and the entry name
   are parameters.
 
-- readNativeTypes in "Database.DuckDB.Simple.TypeCache": a SELECT with two
-  placeholders for each CRS name of the connection, for the WKB of an empty
-  point and for the name. Each value is a parameter.
+- queryGeometryType in "Database.DuckDB.Simple.V2.LogicalRep": a constant
+  SELECT with a fixed point and one parameter for the CRS name.
 
 - metadataStatement in "Database.DuckDB.Simple.VariantCodec": a constant
   SELECT. The list of VARIANT values is a parameter.

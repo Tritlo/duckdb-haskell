@@ -60,7 +60,8 @@ module Database.DuckDB.Simple.Internal (
   withConnectionHandle,
   withConnectionLock,
   withResultWindow,
-  withTypeCache,
+  instanceCastFactory,
+  readConnectionVariant,
   withStatementHandle,
   withQueryCString,
   withQueryError,
@@ -83,18 +84,33 @@ import Control.Concurrent (
   MVar,
   ThreadId,
   forkIO,
+  modifyMVarMasked,
   myThreadId,
   newEmptyMVar,
   newMVar,
   putMVar,
   readMVar,
+  swapMVar,
   takeMVar,
   threadDelay,
   tryReadMVar,
   tryTakeMVar,
   withMVar,
  )
-import Control.Exception (SomeException, bracket, bracket_, catch, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
+import Control.Exception (
+  SomeException,
+  bracket,
+  bracketOnError,
+  bracket_,
+  catch,
+  finally,
+  mask,
+  mask_,
+  onException,
+  throwIO,
+  try,
+  uninterruptibleMask_,
+ )
 import Control.Monad (forM, forM_, join, unless, void, when)
 import Data.Array (Array, bounds, inRange, listArray, (!))
 import qualified Data.ByteString as BS
@@ -111,10 +127,11 @@ import Database.DuckDB.Simple.CallbackMark (hasCallbackMark)
 import Database.DuckDB.Simple.Conversion (Conversion)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
+import Database.DuckDB.Simple.Materialize (prepareVariantReader)
 import Database.DuckDB.Simple.Native hiding (arraySizeReason, maxArraySize)
-import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, defaultGeometryCRS, destroyTypeCache)
 import Database.DuckDB.Simple.TypeScope (TypeScope, closeTypeScope)
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToBaseRep)
+import Database.DuckDB.Simple.VariantCodec (VariantState, destroyVariantState, newVariantState, variantConnection)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (CString)
 import Foreign.C.Types (CChar)
@@ -236,7 +253,7 @@ data EnvironmentState = EnvironmentClosed | EnvironmentOpen DuckDBV2EnvironmentH
 data Instance = Instance {instanceState :: IORef InstanceState, instanceEnvironment :: Environment}
 
 -- | Internal instance state.
-data InstanceState = InstanceClosed | InstanceOpen DuckDBV2InstanceHandle (Children ConnectionState)
+data InstanceState = InstanceClosed | InstanceOpen DuckDBV2InstanceHandle DuckDBV2FactoryHandle (Children ConnectionState)
 
 -- | A connection that retains its instance until it closes.
 data Connection = Connection
@@ -269,20 +286,6 @@ data ConnectionOptions = ConnectionOptions
   --     writes each option with its default scope. An option whose default
   --     scope is GLOBAL thus changes the instance. This change applies to all
   --     connections of the instance.
-  , connectionGeometryCRS :: [Text]
-  -- ^ CRS definitions to preserve in composite parameters. DuckDB constructs
-  --     a recognized name, such as @OGC:CRS84@, and a complete definition
-  --     directly. For each other name, the connection reads a SQL-derived type
-  --     when it opens, and a name that DuckDB drops fails the open. The
-  --     connection keeps each type, and a bind copies it. The default is
-  --     @OGC:CRS84@. Include custom CRS names in this list. A typed
-  --     registration does not use this list. A declared GEOMETRY type with a
-  --     custom CRS name raises the DuckDB error "unrecognized coordinate
-  --     system" at registration: for an argument, a result, the source or the
-  --     target of a cast, a pragma parameter, and a column of a table function.
-  --     A plain GEOMETRY argument reads a value with a custom CRS without the
-  --     CRS, because DuckDB casts the value to the declared type. A query
-  --     column with a custom CRS reads with its CRS.
   , connectionCallbackLockWait :: Maybe Int
   -- ^ The longest time in microseconds that a DuckDB callback waits for the
   --     lock of this connection. A statement of a callback on the connection
@@ -321,7 +324,6 @@ defaultConnectionOptions :: ConnectionOptions
 defaultConnectionOptions =
   ConnectionOptions
     { connectionConfig = []
-    , connectionGeometryCRS = defaultGeometryCRS
     , connectionCallbackLockWait = Just defaultCallbackLockWait
     , connectionAggregateStripes = defaultAggregateStripes
     , connectionArrowBatchSize = defaultArrowBatchSize
@@ -345,7 +347,7 @@ data ConnectionState
   = ConnectionClosed
   | ConnectionOpen
       { connectionHandle :: DuckDBV2ConnectionHandle
-      , connectionTypeCache :: TypeCache
+      , connectionDecoder :: MVar (Maybe VariantState)
       , connectionStatements :: Children StatementState
       , connectionReleaseParent :: IO ()
       }
@@ -549,7 +551,8 @@ createInstance environment@Environment{environmentState} settings = keepAlive en
     forM_ (runtimeSettings ++ externalAccessSettings) \(name, value) -> withIdentifier name \key -> withText value \text ->
       checked (c_duckdb_v2_config_set_option_text config key text DuckDBV2SettingScopeDefault)
     connections <- newChildren
-    ref <- newIORef (InstanceOpen raw connections)
+    casts <- withInstanceFactory raw pure
+    ref <- newIORef (InstanceOpen raw casts connections)
     registerChild forkFinalizer (\case InstanceOpen{} -> True; _ -> False) children ref (keepAlive environment (closeInstanceState ref))
     pure (Instance ref environment)
   where
@@ -575,23 +578,21 @@ closeInstance Instance{instanceState} = closeInstanceState instanceState
 closeInstanceState :: IORef InstanceState -> IO ()
 closeInstanceState ref = mask_ $ joinCleanup ref \case
   InstanceClosed -> (InstanceClosed, pure ())
-  InstanceOpen raw children -> (InstanceClosed, cleanupAll [closeChildren children, destroy c_duckdb_v2_instance_destroy raw])
+  InstanceOpen raw _ children -> (InstanceClosed, cleanupAll [closeChildren children, destroy c_duckdb_v2_instance_destroy raw])
 
--- | Create a connection with checked options. The connection reads its CRS
--- names from 'connectionGeometryCRS', and it keeps the options. The final
--- action releases private convenience parents.
+-- | Create a connection with checked options. The final action releases the
+-- private instance and environment used by the convenience open functions.
 createConnection :: Instance -> ConnectionOptions -> IO () -> IO Connection
 createConnection parent@Instance{instanceState} options releaseParent = keepAlive parent $ mask_ do
   (rawInstance, children) <-
     readIORef instanceState >>= \case
       InstanceClosed -> throwIO (SQLError "duckdb-simple: instance is closed" Nothing Nothing Nothing)
-      InstanceOpen raw children -> pure (raw, children)
+      InstanceOpen raw _ children -> pure (raw, children)
   raw <- output (c_duckdb_v2_connection_create rawInstance)
-  -- See Note [CRS types of a connection] in "Database.DuckDB.Simple.TypeCache".
-  cache <- createTypeCache rawInstance raw (connectionGeometryCRS options) `onException` destroy c_duckdb_v2_connection_destroy raw
-  flip onException (destroyTypeCache cache `finally` destroy c_duckdb_v2_connection_destroy raw) do
+  flip onException (destroy c_duckdb_v2_connection_destroy raw) do
+    decoder <- newMVar Nothing
     statements <- newChildren
-    ref <- newIORef (ConnectionOpen raw cache statements releaseParent)
+    ref <- newIORef (ConnectionOpen raw decoder statements releaseParent)
     registerChild forkFinalizer (\case ConnectionOpen{} -> True; _ -> False) children ref (keepAlive parent (closeConnectionState False ref))
     Connection ref parent <$> newMVar () <*> newIORef Nothing <*> pure options
 
@@ -605,11 +606,13 @@ closeConnection Connection{connectionState} = closeConnectionState True connecti
 closeConnectionState :: Bool -> IORef ConnectionState -> IO ()
 closeConnectionState releaseParents ref = mask_ $ joinCleanup ref \case
   ConnectionClosed -> (ConnectionClosed, pure ())
-  ConnectionOpen{connectionHandle, connectionTypeCache, connectionStatements, connectionReleaseParent} ->
+  ConnectionOpen{connectionHandle, connectionDecoder, connectionStatements, connectionReleaseParent} ->
     ( ConnectionClosed
     , cleanupAll
         [ closeChildren connectionStatements
-        , destroyTypeCache connectionTypeCache
+        , uninterruptibleMask_ do
+            decoder <- swapMVar connectionDecoder Nothing
+            forM_ decoder \state -> destroyVariantState state `finally` destroy c_duckdb_v2_connection_destroy (variantConnection state)
         , destroy c_duckdb_v2_connection_destroy connectionHandle
         , when releaseParents connectionReleaseParent
         ]
@@ -767,11 +770,20 @@ keepAlive owner (IO action) = IO \state -> keepAlive# owner state action
 
 -- | Borrow a live instance handle.
 withInstanceHandle :: Instance -> (DuckDBV2InstanceHandle -> IO a) -> IO a
-withInstanceHandle owner@Instance{instanceState} action =
+withInstanceHandle owner action = withOpenInstance owner (\raw _ -> action raw)
+
+-- | Borrow the factory for DuckDB's built-in casts. All connections on the
+-- instance use this factory.
+instanceCastFactory :: Instance -> IO DuckDBV2FactoryHandle
+instanceCastFactory owner = withOpenInstance owner (\_ casts -> pure casts)
+
+-- | Borrow the instance and its factory while the managed owner is live.
+withOpenInstance :: Instance -> (DuckDBV2InstanceHandle -> DuckDBV2FactoryHandle -> IO a) -> IO a
+withOpenInstance owner@Instance{instanceState} action =
   keepAlive owner $
     readIORef instanceState >>= \case
       InstanceClosed -> throwIO (SQLError "duckdb-simple: instance is closed" Nothing Nothing Nothing)
-      InstanceOpen raw _ -> action raw
+      InstanceOpen raw casts _ -> action raw casts
 
 -- | Borrow the instance that owns a live connection.
 withDatabaseHandle :: Connection -> (DuckDBV2InstanceHandle -> IO a) -> IO a
@@ -940,13 +952,37 @@ withResultWindow conn@Connection{connectionWindow} release action =
     self <- myThreadId
     bracket_ (writeIORef connectionWindow (Just self)) (writeIORef connectionWindow Nothing) action
 
--- | Borrow a connection's logical type cache.
-withTypeCache :: Connection -> (TypeCache -> IO a) -> IO a
-withTypeCache owner@Connection{connectionState} action =
-  keepAlive owner $
-    readIORef connectionState >>= \case
-      ConnectionClosed -> throwIO connectionClosedError
-      ConnectionOpen{connectionTypeCache} -> action connectionTypeCache
+{- Note [Concurrent VARIANT decoding]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+DuckDB permits one active result per connection. The VARIANT decoder runs SQL
+while a caller can still be streaming rows, so it needs its own connection.
+Each caller opens one helper on its instance at the first VARIANT read and
+reuses the helper's prepared statements. Two callers on the same instance can
+therefore decode in parallel.
+
+The decoder mutates its statements and cast types while it copies a vector.
+The MVar gives one thread exclusive use until the copy finishes. Closing the
+caller takes the same MVar before destroying the decoder and its helper.
+A reader that finds the slot empty checks that the caller is still open under
+the lock. This prevents it from opening a new helper after close.
+-}
+
+-- | Copy a VARIANT vector with this connection's decoder. See
+-- Note [Concurrent VARIANT decoding].
+readConnectionVariant :: Connection -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
+readConnectionVariant owner@Connection{connectionState, connectionInstance} vector = keepAlive owner $ mask \restore -> do
+  readIORef connectionState >>= \case
+    ConnectionClosed -> throwIO connectionClosedError
+    ConnectionOpen{connectionDecoder} -> do
+      outcome <- modifyMVarMasked connectionDecoder \current -> do
+        state <- case current of
+          Just state -> pure state
+          Nothing -> withConnectionHandle owner \_ -> withOpenInstance connectionInstance \raw casts ->
+            bracketOnError (output (c_duckdb_v2_connection_create raw)) (destroy c_duckdb_v2_connection_destroy) \helper ->
+              newVariantState helper casts
+        result <- try (restore (prepareVariantReader state vector))
+        pure (Just state, result)
+      either (throwIO :: SomeException -> IO a) pure outcome
 
 -- | Borrow a live prepared statement handle.
 withStatementHandle :: Statement -> (DuckDBV2PreparedStatementHandle -> IO a) -> IO a

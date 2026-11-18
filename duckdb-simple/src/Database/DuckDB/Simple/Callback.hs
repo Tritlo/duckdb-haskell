@@ -38,9 +38,8 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
 import Database.DuckDB.Simple.CallbackMark (withCallbackMark)
-import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle, withTypeCache)
+import Database.DuckDB.Simple.Internal (Connection, connectionInstance, instanceCastFactory, withConnectionHandle)
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.TypeCache (typeCacheCasts)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
@@ -77,7 +76,7 @@ withRegistrationFactory target action = case target of
 -- "Database.DuckDB.Simple.Materialize".
 targetCastFactory :: RegistrationTarget -> IO (Maybe DuckDBV2FactoryHandle)
 targetCastFactory target = case target of
-  ConnectionTarget connection -> Just <$> withTypeCache connection (pure . typeCacheCasts)
+  ConnectionTarget connection -> withConnectionHandle connection \_ -> Just <$> instanceCastFactory (connectionInstance connection)
   ExtensionTarget _ _ -> pure Nothing
 
 -- | Check the query thread count of a connection or extension registration.

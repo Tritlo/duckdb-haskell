@@ -101,10 +101,10 @@ valid. The direct `query_` and `execute_` paths support statements that expand
 during parsing, including dynamic PIVOT. Prepared dynamic PIVOT supports
 repeated execution with a changing schema. It does not support parameters or a
 cacheable plan. Read its schema after execution starts. VARIANT decoding uses
-SQL metadata and native casts on a helper connection. A configured custom
-GEOMETRY CRS name uses one SQL query when the connection opens. GEOMETRY results
-use a native cast to BLOB. Native GEOMETRY collections require the same Z/M
-dimensions on every member, including empty members. The standalone WKB codec
+SQL metadata and native casts on a helper connection. An unknown custom
+GEOMETRY CRS label uses a helper SQL query when a parameter needs its type.
+GEOMETRY results use a native cast to BLOB. Native GEOMETRY collections require
+the same Z/M dimensions on every member, including empty members. The standalone WKB codec
 retains mixed layouts.
 
 ## Getting started
@@ -604,7 +604,7 @@ the type `ErrorInputInvalid` and the text
 `Invalid Input Error: duckdb-simple: ...`, because a callback does not pass the
 type `ErrorRuntimeInternal`; a cast gives `ErrorTypeMismatch` (see the errors of
 a callback below). The following errors raise an `SQLError` with no type:
-use of a closed environment, instance, connection, statement, or type cache;
+use of a closed environment, instance, connection, or statement;
 a DuckDB library of another version; or a callback state read with the wrong
 type. These errors are not internal checks.
 
@@ -636,7 +636,7 @@ not in the dictionary of a declared ENUM type. Each other input check gives the
 type `ErrorInputInvalid`. This includes a value of the wrong shape or type, also
 where DuckDB gives another type for the same input, for example a UNION tag that
 is not a member, a leaf built from another type, a STRUCT field that does not
-match its type, or an unknown CRS. Examples are a VARIANT object with two equal
+match its type, or a blank GEOMETRY CRS label. Examples are a VARIANT object with two equal
 keys, a registration with an argument type that the library cannot read, and a
 DECIMAL width above 38.
 
@@ -1395,22 +1395,21 @@ a field of type `GEOMETRY`. A `Variant` parameter binds a `FieldGeometry`
 without a CRS as a `GEOMETRY` payload. A VARIANT does not keep the CRS of a
 GEOMETRY, so a `FieldGeometry` with a CRS in a `Variant` raises `SQLError`.
 
-`LogicalTypeGeometry` describes CRS metadata. Composite parameters retain CRS
-metadata for typed NULLs, empty collections, and inactive UNION members.
-Set `connectionGeometryCRS` in `ConnectionOptions` to preserve arbitrary custom
-CRS names in these parameters. The list defaults to `OGC:CRS84`. When a
-connection opens, DuckDB constructs a recognized name, such as `OGC:CRS84`, and
-a complete definition directly. For each other name, the library reads the
-type through SQL on the new connection. The connection caches each type, and a
-bind copies it. A name that DuckDB drops, for example a blank name, fails the
-open. For a custom CRS in a typed registration, see the Haddock of
-`connectionGeometryCRS`.
+`LogicalTypeGeometry` describes CRS metadata. Composite parameters retain it.
+Recognized names, such as `OGC:CRS84`, and full WKT2/PROJJSON definitions use
+direct V2 type construction. For an unknown custom label, parameter binding
+reads a SQL-derived type with `ST_SetCRS` on a helper connection. This happens
+on demand, including for nested types, typed NULLs, empty collections, and
+inactive UNION members. Binding the same custom label again repeats the lookup.
+A blank label or a label with NUL raises `SQLError` at bind time.
 
-CRS definitions outside the configured list use direct V2 type construction.
-This requires a recognized identifier or a complete WKT2/PROJJSON definition.
-An unconfigured custom name raises an error. The binding rejects construction
-that silently drops CRS metadata under `ignore_unknown_crs`. Direct low-level
-`logicalTypeFromRep` calls use the same native construction rules.
+Query results retain a custom CRS label. Typed registrations and direct
+low-level `logicalTypeFromRep` calls use native type construction. They require
+a recognized name or a full definition. A custom label in a declared argument,
+result, cast source or target, pragma parameter, or table-function column fails
+at registration. DuckDB casts a plain `GEOMETRY` argument to its declared type,
+which removes the CRS. Direct type construction raises an error if DuckDB
+drops the CRS under `ignore_unknown_crs`.
 
 The CRS in a cast must be a constant. DuckDB rejects a parameter as a type
 modifier, so `?::GEOMETRY(?)` is not valid. To use a CRS that is known only at

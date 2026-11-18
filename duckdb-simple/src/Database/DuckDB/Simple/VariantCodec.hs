@@ -10,6 +10,7 @@
 -- Description : Lossless VARIANT decoding through public V2 values and SQL type metadata.
 module Database.DuckDB.Simple.VariantCodec (
   VariantState,
+  variantConnection,
   newVariantState,
   destroyVariantState,
   prepareVariantDecoder,
@@ -91,9 +92,8 @@ VariantState holds the helper connection, the prepared metadata statement, the
 parsed extraction statement of the last key count, and the cast types. The
 owner of the helper connection destroys the state before the connection.
 
-- A caller connection (CacheState and withVariantState). The type cache of the
-  connection opens the helper connection and the state at the first VARIANT
-  read, and keeps them until the cache closes. The calls run in sequence.
+- Each caller connection reuses its own decoder. See Note [Concurrent VARIANT
+  decoding] in "Database.DuckDB.Simple.Internal".
 
 - A connection's COPY TO reader uses a helper connection of that instance
   for each vector. An extension's COPY TO reader and typed argument readers
@@ -119,6 +119,7 @@ factory. See Note [User casts and the casts of the library] in
 -- the state from one thread at a time. See Note [VARIANT decoding].
 data VariantState = VariantState
   { variantConnection :: DuckDBV2ConnectionHandle
+  -- ^ The helper on which the decoder runs its queries.
   , variantCasts :: DuckDBV2FactoryHandle
   -- ^ The factory of the instance of the helper connection. The decoder casts
   --     with it.

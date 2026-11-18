@@ -101,7 +101,6 @@ library
     Database.DuckDB.Simple.Native
     Database.DuckDB.Simple.Pragma.Internal
     Database.DuckDB.Simple.Result
-    Database.DuckDB.Simple.TypeCache
     Database.DuckDB.Simple.Typed
     Database.DuckDB.Simple.Typed.Aggregate
     Database.DuckDB.Simple.Typed.Table

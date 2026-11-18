@@ -186,15 +186,17 @@ createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 -- for example SMALLINT for 'Data.Int.Int16' and FLOAT for 'Float'. A 'Maybe'
 -- result has the SQL type of its value, and 'Nothing' gives NULL.
 --
--- The result type must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT,
--- FLOAT, DOUBLE, or VARCHAR: 'Bool', 'Int', 'Data.Int.Int8' to
--- 'Data.Int.Int64', 'Word', 'Data.Word.Word8' to 'Data.Word.Word64', 'Float',
--- 'Double', 'Text', 'String', or 'Maybe' of one of them. A newtype over one of
--- them gets its writer with @deriving newtype (FunctionResult)@. Another result
--- type is an error at registration. The finalize callback of DuckDB has no
--- factory, so it cannot make a value of another type. The library writes these
--- types to the memory of the result vector. It does not use the size of the
--- vector: in an ordered window, DuckDB gives a result vector of the size 0.
+-- The result needs a static SQL type declaration. Lists, maps, and records
+-- through 'Database.DuckDB.Simple.Generic.ViaDuckDB' can supply one.
+-- DuckDB resolves the declaration on the database that registers the function.
+--
+-- 'Bool', 8- to 64-bit integers, 'Float', 'Double', 'Text', 'String', and
+-- 'Maybe' of these types write directly into the result vector. A newtype
+-- can inherit that writer with @deriving newtype (FunctionResult)@.
+-- For other results, 'Database.DuckDB.Simple.ToField.toDuckValue' receives
+-- an instance factory that can construct built-in types. For a catalog type,
+-- the encoder can return its underlying value. DuckDB casts that value to
+-- the declared result type.
 --
 -- An exception in a function fails the query. DuckDB can run the functions on
 -- more than one thread at one time, but not on the same state. The aggregate

@@ -206,7 +206,9 @@ createTableFunction :: (FromRow params, TypedRow params, TypedRow row) => Extens
 createTableFunction = createTableFunctionOn . extensionTarget
 
 -- | Register an aggregate function with the loading DuckDB host. The rules of
--- 'Database.DuckDB.Simple.Function.createAggregate' apply.
+-- 'Database.DuckDB.Simple.Function.createAggregate' apply. SQL type declarations
+-- resolve on the loading host. Result encoders use an instance factory
+-- for built-in types, with no catalog lookup on the host.
 createAggregate :: (FromRow args, TypedRow args, FunctionResult result) => Extension -> Text -> Aggregate state args result -> IO ()
 createAggregate = createAggregateOn . extensionTarget
 

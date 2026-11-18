@@ -482,6 +482,7 @@ The SQL workflow stays the same. These changes can affect your code:
   `Either Text TypeDeclaration` in place of `ScalarType`. `FunctionResult` has
   an instance for each type with `ToDuckValue`, so a result can also be, for
   example, a record through `ViaDuckDB`, a list, a `Map`, or a `UUID`.
+  `createAggregate` uses the same result declarations.
 - `Database.DuckDB.Simple` exports new names, for example `connect`,
   `Environment`, `Instance`, `withInstance`, `attachDatabase`,
   `createTableFunction`, `createAggregate`, `Aggregate` with its fields, and

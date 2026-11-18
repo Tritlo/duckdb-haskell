@@ -61,7 +61,8 @@ last reference to the callbacks. See Note [Function argument readers] in
 GEOMETRY has no committed vector layout. The reader casts each GEOMETRY vector
 to BLOB with the factory of the instance, which has only the built-in casts,
 and copies the WKB rows. Extension scalar and aggregate functions use the
-private instance factory for this cast and for type metadata. Other extension
+private instance factory for this cast and for type metadata. An aggregate
+result encoder can borrow the same factory. Other extension
 callbacks write each row to a BLOB vector with `duckdb_v2_vector_set_value`
 and the callback context. This operation uses the built-in default cast.
 

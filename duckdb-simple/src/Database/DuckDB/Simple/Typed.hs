@@ -166,11 +166,11 @@ A scalar or aggregate function belongs to the catalog. Its callbacks can
 run after the registering connection closes. An extension has no managed
 connection, and an aggregate update has no callback context.
 
-A registration takes the host instance factory when available. Otherwise
-the first type or GEOMETRY read that needs a factory opens a private
-instance. GEOMETRY uses the built-in vector cast to BLOB. A VARIANT read
-always needs the private instance because its metadata query can run while
-the caller holds a host instance lock. See Note [VARIANT reads inside callbacks]
+A registration takes the host instance factory when available. An extension
+opens a private instance on the first argument read or aggregate result
+write that needs a factory. GEOMETRY inputs use its built-in cast to BLOB.
+A VARIANT read always needs the private instance because its metadata query
+can run while the caller holds a host instance lock. See Note [VARIANT reads inside callbacks]
 in "Database.DuckDB.Simple.Materialize".
 
 An MVar protects instance creation. Each VARIANT vector gets its own
@@ -182,9 +182,10 @@ the last bound or executing function releases the callbacks.
 -- | Prepare a vector's fields within the current callback's type scope.
 type ArgumentReader = TypeScope -> Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
 
--- | Create the argument reader and its cleanup for one registration.
+-- | Create the argument reader, the action to borrow its instance factory,
+-- and the cleanup for one registration.
 -- Native resources are acquired on demand. See Note [Function argument readers].
-newArgumentReader :: RegistrationTarget -> IO (ArgumentReader, IO ())
+newArgumentReader :: RegistrationTarget -> IO (ArgumentReader, IO DuckDBV2FactoryHandle, IO ())
 newArgumentReader target = do
   hostFactory <- targetCastFactory target
   cache <- newMVar Nothing
@@ -208,7 +209,7 @@ newArgumentReader target = do
         -- See Note [Scoped field types] in "Database.DuckDB.Simple.TypeScope".
         argumentType <- scopedTypeRep scope factory (output (c_duckdb_v2_vector_get_logical_type vector))
         pure \row -> (\value -> Field (argumentName index) index value argumentType) <$> readValue row
-  pure (readArgument, close)
+  pure (readArgument, factory, close)
 
 -- | Describe the arguments that 'Database.DuckDB.Simple.FromField.FromField' or
 -- @FromRow@ cannot convert. The text names each argument with the name of its

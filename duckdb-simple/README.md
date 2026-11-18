@@ -568,7 +568,7 @@ type applies. A value in a LIST, ARRAY, MAP, STRUCT, or UNION reads with the
 same rules, and so does a field of a `ViaDuckDB` record. A SQL type that is not
 in "Reads" raises the error of an incompatible column. See [Errors](#errors).
 
-A function registered with `createFunction` declares the "Declared" type, or
+A function registered with `createFunction` or `createAggregate` declares the "Declared" type, or
 the "Binds as" type if "Declared" is empty, for each argument and its result.
 An argument type needs `FromField` and a declaration. A result
 type needs `ToDuckValue` and a declaration. Some result types write each value
@@ -577,14 +577,14 @@ to 64 bits (TINYINT to BIGINT, UTINYINT to UBIGINT), `Float` (FLOAT), `Double`
 (DOUBLE), `Text` and `String` (VARCHAR), `Maybe` of one of them, and a newtype
 that derives `FunctionResult` from one of them
 (`deriving newtype (FunctionResult)`). Each other result type, for example a
-record or a list, requires a native value for each row. DuckDB casts such a value
-to the declared type, as a SQL `CAST` does: it rounds a value to the scale of a
-DECIMAL type text, and it raises an error for a value that does not fit. A
-result of `createAggregate` must have one of the types that write directly,
-because DuckDB gives the finalize callback no factory to make a value of another
-type, and in an ordered window its result vector has the size 0. For another
-result type, `createAggregate` raises an error at registration. See
-[User-Defined Functions](#user-defined-functions).
+record or a list, requires a native value for each row. DuckDB uses its default
+cast to convert that value to the declared type. For example, it rounds a
+DECIMAL to the declared scale and raises an error if the value does not fit.
+
+An aggregate result encoder receives an instance factory. This factory resolves
+built-in types. DuckDB resolves the result declaration on the registration
+host, so a custom encoder can return the underlying value of a catalog type.
+See [User-Defined Functions](#user-defined-functions).
 
 ## Errors
 
@@ -1618,9 +1618,13 @@ value that a query gives or that a callback reads. Of the casts that the library
 performs itself, only `setConfigValue` and `setConfigOption` use registered
 casts. DuckDB casts the value to the type of the option, as SQL `SET` does.
 
-`createAggregate` registers an aggregate function as a fold. Its result type
-must be one of the types that write directly into the result vector:
-[Types](#types) gives them and the reason.
+`createAggregate` registers an aggregate function as a fold. Its result needs
+`ToDuckValue` and a static `duckdbTypeDeclaration`, as a scalar function result
+does. Lists, maps, and records or sum types through `ViaDuckDB` can be results.
+A `Maybe a` result declares the type of `a`, and `Nothing` gives NULL. Types
+with no static declaration, such as `StructValue`, are errors at registration.
+See [Types](#types) for the encoding rules. Aggregates support `GROUP BY`,
+`DISTINCT`, `FILTER`, `ORDER BY`, and window functions.
 
 ```haskell
 aggregateExample :: Connection -> IO [Only Int64]
@@ -1641,8 +1645,9 @@ for each aggregate that `createAggregate` registers through the connection.
 The default is `defaultAggregateStripes`, 64. No result depends on the number.
 
 Scalar and aggregate registrations create a private helper instance when an
-argument needs VARIANT decoding. A loadable extension also uses this helper
-for type metadata and GEOMETRY reads. The registration shares the instance
+argument needs VARIANT decoding. In a loadable extension, this helper also
+supplies the factory for type metadata, GEOMETRY reads, and aggregate result
+encoders. The registration shares the instance
 across queries until the last native callback owner releases it. Each VARIANT
 vector uses a separate connection and decoder state. The helper uses
 `threads=1` and `async_threads=0`, with no background worker pool. A registration

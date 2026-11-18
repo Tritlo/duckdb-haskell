@@ -32,7 +32,7 @@ import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions)
 import Database.DuckDB.Simple.Conversion (runConversion)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (FieldNull))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
-import Database.DuckDB.Simple.Function.Internal (FunctionResult (..), ScalarValue, prepareResultWriter)
+import Database.DuckDB.Simple.Function.Internal (FunctionResult, prepareAggregateResultWriter)
 import Database.DuckDB.Simple.Internal (Connection (..), ConnectionOptions (..), defaultAggregateStripes)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
@@ -191,15 +191,9 @@ stateStripe :: StateTable -> Int -> IORef IntSet.IntSet
 stateStripe table key = table ! (key `mod` length table)
 
 -- | Register a typed aggregate function on a connection or a loading extension.
--- An argument type or a result type with no declaration raises an error at registration. On a loading
--- extension, GEOMETRY arguments use the lazy helper instance.
--- See Note [Type declarations] in
--- "Database.DuckDB.Simple.ToField". A result type that is not raw also raises an
--- error at registration, because the finalize callback has no factory. See
--- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal". The
--- check of the name, the declarations of the arguments and the result, and the
--- check of a raw result come before the read of the state of the target, so
--- their input errors win over a closed connection.
+-- Check the name and declarations before accessing the registration target.
+-- See Note [Type declarations] in "Database.DuckDB.Simple.ToField" and
+-- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal".
 createAggregateOn
   :: forall state args result
    . (FromRow args, TypedRow args, FunctionResult result) => RegistrationTarget -> Text -> Aggregate state args result -> IO ()
@@ -208,17 +202,7 @@ createAggregateOn target name aggregate = do
     throwInvalidArgument "aggregate function name must be nonempty and must not contain NUL"
   argumentTypes <- rowDeclarations name ["argument " <> argumentName index | index <- [0 ..]] columnTypes
   [resultType] <- rowDeclarations name ["result"] [duckdbTypeDeclaration (Proxy @result)]
-  toRaw <- case rawResult of
-    Just raw -> pure raw
-    Nothing ->
-      throwInvalidArgument
-        ( name
-            <> ": result: the result type of an aggregate function must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT,"
-            <> " FLOAT, DOUBLE, or VARCHAR (Bool, Int8 to Int64, Int, Word8 to Word64, Word, Float, Double, Text, String,"
-            <> " or Maybe of one of them), because the finalize callback has no factory."
-            <> " For a newtype over one of these types, derive FunctionResult with deriving newtype."
-        )
-  (readArgument, closeReader) <- newArgumentReader target
+  (readArgument, acquireFactory, closeReader) <- newArgumentReader target
   -- See Note [State table stripes]. Evaluate the count before the registration.
   -- An unevaluated count keeps the target, and thus the connection, reachable
   -- from the callbacks.
@@ -232,7 +216,7 @@ createAggregateOn target name aggregate = do
             (initializeStates aggregate)
             (updateStates readArgument name aggregate (length columnTypes))
             (combineStates aggregate)
-            (finalizeStates aggregate toRaw)
+            (finalizeStates aggregate acquireFactory)
         )
           { aggregateBindCallback = Just (bindStateTable stripes)
           , aggregateDestroyCallback = Just destroyStates
@@ -333,21 +317,22 @@ combineStates Aggregate{aggregateCombine} info = do
     current <- readIORef target
     aggregateCombine current source >>= evaluate >>= writeIORef target
 
--- | Write the result of each state at its row of the result vector, as a raw
--- value. DuckDB does not destroy the states of a finalize call that fails, so
--- release them here. See Note [Aggregate state life cycle] and
--- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal".
-finalizeStates :: Aggregate state args result -> (result -> ScalarValue) -> DuckDBV2AggregateFunctionFinalizeInfoHandle -> IO ()
-finalizeStates Aggregate{aggregateResult} toRaw info = do
+-- | Write each state at its offset in the result vector. DuckDB does not
+-- destroy the states when finalize fails. See Note [Aggregate state life cycle].
+finalizeStates
+  :: (FunctionResult result) => Aggregate state args result -> IO DuckDBV2FactoryHandle -> DuckDBV2AggregateFunctionFinalizeInfoHandle -> IO ()
+finalizeStates Aggregate{aggregateResult} acquireFactory info = do
   table <- readStateTable (c_duckdb_v2_aggregate_function_finalize_get_bind_data info)
-  count <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_finalize_get_state_count info)
+  count <- output (c_duckdb_v2_aggregate_function_finalize_get_state_count info)
   states <- output (c_duckdb_v2_aggregate_function_finalize_get_states info)
-  let finalize = do
-        offset <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_finalize_get_result_offset info)
-        write <- output (c_duckdb_v2_aggregate_function_finalize_get_result info) >>= prepareResultWriter Nothing
-        forM_ [0 .. count - 1] \index ->
-          peekElemOff states index >>= stateCell >>= readIORef >>= aggregateResult >>= write (offset + index) . toRaw
-  finalize `onException` forM_ [0 .. count - 1] \index -> peekElemOff states index >>= releaseState table
+  let rows = [0 .. fromIntegral count - 1]
+      finalize = when (count /= 0) do
+        offset <- output (c_duckdb_v2_aggregate_function_finalize_get_result_offset info)
+        vector <- output (c_duckdb_v2_aggregate_function_finalize_get_result info)
+        write <- prepareAggregateResultWriter acquireFactory vector (offset + count)
+        forM_ rows \index ->
+          peekElemOff states index >>= stateCell >>= readIORef >>= aggregateResult >>= write (fromIntegral offset + index)
+  finalize `onException` forM_ rows \index -> peekElemOff states index >>= releaseState table
 
 -- | Release each state. See Note [Aggregate state life cycle].
 destroyStates :: DuckDBV2AggregateFunctionDestroyInfoHandle -> IO ()

@@ -26,7 +26,7 @@ module Database.DuckDB.Simple.Function.Internal (
   Function (..),
   createFunctionOn,
   createFunctionWithStateOn,
-  prepareResultWriter,
+  prepareAggregateResultWriter,
 ) where
 
 import Control.Exception (
@@ -86,31 +86,28 @@ import HsBindgen.Runtime.Marshal (staticSizeOf)
 
 {- Note [Result writers]
 ~~~~~~~~~~~~~~~~~~~~~~~~
-A scalar function and a typed aggregate function write their results with
-writeScalarValue. The FunctionResult instance of the result type selects one of
-two paths.
+The FunctionResult instance of a scalar or aggregate result type selects one
+of two paths.
 
 - A raw result (rawResult gives Just): Bool, Int, Int8 to Int64, Word, Word8 to
   Word64, Float, Double, Text, String, and Maybe of one of them. The writer
   writes the value to the memory of the vector, with no native call. A VARCHAR
   value of more than 12 bytes needs 2 native calls for the arena of the vector
   (writeArenaText).
-- A result of each other type (rawResult gives Nothing). toDuckValue makes a
-  native value with the factory of the callback context, and
-  vector_set_value writes it. DuckDB casts the value to the type of the
-  vector. Each such row needs at least 3 native calls: the value, the write,
-  and the destroy. The writer borrows the factory one time for each call, only
-  when a row needs it.
+- For other results, toDuckValue constructs an owned value and vector_set_value
+  copies it into the output vector. DuckDB casts it to the declared result
+  type. A scalar callback uses its context factory. An aggregate finalize
+  callback has no context and borrows the registration's instance factory.
+  This factory resolves built-in types. The registration declares the SQL
+  result type on the host, where catalog types are visible.
 
-The writer reads the logical type of the vector one time for each call
-(prepareResultWriter), with 3 native calls. Each raw value must have the type
-of the vector, else the writer raises an error. Thus a raw write has the width
-of the vector. The writer does not read the size of the vector: in an ordered
-window, the result vector of a finalize call has the size 0.
-
-The finalize callback of an aggregate function has no context, so it has no
-factory. Thus an aggregate result must be a raw result. createAggregateOn in
-"Database.DuckDB.Simple.Typed.Aggregate" checks this at registration.
+A raw writer checks the logical type before writing a value so the width of
+the write matches the vector. It writes at the offset supplied by DuckDB.
+An ordered window can supply a result vector with logical size zero, even
+when there are rows to finalize. vector_set_value checks this size. Before
+writing native values, grow the vector to cover offset + count. Keep the
+existing size when it is larger, since other groups can occupy later rows.
+The native writer borrows no data or validity pointer across a resize.
 -}
 
 -- | The value of one result row. See Note [Result writers].
@@ -304,7 +301,7 @@ registerScalarFunction target name proxy installers = do
   -- See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
   parameters <- rowDeclarations name ["argument " <> argumentName index | index <- [0 ..]] (argumentTypes proxy)
   [result] <- rowDeclarations name ["result"] [returnType proxy]
-  (readArgument, closeReader) <- newArgumentReader target
+  (readArgument, _, closeReader) <- newArgumentReader target
   -- withTarget keeps its factory private. Borrow another one for the signature types.
   withRegistrationFactory target \factory ->
     withTarget
@@ -398,6 +395,24 @@ writeResults context values outVec = do
     write <- prepareResultWriter factory outVec
     forM_ (zip [0 ..] values) (uncurry write)
 
+-- | Write aggregate results into a borrowed vector. The end is the exclusive
+-- upper bound of this finalize call. See Note [Result writers].
+prepareAggregateResultWriter
+  :: (FunctionResult a) => IO DuckDBV2FactoryHandle -> DuckDBV2VectorHandle -> DuckDBIdx -> IO (Int -> a -> IO ())
+prepareAggregateResultWriter acquireFactory vector end = case rawResult of
+  Just raw -> do
+    write <- prepareResultWriter Nothing vector
+    pure (\row -> write row . raw)
+  Nothing -> do
+    size <- output (c_duckdb_v2_vector_get_size vector)
+    when (size < end) (checked (c_duckdb_v2_vector_set_size vector end))
+    factory <- acquireFactory
+    pure (\row -> writeNativeResult vector row . toDuckValue factory)
+
+-- | Copy an owned value into a result row, then release it even if the cast fails.
+writeNativeResult :: DuckDBV2VectorHandle -> Int -> IO DuckDBV2ValueHandle -> IO ()
+writeNativeResult vector row create = bracket create destroyValue (checked . c_duckdb_v2_vector_set_value vector (fromIntegral row))
+
 -- | Prepare a writer for the rows of a flat result vector. The writer does not
 -- change the size of the vector. It reads the logical type of the vector one
 -- time, and it raises an error for a raw value of another type. It writes a
@@ -439,7 +454,7 @@ writeScalarValue factory vector vectorType dataPtr validityPtr idx = \case
     markValid validityPtr idx
     writeArenaText vector dataPtr idx text
   ScalarNative make -> case factory of
-    Just valueFactory -> bracket (make valueFactory) destroyValue (checked . c_duckdb_v2_vector_set_value vector (fromIntegral idx))
+    Just valueFactory -> writeNativeResult vector idx (make valueFactory)
     Nothing -> throwInternalError "the result writer has no factory for a value of this result type"
   where
     raw :: (Storable s) => DuckDBV2LogicalTypeId -> s -> IO ()

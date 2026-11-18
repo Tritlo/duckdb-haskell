@@ -62,11 +62,10 @@ for the upgrade instructions.
   (see the README). An exception in the callback of `registerCast` gives an
   `SQLError` of the type `ErrorTypeMismatch`, and `TRY(CAST(...))` raises the
   error. The section Errors of the README tells why.
-- `createAggregate` registers an aggregate function as a fold over Haskell
-  values. The record `Aggregate` has the initial state and the step, combine,
-  and result functions. DuckDB gives the finalize callback no factory, so the
-  result type must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT,
-  DOUBLE, or VARCHAR.
+- `createAggregate` registers a Haskell fold with initial state, step,
+  combine, and result functions. Its result needs a static SQL declaration
+  and a `ToDuckValue` encoder that works with an instance factory. Examples
+  include nullable GEOMETRY, VARIANT, and records through `ViaDuckDB`.
 - `V2.Registration.registerAggregateFunctionWithCleanup` runs a cleanup
   action when DuckDB releases the last reference to the aggregate's callbacks.
 - `createTableFunction` registers a Haskell function that gives the rows of a

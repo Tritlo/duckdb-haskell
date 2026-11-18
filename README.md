@@ -132,7 +132,7 @@ which supports explicit IO and conversion errors. Query APIs run conversions;
   `ToRow`, including generic deriving.
 - Register scalar functions with `Database.DuckDB.Simple.Function`. SQL
   expressions can call Haskell functions, including functions that return
-  `Maybe` values or run `IO` actions.
+  `Maybe` values or run `IO` actions. Use `createAggregate` to register a Haskell fold.
 - Use `withTransaction` for transactions and `columnCount` and `columnName`
   for statement metadata.
 

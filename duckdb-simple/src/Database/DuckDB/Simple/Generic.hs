@@ -58,8 +58,8 @@
 --
 -- The derived instances encode and decode STRUCT/UNION representations.
 -- Also derive @ToDuckValue@ to use the type as a column of a typed table function,
--- as an argument of a typed aggregate function, or as the result of a scalar
--- function.
+-- as an argument or result of a typed aggregate function, or as the result of
+-- a scalar function.
 --
 -- === Extending this module
 --

@@ -17,6 +17,7 @@ module TypedRegistrationTests (typedRegistrationTests) where
 import Control.Exception (SomeException, bracket, displayException, throwIO, try)
 import Control.Monad (forM, forM_, void, when)
 import Data.Array (listArray)
+import qualified Data.Geometry as G
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64)
 import qualified Data.Map.Strict as Map
@@ -148,7 +149,8 @@ typedRegistrationTests =
     , testCase "aggregate arguments, states, and result types" testAggregateTypes
     , testCase "aggregate exceptions fail the query only" testAggregateErrors
     , testCase "aggregate as a window function and with modifiers" testAggregateModifiers
-    , testCase "aggregate SMALLINT and FLOAT results, and the limit of the result types" testAggregateResultTypes
+    , testCase "aggregate result types and custom result encoders" testAggregateResultTypes
+    , testCase "aggregate native results preserve nullable values in groups and windows" testAggregateNativeResults
     , testCase "aggregate decodes VARIANT list elements across chunks" testAggregateVariant
     , testCase "aggregate states are released" testAggregateRelease
     , testGroup
@@ -654,13 +656,13 @@ testAggregateConnectionRelease :: Assertion
 testAggregateConnectionRelease = withEnvironment \environment -> withInstance environment [] \instance' -> do
   weak <- do
     conn <- connect instance'
-    createAggregate conn "typed_dropped_sum" sumAggregate
+    createAggregate conn "typed_dropped_sum" sumAggregate{aggregateResult = pure . Variant . FieldInt64}
     mkWeakIORef (connectionState conn) (pure ())
   performMajorGC
   performMajorGC
   deRefWeak weak >>= assertBool "the aggregate keeps the connection that registered it" . isNothing
   withConnectionOn instance' \other ->
-    query_ other "SELECT typed_dropped_sum(i) FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
+    query_ other "SELECT typed_dropped_sum(i)::BIGINT FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
 
 -- | Skip the rows with NULL. A group without other rows gives the initial result.
 testAggregateNulls :: Assertion
@@ -839,7 +841,7 @@ testAggregateErrors = withConnection ":memory:" \conn -> do
 
 -- | Declare the true type of a SMALLINT and a FLOAT result. Write them also in
 -- an ordered window, where the result vector of a finalize call has the size 0.
--- Reject a result type that is not raw at registration.
+-- Use the native value encoder for results without a raw writer.
 testAggregateResultTypes :: Assertion
 testAggregateResultTypes = withConnection ":memory:" \conn -> do
   createAggregate
@@ -885,33 +887,81 @@ testAggregateResultTypes = withConnection ":memory:" \conn -> do
     >>= (@?= [("SMALLINT" :: Text, Age 9)])
   createFunction conn "typed_age" (Age 5)
   query_ conn "SELECT typeof(typed_age()), typed_age()" >>= (@?= [("SMALLINT" :: Text, Age 5)])
-  assertSqlError
-    "typed_years: result: the result type of an aggregate function must be BOOLEAN"
-    (createAggregate conn "typed_years" sumAggregate{aggregateResult = pure . Years . fromIntegral})
-  assertSqlError
-    "For a newtype over one of these types, derive FunctionResult with deriving newtype."
-    (createAggregate conn "typed_years" sumAggregate{aggregateResult = pure . Years . fromIntegral})
-  query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name = 'typed_years'"
-    >>= (@?= [Only (0 :: Int64)])
-  let limit = "result: the result type of an aggregate function must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT, DOUBLE, or VARCHAR"
-  assertSqlError
-    ("typed_peak_result: " <> limit)
-    (createAggregate conn "typed_peak_result" sumAggregate{aggregateResult = \total -> pure (Peak "total" (fromIntegral total) "")})
-  assertSqlError
-    ("typed_integer_result: " <> limit)
-    (createAggregate conn "typed_integer_result" sumAggregate{aggregateResult = pure . toInteger})
-  query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('typed_peak_result', 'typed_integer_result')"
-    >>= (@?= [Only (0 :: Int64)])
+  createAggregate conn "typed_years" sumAggregate{aggregateResult = pure . Years . fromIntegral}
+  query_ conn "SELECT typeof(typed_years(i)), typed_years(i) FROM range(10) t(i)"
+    >>= (@?= [("SMALLINT" :: Text, 45 :: Int16)])
+  createAggregate conn "typed_peak_result" sumAggregate{aggregateResult = \total -> pure (Peak "total" (fromIntegral total) "")}
+  query_ conn "SELECT typed_peak_result(i) FROM range(10) t(i)"
+    >>= (@?= [Only (Peak "total" 45 "")])
+  createAggregate conn "typed_integer_result" sumAggregate{aggregateResult = pure . toInteger}
+  query_ conn "SELECT typed_integer_result(i) FROM range(10) t(i)"
+    >>= (@?= [Only (45 :: Integer)])
+  registerCustomType conn "aggregate_total" (TypeExpression "BIGINT")
+  createAggregate conn "typed_alias_result" sumAggregate{aggregateResult = pure . AggregateTotal}
+  query_ conn "SELECT typeof(typed_alias_result(i)), typed_alias_result(i)::BIGINT FROM range(10) t(i)"
+    >>= (@?= [("aggregate_total" :: Text, 45 :: Int64)])
+  createAggregate conn "typed_catalog_encoder" sumAggregate{aggregateResult = pure . CatalogTotal}
+  outcome <- try (query_ conn "SELECT typed_catalog_encoder(i) FROM range(10) t(i)" :: IO [Only Int64])
+  case outcome of
+    Left (err :: SQLError) ->
+      assertBool (show err) ("aggregate_total" `Text.isInfixOf` Text.toLower (sqlErrorMessage err))
+    Right rows -> assertFailure ("catalog lookup in an aggregate encoder succeeded: " <> show rows)
+  query_ conn "SELECT typed_alias_result(i)::BIGINT FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
   assertSqlError
     "typed_struct_result: result: StructValue has no static field types"
     (createAggregate conn "typed_struct_result" sumAggregate{aggregateResult = \_ -> pure (undefined :: StructValue FieldValue)})
   assertInputErrorContaining "aggregate function name must be nonempty" (createAggregate conn "" sumAggregate)
-  -- The result check comes before the state of the connection.
-  closed <- open ":memory:"
-  close closed
-  assertSqlError
-    ("typed_closed_result: " <> limit)
-    (createAggregate closed "typed_closed_result" sumAggregate{aggregateResult = pure . toInteger})
+
+-- | Check native values across chunks and finalize calls with result offsets.
+-- Compare geometry bytes in SQL so that output conversion cannot hide changes.
+testAggregateNativeResults :: Assertion
+testAggregateNativeResults = withConnection ":memory:" \conn -> do
+  let nullable n value = if n `mod` 7 == 0 then Nothing else Just value
+  createAggregate conn "typed_native_variant" countAggregate{aggregateResult = \n -> pure (nullable n (Variant (FieldInt64 n)))}
+  createAggregate
+    conn
+    "typed_native_geometry"
+    countAggregate{aggregateResult = \n -> pure (nullable n (G.PointGeometry (G.PointXY (G.XY (fromIntegral n) 0))))}
+  createAggregate conn "typed_native_nested" countAggregate{aggregateResult = \n -> pure [Just (Variant (FieldInt64 n)), Nothing]}
+  forM_
+    [ ("typed_native_variant", "q::BIGINT IS DISTINCT FROM e")
+    , ("typed_native_geometry", "q::BLOB IS DISTINCT FROM (('POINT (' || e || ' 0)')::GEOMETRY)::BLOB")
+    ]
+    \(name, differs) ->
+      forM_
+        [ (name <> "(i)", "GROUP BY i % 3001", "count(*)", 3001)
+        , (name <> "(i ORDER BY i DESC)", "GROUP BY i % 13", "count(*)", 13)
+        , (name <> "(i) OVER w", "WINDOW w AS (PARTITION BY i % 3 ORDER BY i ROWS BETWEEN 9 PRECEDING AND CURRENT ROW)", "count(*) OVER w", 8192)
+        ]
+        \(call, suffix, expected, rows) -> do
+          let sql =
+                "SELECT count(*)::BIGINT, count(*) FILTER (WHERE "
+                  <> differs
+                  <> ")::BIGINT FROM (SELECT q, CASE WHEN n % 7 <> 0 THEN n END AS e FROM (SELECT "
+                  <> call
+                  <> " AS q, "
+                  <> expected
+                  <> " AS n FROM range(8192) t(i) "
+                  <> suffix
+                  <> "))"
+          query_ conn (Query sql) >>= (@?= [(rows :: Int64, 0 :: Int64)])
+  query_ conn "SELECT typed_native_nested(i) FROM range(10) t(i)"
+    >>= (@?= [Only [Just (Variant (FieldInt64 10)), Nothing]])
+  query_ conn "SELECT typed_native_variant(i) FROM range(0) t(i)"
+    >>= (@?= [Only (Nothing :: Maybe Variant)])
+  createAggregate
+    conn
+    "typed_native_order"
+    Aggregate
+      { aggregateInitial = []
+      , aggregateStep = \seen (Only (value :: Int64)) -> pure (value : seen)
+      , aggregateCombine = \a b -> pure (b <> a)
+      , aggregateResult = pure . reverse
+      }
+  query_
+    conn
+    "SELECT bool_and(actual = expected) FROM (SELECT typed_native_order(i ORDER BY i DESC) AS actual, list(i ORDER BY i DESC) AS expected FROM range(8192) t(i) GROUP BY i % 13)"
+    >>= (@?= [Only True])
 
 -- | Read each BIGINT and NULL from a VARIANT list in aggregate update.
 testAggregateVariant :: Assertion
@@ -994,7 +1044,11 @@ testAggregateRelease = withConnection ":memory:" \conn -> do
         failIn "combine"
         totals <- mapM readIORef [cell | Just cell <- [a, b]]
         if null totals then pure Nothing else newCell (sum totals)
-      result state = failIn "result" >> maybe (pure 0) readIORef state
+      result state = do
+        failIn "result"
+        value <- maybe (pure 0) readIORef state
+        phase <- readIORef failure
+        pure (EncodedTotal value (phase == "encode" && value == 3))
       run phase sql = do
         writeIORef failure phase
         outcome <- try (query_ conn sql :: IO [Only Int64])
@@ -1011,7 +1065,7 @@ testAggregateRelease = withConnection ":memory:" \conn -> do
       { aggregateInitial = Nothing
       , aggregateStep = step
       , aggregateCombine = combine
-      , aggregateResult = result :: Maybe (IORef Int64) -> IO Int64
+      , aggregateResult = result :: Maybe (IORef Int64) -> IO EncodedTotal
       }
   run "" "SELECT typed_release(i) FROM range(5000) t(i) GROUP BY i % 50"
   run "" "SELECT typed_release(i) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM range(100) t(i)"
@@ -1029,6 +1083,9 @@ testAggregateRelease = withConnection ":memory:" \conn -> do
   -- DuckDB does not destroy these states. The release of the bind data releases them.
   run "result" "SELECT typed_release(i) FROM range(20000) t(i) GROUP BY i % 10000"
   run "result" "SELECT typed_release(i) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM range(100) t(i)"
+  -- Earlier rows have already been written when DuckDB fails to cast row 3.
+  run "encode" "SELECT typed_release(i) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM range(10) t(i)"
+  run "" "SELECT typed_release(i) FROM range(10) t(i)"
   void (execute_ conn "SET threads = 4")
   void (execute_ conn "CREATE TABLE typed_numbers AS SELECT i FROM range(300000) t(i)")
   run "" "SELECT typed_release(i) FROM range(20000) t(i) GROUP BY i % 10000 LIMIT 1"
@@ -1253,6 +1310,34 @@ newtype Age = Age Int16
 -- | A newtype over a raw result type, with the catch-all 'FunctionResult'.
 newtype Years = Years Int16
   deriving newtype (DuckDBColumnType, ToDuckValue)
+
+-- | Produce an uncastable value to exercise cleanup after a native write fails.
+data EncodedTotal = EncodedTotal Int64 Bool
+
+instance DuckDBColumnType EncodedTotal where
+  duckdbColumnTypeFor _ = "BIGINT"
+
+instance ToDuckValue EncodedTotal where
+  toDuckValue factory (EncodedTotal value failing)
+    | failing = toDuckValue factory ("typed_release: encode" :: Text)
+    | otherwise = toDuckValue factory value
+
+-- | A catalog type whose encoder needs only the built-in BIGINT factory.
+newtype AggregateTotal = AggregateTotal Int64
+  deriving newtype (ToDuckValue)
+
+instance DuckDBColumnType AggregateTotal where
+  duckdbColumnTypeFor _ = "aggregate_total"
+
+-- | An encoder that requires catalog lookup from its factory.
+newtype CatalogTotal = CatalogTotal Int64
+
+instance DuckDBColumnType CatalogTotal where
+  duckdbColumnTypeFor _ = "aggregate_total"
+
+instance ToDuckValue CatalogTotal where
+  toDuckValue factory (CatalogTotal value) =
+    R.withTypeDeclaration factory (TypeExpression "aggregate_total") \_ -> toDuckValue factory value
 
 -- | A newtype with its own type text.
 newtype Price = Price Double

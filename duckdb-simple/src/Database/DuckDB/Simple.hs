@@ -118,7 +118,7 @@ module Database.DuckDB.Simple (
 import Control.Exception (SomeException, bracket, evaluate, finally, mask, mask_, onException, throwIO, try)
 import Control.Monad (foldM, forM_, void, when, zipWithM_)
 import Data.Array (elems)
-import Data.IORef (atomicModifyIORef', newIORef, writeIORef)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (findIndex)
 import qualified Data.Map.Strict as Map
@@ -397,7 +397,7 @@ A statement owns its parameter values in a Haskell map. A bind constructs the
 replacement map separately. A failed bind releases only the new values.
 A successful bind transfers the complete map and moves the old values into the
 temporary map. The same cleanup releases that map after success or failure.
-Cursor reset and validation keep their existing order.
+Binding resets the cursor before it validates the new parameters.
 -}
 
 -- | Replace all bindings after the action constructs every value successfully.
@@ -407,7 +407,7 @@ replaceStatementBindings stmt action = withStatementHandle stmt \_ ->
   bracket (newIORef IntMap.empty) clearBoundValues \staged -> do
     action stmt{statementBindings = staged}
     mask_ do
-      replacement <- atomicModifyIORef' staged (\values -> (IntMap.empty, values))
+      replacement <- readIORef staged
       previous <- atomicModifyIORef' (statementBindings stmt) (\values -> (replacement, values))
       writeIORef staged previous
 

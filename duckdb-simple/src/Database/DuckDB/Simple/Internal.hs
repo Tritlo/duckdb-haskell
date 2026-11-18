@@ -113,7 +113,7 @@ import Control.Exception (
   try,
   uninterruptibleMask_,
  )
-import Control.Monad (forM, forM_, join, unless, void, when)
+import Control.Monad (foldM, forM, forM_, join, unless, void, when)
 import Data.Array (Array, bounds, inRange, listArray, (!))
 import qualified Data.ByteString as BS
 import Data.Coerce (Coercible, coerce)
@@ -666,24 +666,28 @@ withKeptParameterTypes Statement{statementParameterTypes} =
 -- | Parse SQL and borrow the resulting statements for one action.
 withParsedStatements :: Connection -> Query -> ([DuckDBV2SqlStatementHandle] -> IO a) -> IO a
 withParsedStatements conn query action = withQueryError query $ withConnectionHandle conn \raw ->
-  bracket (parseStatements raw query) (releaseItems (destroy c_duckdb_v2_sql_statement_destroy) . reverse) action
+  bracket (parseStatements raw query) releaseParsed (action . reverse)
 
--- | Parse all SQL into owned handles. Release the most recent handle first on
--- failure. The caller must transfer or release the complete list under a mask.
+-- | Parse SQL into owned handles, most recent first for cleanup. The caller
+-- must transfer or release them under a mask.
 parseStatements :: DuckDBV2ConnectionHandle -> Query -> IO [DuckDBV2SqlStatementHandle]
 parseStatements raw query = mask_ $ withQueryCString query \sql -> do
   iterator <- output (c_duckdb_v2_parse_sql raw sql)
   let destroyIterator = destroy c_duckdb_v2_statement_iterator_destroy iterator
       gather owned = do
-        parsed <- flip onException (releaseItems (destroy c_duckdb_v2_sql_statement_destroy) owned) do
+        parsed <- flip onException (releaseParsed owned) do
           -- Accept cancellation between acquisitions, while every handle has
           -- an owner. Native output acquisition remains masked.
           allowInterrupt
           output (c_duckdb_v2_statement_iterator_next iterator)
-        if parsed == nullHandle then pure (reverse owned) else gather (parsed : owned)
+        if parsed == nullHandle then pure owned else gather (parsed : owned)
   parsed <- gather [] `onException` destroyIterator
-  destroyIterator `onException` releaseItems (destroy c_duckdb_v2_sql_statement_destroy) (reverse parsed)
+  destroyIterator `onException` releaseParsed parsed
   pure parsed
+
+-- | Release the handles from 'parseStatements' in reverse acquisition order.
+releaseParsed :: [DuckDBV2SqlStatementHandle] -> IO ()
+releaseParsed = releaseItems (destroy c_duckdb_v2_sql_statement_destroy)
 
 -- | Prepare a borrowed parsed statement. The native handle copies its SQL.
 createStatementFromParsed :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO Statement
@@ -721,7 +725,7 @@ createStatementWithCollections parent query collections = withQueryError query $
   -- Parse all SQL before selecting one statement. A later syntax error has
   -- precedence over the empty or multiple-statement diagnostics.
   parsed <- parseStatements raw query
-  flip onException (releaseItems (destroy c_duckdb_v2_sql_statement_destroy) (reverse parsed)) $
+  flip onException (releaseParsed parsed) $
     case parsed of
       [statement] -> do
         addStatementCollections query collections statement
@@ -788,10 +792,13 @@ withCollectionStatement conn queryText collections action =
 
 -- | Read the authoritative parameter names in binding order.
 parameterNames :: DuckDBV2SqlStatementHandle -> Int -> IO [Text]
-parameterNames statement count = forM [0 .. count - 1] $ \index ->
-  -- V2 has no bulk name accessor. Its indexed accessor sorts all names on each
-  -- call. SQL text cannot determine the names of a parser-extension statement.
-  output (c_duckdb_v2_sql_statement_get_parameter_name statement (fromIntegral index)) >>= readIdentifier
+parameterNames statement count = reverse <$> foldM readName [] [0 .. count - 1]
+  where
+    -- V2 has no bulk accessor. A parser extension can supply names that
+    -- differ from the statement text. Read the names in binding order.
+    readName names index = do
+      name <- output (c_duckdb_v2_sql_statement_get_parameter_name statement (fromIntegral index)) >>= readIdentifier
+      pure (name : names)
 
 -- | Error raised when an operation targets a closed connection.
 connectionClosedError :: SQLError

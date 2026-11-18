@@ -72,7 +72,7 @@ import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, nullPtr)
-import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
+import Foreign.StablePtr (castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
 
 -- | Bind-phase metadata for a custom COPY TO function.
 data CopyBindInfo = CopyBindInfo
@@ -170,18 +170,16 @@ copyToSide casts readVariant bindFn initFn sinkFn finalizeFn =
       state <-
         restore (mapM (\logical -> output (c_duckdb_v2_logical_type_get_id logical) >>= logicalTypeIdFromNative) types >>= bindFn . CopyBindInfo)
           `onException` releaseItems destroyLogicalType types
-      stable <- newStablePtr state `onException` releaseItems destroyLogicalType types
-      let release = freeStablePtr stable >> releaseItems destroyLogicalType types
-      storage <- newStablePtr (CopyBindingStorage (castStablePtrToPtr stable) types) `onException` release
-      attachOpaque (c_duckdb_v2_copy_to_bind_set_bind_data info) (castPtr (castStablePtrToPtr storage)) copyBindingDestructor
-        `onException` (freeStablePtr storage >> release)
+      stable <- newStablePtr (state, types) `onException` releaseItems destroyLogicalType types
+      attachOpaque (c_duckdb_v2_copy_to_bind_set_bind_data info) (castPtr (castStablePtrToPtr stable)) copyBindingDestructor
+        `onException` (freeStablePtr stable >> releaseItems destroyLogicalType types)
     initialize info _ = do
-      (state, _) <- readCopyBinding (c_duckdb_v2_copy_to_init_get_bind_data info)
+      (state, _) <- readCallbackState (c_duckdb_v2_copy_to_init_get_bind_data info)
       path <- output (c_duckdb_v2_copy_to_init_get_file_path info) >>= readText
       global <- initFn (CopyInitInfo state (Text.unpack path))
       transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_init_set_init_data info)) global
     batch info context = withContextFactory context $ \factory -> do
-      (_, types) <- readCopyBinding (c_duckdb_v2_copy_to_batch_get_bind_data info) :: IO (bindState, [DuckDBV2LogicalTypeHandle])
+      (_, types) <- readCallbackState (c_duckdb_v2_copy_to_batch_get_bind_data info) :: IO (bindState, [DuckDBV2LogicalTypeHandle])
       rows <-
         bracket
           (output (c_duckdb_v2_copy_to_batch_take_input info))
@@ -189,7 +187,7 @@ copyToSide casts readVariant bindFn initFn sinkFn finalizeFn =
           (materializeCollection (callbackReadFactory casts factory) readVariant types)
       transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_batch_set_batch_data info)) rows
     flush info context = withTypeScope \scope -> withContextFactory context \factory -> do
-      (state, types) <- readCopyBinding (c_duckdb_v2_copy_to_flush_get_bind_data info)
+      (state, types) <- readCallbackState (c_duckdb_v2_copy_to_flush_get_bind_data info)
       global <- readCallbackState (c_duckdb_v2_copy_to_flush_get_init_data info)
       rows <- readCallbackState (c_duckdb_v2_copy_to_flush_get_batch_data info)
       -- Bind data owns the types through this callback. Copy them into the
@@ -199,19 +197,9 @@ copyToSide casts readVariant bindFn initFn sinkFn finalizeFn =
       let fields = zipWith3 (\index logical value -> Field (Text.pack ("column" <> show index)) index value logical) [0 ..] columnTypes
       sinkFn (CopySinkInfo state global) (map fields rows)
     finalize info _ = do
-      (state, _) <- readCopyBinding (c_duckdb_v2_copy_to_finalize_get_bind_data info)
+      (state, _) <- readCallbackState (c_duckdb_v2_copy_to_finalize_get_bind_data info)
       global <- readCallbackState (c_duckdb_v2_copy_to_finalize_get_init_data info)
       finalizeFn (CopyFinalizeInfo state global)
-
--- | A bind state and its owned logical descriptors share one native lifetime.
-data CopyBindingStorage = CopyBindingStorage !(Ptr ()) ![DuckDBV2LogicalTypeHandle]
-
--- | Read the row wrapper state with its retained logical descriptors.
-readCopyBinding :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO (a, [DuckDBV2LogicalTypeHandle])
-readCopyBinding getter = do
-  CopyBindingStorage raw types <- readCallbackState getter
-  state <- deRefStablePtr (castPtrToStablePtr raw)
-  pure (state, types)
 
 -- | Release native bind descriptors before their database closes. See
 -- Note [Callback ownership] in "Database.DuckDB.Simple.Callback" for the rules
@@ -223,12 +211,9 @@ releaseCopyBinding raw =
     $ if raw == nullPtr
       then pure ()
       else do
-        let storage = castPtrToStablePtr (castPtr raw) :: StablePtr CopyBindingStorage
-        ( do
-            CopyBindingStorage state types <- deRefStablePtr storage
-            releaseItems destroyLogicalType types `finally` freeStablePtr (castPtrToStablePtr state)
-          )
-          `finally` freeStablePtr storage
+        let stable = castPtrToStablePtr (castPtr raw)
+        (deRefStablePtr stable >>= \(_, types) -> releaseItems destroyLogicalType types)
+          `finally` freeStablePtr stable
 
 foreign export ccall "duckdb_simple_release_copy_binding" releaseCopyBinding :: Ptr Void -> IO ()
 

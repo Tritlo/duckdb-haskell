@@ -72,10 +72,12 @@ tests paths =
           [ "SELECT 'first_instance', haskell_add_one(41::BIGINT);"
           , "SELECT 'first_metadata', haskell_argument_type(1::INTEGER);"
           , "SELECT 'first_alias', haskell_canonical_argument_type(haskell_canonical_bigint(1::INTEGER));"
+          , "SELECT 'first_result', haskell_centroid(1, 2)::BLOB = 'POINT (1 2)'::GEOMETRY::BLOB;"
           , ".open :memory:"
           , loadAgain
           , "SELECT 'second_instance', haskell_add_one(41::BIGINT);"
           , "SELECT 'second_aggregate', haskell_sum(i) FROM range(10000) AS t(i);"
+          , "SELECT 'second_result', haskell_centroid(3, 4)::BLOB = 'POINT (3 4)'::GEOMETRY::BLOB;"
           , "SELECT 'second_metadata', haskell_argument_type(1::INTEGER);"
           , "SELECT 'second_alias', haskell_canonical_argument_type(haskell_canonical_bigint(1::INTEGER));"
           , "SELECT 'second_replacement', amount FROM haskell_missing;"
@@ -83,8 +85,10 @@ tests paths =
           [ ["first_instance", "42"]
           , ["first_metadata", "1"]
           , ["first_alias", "1"]
+          , ["first_result", "true"]
           , ["second_instance", "42"]
           , ["second_aggregate", "49995000"]
+          , ["second_result", "true"]
           , ["second_metadata", "1"]
           , ["second_alias", "1"]
           , ["second_replacement", "42"]
@@ -110,6 +114,15 @@ tests paths =
           ]
           [["object", "true"], ["sum", "8390656"], ["recovered", "7"]]
           ["haskell_variant_sum expects BIGINT payloads"]
+    , testCase "centroid returns native GEOMETRY values and NULL" $
+        checkProcess
+          paths
+          [ "SELECT 'type', return_type FROM duckdb_functions() WHERE function_name = 'haskell_centroid';"
+          , "SELECT 'groups', g, haskell_centroid(x, y)::BLOB IS NOT DISTINCT FROM CASE WHEN g = 1 THEN 'POINT (2 3)'::GEOMETRY::BLOB END FROM (VALUES (1, 1, 2), (1, 3, 4), (1, NULL, 9), (2, NULL, 1)) AS t(g, x, y) GROUP BY g ORDER BY g;"
+          , "SELECT 'empty', haskell_centroid(i, i) IS NULL FROM range(0) AS t(i);"
+          ]
+          [["type", "GEOMETRY"], ["groups", "1", "true"], ["groups", "2", "true"], ["empty", "true"]]
+          []
     , testCase "a GEOMETRY argument" $
         checkProcess
           paths

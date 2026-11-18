@@ -79,6 +79,11 @@ can check that the GEOMETRY reader of the library does not run it. The entrypoin
 `haskell_demo_init_c_api_v2`. DuckDB derives the entrypoint name from the
 file name, so the packaged file must be `haskell_demo.duckdb_extension`.
 
+The example aggregate `haskell_centroid(x, y)` returns a GEOMETRY point, or
+NULL for an empty group. DuckDB resolves its return type on the loading host.
+A custom result encoder receives the extension's private instance factory,
+which resolves built-in types.
+
 Registration code uses ordinary Haskell values and functions:
 
 ```haskell

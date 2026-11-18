@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -37,6 +38,7 @@ register :: Extension -> IO ()
 register extension = do
   registerSum extension
   registerGeometryAggregates extension
+  registerCentroid extension
   Extension.createFunction extension "haskell_variant_echo" (id :: Variant -> Variant)
   Extension.createAggregate extension "haskell_variant_sum" $
     Aggregate
@@ -90,6 +92,22 @@ registerGeometryAggregates extension = do
     pointX :: G.Geometry -> Double
     pointX (G.PointGeometry (G.PointXY (G.XY x _))) = x
     pointX _ = 0
+
+-- | Register the centroid of coordinate pairs. Ignore pairs with NULL coordinates.
+-- Return NULL when no pair remains.
+registerCentroid :: Extension -> IO ()
+registerCentroid extension =
+  Extension.createAggregate extension "haskell_centroid" $
+    Aggregate
+      { aggregateInitial = (0 :: Double, 0 :: Double, 0 :: Int64)
+      , aggregateStep = \(!sx, !sy, !n) (x, y) -> pure (sx + x, sy + y, n + 1)
+      , aggregateCombine = \(ax, ay, an) (bx, by, bn) -> pure (ax + bx, ay + by, an + bn)
+      , aggregateResult = \(sx, sy, n) ->
+          pure $
+            if n == 0
+              then Nothing
+              else Just (G.PointGeometry (G.PointXY (G.XY (sx / fromIntegral n) (sy / fromIntegral n))))
+      }
 
 -- | A BIGINT argument whose decoder reads its native metadata.
 newtype ArgumentType = ArgumentType Int64

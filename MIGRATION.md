@@ -173,17 +173,11 @@ The SQL workflow stays the same. These changes can affect your code:
   `SQLError` with the message `duckdb-simple: field type scope is closed`,
   including an action whose result was cached. Read `LogicalTypeRep` inside
   the scope to retain a pure snapshot after closure.
-- The metadata cache stores successful reads only. Cancellation or another IO
-  exception permits a retry while the owning scope remains open. Scope
-  closure releases native types and clears the cache. Metadata has no C
-  finalizer shim. Existing statement and connection finalizers are unchanged.
-  Type conversion runs in explicit IO; it performs no hidden IO in a pure
-  value.
 - `returnError` defers diagnostic metadata until the final conversion fails.
-  A successful `Alternative` branch discards the other branch's diagnostic
-  without reading its type or ENUM dictionary. A completed `ResultError` is
-  pure; rendering it performs no native IO. Query and callback decoders resolve
-  these diagnostics before their metadata scope closes.
+  A successful `Alternative` branch discards the other branch's diagnostic.
+  Completed `ResultError` values remain pure. See
+  [Decoding rows](duckdb-simple/README.md#decoding-rows) for metadata reads,
+  retries, and scope rules.
 - Generic decoding also uses `Conversion a`. Update the `DuckValue` methods
   `duckFromField` and `duckFromTypedField`, plus calls to `typedFromField` and
   `genericFromFieldValue`, that used `Either String a`. Define
@@ -299,7 +293,9 @@ The SQL workflow stays the same. These changes can affect your code:
 - `ConnectionOptions` removes `connectionGeometryCRS`. Remove this field from
   record construction and record updates. Remove its argument from positional
   construction and patterns. Parameter binding resolves custom CRS labels on
-  demand. No connection option is needed.
+  demand. No connection option is needed. The exposed
+  `Database.DuckDB.Simple.Internal` module also removes `withTypeCache`.
+  Parameter construction no longer needs a connection type cache.
 - A conversion error names the types `TIMESTAMPTZ` and `TIMETZ`, in
   `errSQLType` and in the message of the `SQLError`. Version 0.3 gave
   `TIMESTAMP_TZ` and `TIME_TZ`. Change code that matches the old texts.

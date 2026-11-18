@@ -20,14 +20,10 @@
 --   'ExtensionEntry' and does nothing else. DuckDB finds the entry point from the file name @NAME.duckdb_extension@.
 -- - The threaded runtime. Link the extension with @-threaded@. Otherwise the load fails with an error.
 --
--- These steps build, package, and load an extension:
---
--- 1. Build the foreign library with Cabal in a project that enables the two flags, as
---    @dev\/extensions\/cabal.project@ and @dev\/extensions\/example\/duckdb-haskell-extension-example.cabal@ do.
--- 2. Append the DuckDB metadata to the library with @dev\/extensions\/Pack.hs@, as @dev\/extensions\/PACKAGING.md@
---    shows.
--- 3. Load the file with @LOAD@ in a DuckDB 2.0.0 process that accepts unsigned extensions, as
---    @dev\/extensions\/example\/test\/Main.hs@ does with @duckdb -unsigned@.
+-- The <https://github.com/Tritlo/duckdb-haskell/blob/fc494d8bdf8226f19fb8551f5ac8049f2d1d9920/dev/extensions/README.md extension recipe>
+-- gives the build, packaging, loading, and test commands. Use a repository checkout that matches the package
+-- sources. The recipe and example are not included in the Hackage archives. This module describes the entry point,
+-- typed registrations, and resource lifetimes.
 --
 -- The Haskell side of a small extension, from @dev\/extensions\/example\/src\/Demo.hs@:
 --
@@ -83,9 +79,8 @@
 -- - The example links the GHC and package libraries dynamically. It loads only on a machine where its run paths
 --   exist.
 --
--- The complete example is in the directory @dev\/extensions\/example\/@ of the repository
--- <https://github.com/Tritlo/duckdb-haskell>. Its file @src\/Advanced.hs@ registers the other kinds of SQL objects.
--- @dev\/extensions\/README.md@ has the commands that build, package, test, and load it.
+-- The complete example is in the directory @dev\/extensions\/example\/@ of the repository.
+-- Its file @src\/Advanced.hs@ registers the other kinds of SQL objects.
 module Database.DuckDB.Simple.Extension (
   Extension,
   ExtensionEntry,

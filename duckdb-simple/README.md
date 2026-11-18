@@ -1350,25 +1350,14 @@ import Database.DuckDB.Simple.Geometry
 rows <- query conn "SELECT ?" (Only raw) :: IO [Only RawGeometry]
 ```
 
-You can also import the bytes with explicit SQL:
-
-```haskell
-rows <- (case rawGeometryCRS raw of
-    Nothing -> query conn
-        "SELECT system.main.ST_GeomFromWKB(?)"
-        (Only (rawGeometryWKB raw))
-    Just crs -> query conn
-        "SELECT system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?)"
-        (rawGeometryWKB raw, crs)
-    ) :: IO [Only RawGeometry]
-```
-
-Use `Nothing` for no CRS and omit `ST_SetCRS` in that case. Passing SQL NULL
-to `ST_SetCRS` returns a NULL geometry. CRS text can contain `OGC:CRS84`,
-a custom name, or a full WKT2/PROJJSON definition. DuckDB can reduce a known
-CRS definition to its registered identifier. It can also normalize WKB byte
-order. The qualified function names select DuckDB's built-ins even if a user
-macro has the same name.
+For explicit SQL import, use `system.main.ST_GeomFromWKB(?)` with the WKB
+bytes. To attach a CRS, use
+`system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?)` with the bytes and CRS
+text. Omit `ST_SetCRS` for no CRS: a NULL CRS argument returns NULL geometry.
+CRS text can be a recognized name, a custom label, or WKT2/PROJJSON text.
+DuckDB can normalize WKB byte order and reduce a known CRS definition to its
+registered identifier. The qualified names select the built-ins even if a
+user macro has the same name.
 
 `fromRawGeometry` decodes the shape and drops CRS metadata. `toRawGeometry`
 encodes a shape with no CRS. These helpers follow the geometry-simple contracts.
@@ -1740,10 +1729,12 @@ filter pushdown.
 
 `Database.DuckDB.Simple.Extension` registers the typed functions of this package
 from a loadable DuckDB extension. Build the extension with the `extension` flag
-of `duckdb-ffi` and of `duckdb-simple`. The Haddock of the module explains how
-to write, build, package, and load an extension. The directory `dev/extensions/`
-of the [repository](https://github.com/Tritlo/duckdb-haskell) has a complete
-example. CI builds and tests it.
+of `duckdb-ffi` and of `duckdb-simple`. The module's Haddock describes the
+entry point, typed registrations, and resource lifetimes. The repository's
+[extension recipe](https://github.com/Tritlo/duckdb-haskell/blob/fc494d8bdf8226f19fb8551f5ac8049f2d1d9920/dev/extensions/README.md)
+has the build, packaging, loading, and test commands. Use a repository checkout
+that matches the package sources. The recipe and example are not included in
+the Hackage archives. CI builds and tests the example.
 
 ## Tests
 

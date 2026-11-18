@@ -442,29 +442,22 @@ their result:
   payloads ("Database.DuckDB.Simple.VariantCodec"). The codec also reads a
   GEOMETRY payload. It uses the factory of the instance of its helper
   connection (variantCasts).
-- Values. rawGeometryDuckValue casts a BLOB value to GEOMETRY, the ToDuckValue
-  instance of Geometry casts a VARCHAR value to GEOMETRY, enumDuckValue casts a
-  VARCHAR value to an ENUM type, and variantDuckValue casts a value to VARIANT
-  ("Database.DuckDB.Simple.ToField"). Each of them writes the value to a vector
-  of the target type with one row, and reads the row (defaultCast). The header
-  says that duckdb_v2_vector_set_value casts "through the non-strict default
-  cast". Thus the cast does not depend on the factory. The factory still makes
-  the target type, and only the factory of a connection or of a callback
-  context can make a GEOMETRY type with a CRS. See Note [Raw GEOMETRY
-  parameters] in "Database.DuckDB.Simple.ToField".
+- Values. rawGeometryDuckValue casts BLOB to GEOMETRY, the ToDuckValue instance
+  of Geometry casts VARCHAR to GEOMETRY, enumDuckValue casts VARCHAR to ENUM,
+  and variantDuckValue casts its payload to VARIANT
+  ("Database.DuckDB.Simple.ToField"). defaultCast writes each value to a
+  one-row vector of the target type and reads it back. vector_set_value uses
+  "the non-strict default cast". This is the documented cell writer for
+  GEOMETRY and VARIANT, which have no committed view layout. For ENUM, it avoids
+  value_cast, which includes registered casts: a VARCHAR-to-ENUM user cast
+  must not change the label of a FieldEnum. The factory still resolves the
+  target type; only a connection or callback factory can construct a GEOMETRY
+  type with a CRS. See Note [Raw GEOMETRY parameters] in
+  "Database.DuckDB.Simple.ToField". UNION values use a vector to preserve the
+  explicit member tag; see Note [UNION values] in that module.
 - The bind-time CRS query constructs a point with ST_GeomFromGeoJSON
   and binds the label as VARCHAR. It needs no user cast. See Note [Bind-time CRS types] in
   "Database.DuckDB.Simple.V2.LogicalRep".
-
-Why a vector for the values. For GEOMETRY and VARIANT, the header calls
-duckdb_v2_vector_set_value "the only way to write a cell". For an ENUM, the
-header calls a cast of a VARCHAR to an enum type with duckdb_v2_value_cast "the
-sanctioned way to build UNION and ENUM values", and that cast includes
-"registered custom casts". enumDuckValue does not use that cast, on purpose.
-The library builds an ENUM value from the label of a FieldEnum, and a user
-cast from VARCHAR to the ENUM type must not change that value. A UNION value
-is built through a vector for another reason. See Note [UNION values] in
-"Database.DuckDB.Simple.ToField".
 
 These casts still use the cast functions of the session, so a user cast for
 the same pair changes their result:

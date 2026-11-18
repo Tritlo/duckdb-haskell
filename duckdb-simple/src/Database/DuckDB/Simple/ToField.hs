@@ -608,10 +608,9 @@ integerBinding binds an Integer or a Natural parameter with this rule:
     in SELECT ?, binds as a BIGNUM. A cast that DuckDB adds later can still
     have the defects above.
   - A BigNum always binds as a BIGNUM.
-  - A SizedArray or a list of Integer values for a target with no known type, or
-    for a target with an element type that is not an integer type or a DECIMAL
-    type, has BIGNUM elements. A cast that DuckDB adds later can still have
-    the defects above.
+
+  Collection values infer their common type as described below and in
+  Note [Element types of a list].
 
 - toDuckValue. ToDuckValue Integer and ToDuckValue Natural use the same range
   rule (hugeIntInRange): a value from -2^127 to 2^127 - 1 gives a HUGEINT
@@ -1623,52 +1622,31 @@ needsDeclaredType = containsType declared
     declared _ = False
 
 {- Note [UNION values]
-~~~~~~~~~~~~~~~~~~~~~~
-unionValueDuckValue builds a UNION value through a vector with one row (route
-(a) below). It writes the tag and the member into the child vectors, and reads
-the row as a value. The header documents the layout and the write: the children
-of a UNION vector are "[0] = the tag with [1..N] = the members", and a write of
-a value to a vector uses "the non-strict default cast". The write needs FLAT
-child vectors. In DuckDB 2.0.0 the children of a new vector are FLAT, but the
-header does not say this. See Note [Vector flatten] in
-"Database.DuckDB.Simple.Materialize".
+~~~~~~~~~~~~~~~~~~~~~
+V2 has no constructor for a UNION value. unionValueDuckValue writes the tag
+and active member into a one-row UNION vector, sets the inactive members to
+NULL, and reads the row as a value. The header specifies child 0 as the tag
+and children 1 to N as the members. vector_set_value uses the non-strict
+default cast, so a user cast cannot change the payload. See Note [User casts
+and the casts of the library] in "Database.DuckDB.Simple.Materialize".
 
-V2 has no constructor for a UNION value. A run with DuckDB 2.0.0 tried four
-routes in eight cases: two BIGINT members with the tag of the first member, and
-with the tag of the second member; a NULL payload of two BIGINT members; 255
-INTEGER members; a member that is a UNION with a member name of the outer UNION;
-a STRUCT member with a UTINYINT field and a VARCHAR field with the name of the
-member; a collated VARCHAR member; and a GEOMETRY('OGC:CRS84') member.
+The header recommends casting a member value to the UNION type, but that cast
+selects the member by type. It is ambiguous for two BIGINT members or a nested
+UNION with a member name of the outer UNION. An intermediate UNION with only
+the active member still fails for the nested UNION and for a STRUCT that
+DuckDB interprets as the STRUCT form of a UNION. Casting a STRUCT with a
+UTINYINT tag and one field per member is another alternative, but the header
+does not document that cast.
 
-- (a) The vector route. It gives the correct value in each of the eight cases,
-  and it runs no cast that a user registers.
-- (b) The cast of a STRUCT with a UTINYINT tag field and one field for each
-  member, written to a one-row vector of the UNION type with the default cast,
-  as defaultCast does. It gives the correct value in each of the eight cases,
-  and it runs no cast that a user registers. The header does not document this
-  cast.
-- (c) The cast of the member value to the UNION type. The header calls it "the
-  sanctioned way to build UNION and ENUM values". DuckDB chooses the member by
-  the type of the value. Thus the cast is ambiguous when two members have the
-  same type, as in a generic sum type whose constructors have equal fields, and
-  for a member that is a UNION with a member name of the outer UNION. It fails
-  in the first five cases. With the factory of a connection or of a callback
-  context, the cast also runs the casts that a user registers.
-- (c1) The cast of the member value to a UNION with only that member, and then
-  the cast of that UNION to the full UNION. It gives the correct value for two
-  members of one type. It fails for a member that is a UNION with a member name
-  of the outer UNION ("The cast is ambiguous"), and for the STRUCT member, which
-  DuckDB reads as the STRUCT form of the UNION.
-
-Thus (a) is correct in each case and uses the layout and the write that the
-header documents. DuckDB does not document two
-facts: that the children of a new vector are FLAT, which (a) needs, and the cast
-of a STRUCT to a UNION, which (b) needs. If a later DuckDB gives a new vector
-other children, (a) can write a wrong value or fail. These cases bind a UNION
-value and compare the value that DuckDB gives back, so they show such a change:
-"a UNION value binds the member of its tag up to the member limit of DuckDB" and
-"UNION NULL payload retains its member type" in ValueRegressionTests.hs, and
-"round-trips struct and union parameters" in Spec.hs.
+The vector construction uses the documented layout and writes. It requires
+FLAT child vectors. DuckDB 2.0.0 supplies them in a new vector, but the header
+does not guarantee this for the children. A change can make the writes fail
+or give a wrong value. See Note [Vector flatten] in
+"Database.DuckDB.Simple.Materialize". Regression cases check the selected
+member at the 255-member limit and a NULL payload in ValueRegressionTests.hs
+("a UNION value binds the member of its tag up to the member limit of DuckDB"
+and "UNION NULL payload retains its member type"). Spec.hs also checks
+"round-trips struct and union parameters".
 -}
 
 -- | Build one UNION row through its tag and member vectors. See
@@ -1899,76 +1877,53 @@ quotedCRS :: Text -> Text
 quotedCRS crs = "'" <> crs <> "'"
 
 {- Note [Raw GEOMETRY parameters]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-A raw geometry is a RawGeometry: WKB bytes and an optional CRS. A result
-gives a raw geometry for a GEOMETRY value, and a FieldGeometry value for a
-GEOMETRY value in a STRUCT, a TUPLE, a UNION, a LIST, an ARRAY, a MAP, or a
-VARIANT. A user can also construct a raw geometry.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+RawGeometry holds WKB bytes and an optional CRS. GEOMETRY results use this
+representation, including FieldGeometry values inside composite values.
+rawGeometryDuckValue casts a BLOB of the bytes to the declared GEOMETRY type.
+It uses the default cast, so a user cast cannot change the value. See
+Note [User casts and the casts of the library] in
+"Database.DuckDB.Simple.Materialize".
 
-A top-level RawGeometry parameter (ToField RawGeometry) binds as a GEOMETRY
-value with the CRS of the raw geometry. It uses rawGeometryDuckValue with
-that CRS as the declared CRS, so the CRS check below always passes. DuckDB
-then casts the value to the type of the parameter, as it casts a GEOMETRY
-value in SQL text:
+A top-level RawGeometry parameter declares its own CRS. DuckDB then applies
+the casts of SQL text to the parameter's target type:
 
-- A value without a CRS takes the CRS of a target that has a CRS.
-- A target without a CRS removes the CRS of the value. No error occurs.
+- A value without a CRS takes the CRS of a target that has one.
+- A target without a CRS removes the CRS without an error.
 - A target with another CRS raises "Binder Error: Cannot cast GEOMETRY with
   CRS ... to GEOMETRY with different CRS ...". A comparison with = has the
   same rule.
 
-RawGeometry has no DuckDBColumnType instance and no ToDuckValue instance.
-Thus a SizedArray or a list of raw geometries and a typed row cannot hold one. Their
-declared element type or column type would be GEOMETRY without a CRS, and
-DuckDB would remove the CRS of each value.
+In a STRUCT, TUPLE, or UNION, the CRS of each raw geometry must equal its
+declared CRS, including when both have no CRS. A mismatch raises SQLError
+with ErrorInputInvalid. The BLOB cast assigns the declared CRS without
+checking the original label, so omitting this check could change or remove
+the label silently. The statement builder resolves CRS types at bind time.
+See Note [Bind-time CRS types] in "Database.DuckDB.Simple.V2.LogicalRep".
+A plain GEOMETRY declaration has no CRS and uses the factory's plain builder.
 
-A STRUCT, TUPLE, UNION, or Variant parameter binds each raw geometry that it
-contains with this rule:
+A VARIANT accepts raw geometry only without a CRS. DuckDB silently removes
+CRS metadata when it casts GEOMETRY to VARIANT, so the binding rejects a
+CRS-tagged payload with ErrorInputInvalid. RawGeometry has no
+DuckDBColumnType or ToDuckValue instance. A list or SizedArray of RawGeometry,
+or a typed row containing it, would declare GEOMETRY without a CRS and lose
+the labels.
 
-- The CRS of the value must be equal to the CRS of the declared GEOMETRY
-  type. A value without a CRS agrees only with a type without a CRS. If
-  the two are different, rawGeometryDuckValue raises an SQLError with the
-  type ErrorInputInvalid.
-- rawGeometryDuckValue makes a BLOB value from the WKB bytes. Then it casts
-  the BLOB value to the declared GEOMETRY type with the default cast of
-  DuckDB (defaultCast).
-  The builder of the statement resolves the CRS when it binds. See
-  Note [Bind-time CRS types] in "Database.DuckDB.Simple.V2.LogicalRep".
-- A declared type that is only the type id GEOMETRY has no CRS. The binding
-  uses the plain builder of the factory for it.
-- A VARIANT accepts a raw geometry without a CRS. The payload is a GEOMETRY
-  without a CRS. A raw geometry with a CRS in a VARIANT raises an SQLError
-  with the type ErrorInputInvalid.
-- The factory of an instance cannot construct a GEOMETRY type with a CRS.
-  DuckDB raises "Binder Error: Cannot create GEOMETRY type with coordinate
-  system without a connection". Thus toDuckValue with the factory of an
-  instance raises this error for a raw geometry with a CRS. It also raises
-  this error for a typed NULL with a CRS. The factory of a connection does
-  not have this limit.
+An instance factory cannot construct a GEOMETRY type with a CRS. It raises
+"Binder Error: Cannot create GEOMETRY type with coordinate system without a
+connection". This limits toDuckValue for composite values with CRS-tagged
+geometry leaves, including typed NULLs. A connection factory has no such
+limit.
 
-- Why the bytes do not change. DuckDB 2.0.0 stores a GEOMETRY value as WKB.
-  The cast from BLOB to GEOMETRY reads the bytes with Geometry::FromBinary.
-  ST_GeomFromWKB uses the same function (src/function/cast/geo_casts.cpp and
-  src/function/scalar/geometry/geometry_functions.cpp). The cast from
-  GEOMETRY to BLOB copies the stored bytes (Geometry::ToBinary in
-  src/common/types/geometry.cpp). The result reader uses that cast
-  (prepareGeometryReader in "Database.DuckDB.Simple.Materialize"). Thus the
-  bytes of a result bind again with no change. The cast changes bytes that
-  DuckDB does not write: it writes big-endian WKB and EWKB as little-endian
-  ISO WKB. The cast rejects WKB that DuckDB cannot store, for example a
-  collection with members of different Z/M layouts.
-
-- Why a CRS mismatch is an error. A BLOB value has no CRS. The cast gives
-  the CRS of the declared type to the value. Without the check, a value
-  could get a different CRS or lose its CRS, and no error would occur.
-
-- Why a top-level parameter has no such check. Its declared type is the type
-  of its own CRS. The casts after the bind are the casts of SQL text, and the
-  library adds no rule to them.
-
-- Why a VARIANT accepts only a value without a CRS. A VARIANT keeps a
-  GEOMETRY without its CRS. DuckDB removes the CRS when it casts a GEOMETRY
-  with a CRS to VARIANT, and it gives no error.
+DuckDB 2.0.0 stores GEOMETRY as WKB. The BLOB cast and ST_GeomFromWKB both use
+Geometry::FromBinary (src/function/cast/geo_casts.cpp and
+src/function/scalar/geometry/geometry_functions.cpp). The result reader casts
+GEOMETRY to BLOB with Geometry::ToBinary, which copies the stored bytes
+(src/common/types/geometry.cpp). Thus a result binds again with the same
+bytes. Import can normalize other input: big-endian WKB and EWKB become
+little-endian ISO WKB. It rejects collections with different Z/M member
+layouts. GeometryRegressionTests.hs covers result rebinding, top-level CRS
+casts, composite CRS mismatches, and nested typed NULLs.
 -}
 
 -- | Cast the payload to VARIANT with the default cast of DuckDB. See

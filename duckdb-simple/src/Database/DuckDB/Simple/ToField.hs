@@ -149,8 +149,8 @@ class (DuckDBColumnType a) => ToDuckValue a where
   --     header gives no rule for a value after the owner of its factory ends.
   --     A value with a GEOMETRY type that has a CRS needs the factory of a
   --     connection or of a callback context, because the factory of an
-  --     instance cannot make that type. Use 'ToField' to resolve arbitrary CRS
-  --     labels from connection options.
+  --     instance cannot make that type. Use 'ToField' to resolve a custom CRS
+  --     label when binding a parameter.
   toDuckValue :: ValueFactory -> a -> IO NativeValue
 
 valueBinding :: String -> (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle) -> FieldBinding

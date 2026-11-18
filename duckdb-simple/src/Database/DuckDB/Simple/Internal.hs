@@ -319,9 +319,8 @@ data ConnectionOptions = ConnectionOptions
   }
   deriving (Eq, Show)
 
--- | No configuration flags, the CRS @OGC:CRS84@, the default bound for a
--- callback that waits for the connection lock, the default number of
--- aggregate stripes, and the default Arrow batch size.
+-- | Open without configuration flags and use the default callback lock wait,
+-- aggregate stripe count, and Arrow batch size.
 defaultConnectionOptions :: ConnectionOptions
 defaultConnectionOptions =
   ConnectionOptions
@@ -1254,7 +1253,7 @@ clearBoundValues ref = mask_ $ atomicModifyIORef' ref (IntMap.empty,) >>= releas
 An open statement keeps a cache of two schemas (statementSchemaCache): the
 schema of its result and the schema of its parameters. statementSchemas fills
 the cache on its first call. It runs the metadata bind
-(duckdb_v2_statement_bind) on the parsed copy of the statement under the
+(duckdb_v2_statement_bind) on the retained parsed statement under the
 connection lock, and it stores both handles. The next calls give the same
 handles until the cache is empty again. columnCount and columnName in
 "Database.DuckDB.Simple" read the result schema, and preparedParameterType

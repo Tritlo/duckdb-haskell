@@ -831,7 +831,8 @@ instance GFromField' 'False (M1 D meta U1) where
 -- of the generic logical type, for diagnostics. The declaration is the
 -- structured generic logical type. Each field type comes from 'DuckValue'.
 -- See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
--- See Note [Sized ARRAY bounds] in "Database.DuckDB.Simple.Native".
+-- See Note [Sized ARRAY bounds] in
+-- <src/Database.DuckDB.Simple.Native.html Database.DuckDB.Simple.Native>.
 instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
   duckdbTypeDeclaration _
     | containsType invalidArray logical =

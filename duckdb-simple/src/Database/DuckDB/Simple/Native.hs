@@ -433,7 +433,7 @@ withOwnedVector factory logicalType action =
 -- duckdb_v2_vector_set_value writes the value to the row. The header says that
 -- this call casts "through the non-strict default cast". Then the action reads
 -- the vector. See Note [User casts and the casts of the library] in
--- "Database.DuckDB.Simple.Materialize".
+-- <src/Database.DuckDB.Simple.Materialize.html Database.DuckDB.Simple.Materialize>.
 withDefaultCastVector
   :: DuckDBV2FactoryHandle
   -> DuckDBV2LogicalTypeHandle

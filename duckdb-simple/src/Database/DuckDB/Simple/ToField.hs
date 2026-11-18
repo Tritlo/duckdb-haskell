@@ -1945,7 +1945,7 @@ utcTimestampNsDuckValue factory value =
 
 -- | Cast the WKT text of the shape to GEOMETRY with the default cast of DuckDB.
 -- See Note [User casts and the casts of the library] in
--- "Database.DuckDB.Simple.Materialize".
+-- <src/Database.DuckDB.Simple.Materialize.html Database.DuckDB.Simple.Materialize>.
 instance ToDuckValue G.Geometry where
   toDuckValue factory geometry = do
     wkt <- either (throwInvalidArgument . Text.pack) pure (WKT.encodeWKT geometry)

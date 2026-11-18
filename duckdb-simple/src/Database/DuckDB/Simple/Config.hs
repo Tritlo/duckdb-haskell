@@ -136,7 +136,7 @@ withConfigOptionValue conn name action = withConnectionHandle conn \handle -> do
 -- An unknown option name raises t'SQLError'. A VARIANT value gives the value
 -- that it holds, as in a result. A GEOMETRY value reads with the factory of the
 -- instance. See Note [User casts and the casts of the library] in
--- "Database.DuckDB.Simple.Materialize". The function releases all native
+-- <src/Database.DuckDB.Simple.Materialize.html Database.DuckDB.Simple.Materialize>. The function releases all native
 -- handles before it returns.
 getConfigValue :: Connection -> Text -> IO (FieldValue, SettingScope)
 getConfigValue conn name = do

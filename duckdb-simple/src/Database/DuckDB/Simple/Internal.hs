@@ -335,7 +335,8 @@ defaultCallbackLockWait :: Int
 defaultCallbackLockWait = 10000000
 
 -- | The default of 'connectionAggregateStripes': 64 stripes. See
--- Note [State table stripes] in "Database.DuckDB.Simple.Typed.Aggregate".
+-- Note [State table stripes] in
+-- <src/Database.DuckDB.Simple.Typed.Aggregate.html Database.DuckDB.Simple.Typed.Aggregate>.
 defaultAggregateStripes :: Int
 defaultAggregateStripes = 64
 
@@ -444,11 +445,12 @@ data StatementStreamColumn = StatementStreamColumn
   , statementStreamColumnTree :: IORef (Maybe LogicalTypeRep)
   -- ^ The type tree of the column, converted from the vector of the first chunk
   -- that needs it. Each execution makes new columns, so the tree lives for one
-  -- execution. See Note [Type trees] in "Database.DuckDB.Simple.Materialize".
+  -- execution. See Note [Type trees] in
+  -- <src/Database.DuckDB.Simple.Materialize.html Database.DuckDB.Simple.Materialize>.
   , statementStreamColumnLabels :: IORef (IntMap.IntMap Text)
   -- ^ The ENUM labels that the readers of the column read, by index. They live
   -- for one execution, as the tree. See Note [ENUM labels] in
-  -- "Database.DuckDB.Simple.Materialize".
+  -- <src/Database.DuckDB.Simple.Materialize.html Database.DuckDB.Simple.Materialize>.
   }
 
 -- | One owned chunk and the readers that borrow its vectors.
@@ -900,7 +902,7 @@ Note [Callback marks] in "Database.DuckDB.Simple.CallbackMark".
 -- of the connection ('connectionCallbackLockWait'), and then raises an t'SQLError' of
 -- the type 'ErrorResourceInUse'. Each other thread waits without a bound. See
 -- Note [Connection lock], and Note [Callback marks] in
--- "Database.DuckDB.Simple.CallbackMark".
+-- <src/Database.DuckDB.Simple.CallbackMark.html Database.DuckDB.Simple.CallbackMark>.
 --
 -- The take of the lock is masked. The timeout of the bound can thus arrive only
 -- while 'takeMVar' blocks, and then the take has not occurred. After the take,

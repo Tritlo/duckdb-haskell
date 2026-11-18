@@ -46,9 +46,9 @@ import Data.Fixed (Pico)
 import qualified Data.Geometry as G
 import qualified Data.Geometry.WKT as WKT
 import Data.Int (Int16, Int32, Int64, Int8)
-import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Proxy (Proxy (..))
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time.Calendar (Day, diffDays, fromGregorian)
@@ -2049,9 +2049,9 @@ variantPayloadType value = case value of
   FieldTuple TupleValue{tupleValueFields} -> pure (LogicalTypeList variant, FieldList (elems tupleValueFields))
   FieldStruct structValue@StructValue{structValueTypes} -> do
     let names = map structFieldName (elems structValueTypes)
-    when (length names /= length (List.nub names)) $
+    when (Set.size (Set.fromList names) /= length names) $
       throwInvalidArgument "VARIANT objects need unique keys"
-    when (not (null names) && all Text.null names) $
+    when (names == [Text.empty]) $
       throwInvalidArgument "DuckDB's C API cannot construct a VARIANT object with only an empty key"
     let types = fmap (\field -> field{structFieldValue = variant}) structValueTypes
     pure (LogicalTypeStruct types, FieldStruct structValue{structValueTypes = types})

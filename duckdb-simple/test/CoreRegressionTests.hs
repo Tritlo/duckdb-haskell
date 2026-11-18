@@ -242,6 +242,21 @@ coreRegressionTests =
             >>= (@?= [(33, 11, 33)])
           (query conn "SELECT ?::BIGINT, ?::BIGINT" ((1 :: Int64), (2 :: Int64)) :: IO [(Int64, Int64)]) >>= (@?= [(1, 2)])
           (query conn "SELECT $02::BIGINT, $01::BIGINT" ((11 :: Int64), (22 :: Int64)) :: IO [(Int64, Int64)]) >>= (@?= [(22, 11)])
+    , testCase "a quoted parameter can start with a binding prefix" $
+        withConnection ":memory:" $ \conn -> do
+          let sql = "SELECT $foo::BIGINT, $\"$foo\"::BIGINT, $\":foo\"::BIGINT, $\"@foo\"::BIGINT"
+              names = ["$FOO", "$$foo", "$:foo", "$@foo"]
+          withStatement conn sql $ \stmt -> do
+            mapM (namedParameterIndex stmt) names >>= (@?= map Just [1 .. 4])
+            bindNamed stmt [name := value | (name, value) <- zip names [1 .. 4 :: Int64]]
+            nextRow stmt >>= (@?= Just (1 :: Int64, 2 :: Int64, 3 :: Int64, 4 :: Int64))
+          withStatement conn "SELECT $\"$1\"::BIGINT" $ \stmt -> do
+            outcome <- try (bind stmt [toField (5 :: Int64)])
+            case outcome of
+              Left (_ :: FormatError) -> pure ()
+              Right () -> assertFailure "a literal dollar sign is part of the name"
+            bindNamed stmt ["$$1" := (5 :: Int64)]
+            nextRow stmt >>= (@?= Just (Only (5 :: Int64)))
     , testCase "quoted numeric names remain named parameters" $
         withConnection ":memory:" $ \conn ->
           forM_

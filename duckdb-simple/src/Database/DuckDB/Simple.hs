@@ -122,7 +122,6 @@ import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (findIndex)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -330,8 +329,7 @@ bind stmt fields = do
         expected = length (statementParameterNames stmt)
     when (actual /= expected) $
       throwFormatErrorBindings stmt (parameterCountMessage expected actual) fields
-    let parameterNames = fetchParameterNames stmt
-    when (any isJust parameterNames) $
+    when (hasNamedParameters stmt) $
       throwFormatErrorBindings stmt (Text.pack "duckdb-simple: statement defines named parameters; use executeNamed or bindNamed") fields
   replaceStatementBindings stmt \staged ->
     zipWithM_ (\idx -> bindFieldBinding staged (fromIntegral idx)) [1 :: Int ..] fields
@@ -346,6 +344,8 @@ bind stmt fields = do
 
 -- | Bind named parameters to a prepared statement.
 -- The cursor reset and failure guarantees of 'bind' also apply.
+-- A binding name can start with one optional @$@, @:@, or @\@@ prefix. To bind
+-- the SQL parameter @$"$foo"@, supply @"$$foo"@.
 -- A successful call replaces the explicit bindings. Current session variables
 -- can supply omitted parameters when the statement executes.
 bindNamed :: Statement -> [NamedParam] -> IO ()
@@ -364,17 +364,17 @@ bindNamed stmt params =
           , name
           ]
       -- One lookup table serves all bindings of this call.
-      positions = Map.fromList (zip (map normalizeName (elems (statementParameterNames stmt))) [1 :: Int ..])
+      positions = Map.fromList (zip (map foldIdentifier (elems (statementParameterNames stmt))) [1 :: Int ..])
       apply target (name, binding) = do
         when (Text.any (== '\0') name) $
           withQueryError (statementQuery stmt) (throwInvalidArgument (Text.pack "parameter name contains NUL"))
-        case Map.lookup (normalizeName name) positions of
+        case Map.lookup (bindingName name) positions of
           Nothing ->
             throwFormatErrorNamed stmt (unknownNameMessage name) bindings
           Just idx -> bindFieldBinding target (fromIntegral idx :: DuckDBIdx) binding
   in  do
         resetStatementStream stmt
-        let names = map (normalizeName . fst) bindings
+        let names = map (bindingName . fst) bindings
         when (Set.size (Set.fromList names) /= length names) $
           throwFormatErrorNamed stmt (Text.pack "duckdb-simple: duplicate named parameter") bindings
         withStatementHandle stmt \_ -> do
@@ -383,8 +383,7 @@ bindNamed stmt params =
               expected = length (statementParameterNames stmt)
           when (actual > expected) $
             throwFormatErrorNamed stmt (parameterCountMessage expected actual) bindings
-          let parameterNames = fetchParameterNames stmt
-          when (all isNothing parameterNames && expected > 0) $
+          when (expected > 0 && not (hasNamedParameters stmt)) $
             throwFormatErrorNamed
               stmt
               (Text.pack "duckdb-simple: statement does not define named parameters; use positional bindings or adjust the SQL")
@@ -403,9 +402,7 @@ Binding resets the cursor before it validates the new parameters.
 -- | Replace all bindings after the action constructs every value successfully.
 -- See Note [Atomic parameter bindings].
 replaceStatementBindings :: Statement -> (Statement -> IO ()) -> IO ()
-replaceStatementBindings stmt action = do
-  -- Check the statement before staging. A conversion keeps its own error context.
-  withStatementHandle stmt (const (pure ()))
+replaceStatementBindings stmt action =
   bracket (newIORef IntMap.empty) clearBoundValues \staged -> do
     action stmt{statementBindings = staged}
     mask_ do
@@ -413,12 +410,10 @@ replaceStatementBindings stmt action = do
       previous <- atomicModifyIORef' (statementBindings stmt) (\values -> (replacement, values))
       writeIORef staged previous
 
-fetchParameterNames :: Statement -> [Maybe Text]
-fetchParameterNames stmt =
-  zipWith
-    (\idx name -> if normalizeName name == Text.pack (show idx) then Nothing else Just name)
-    [1 :: Int ..]
-    (elems (statementParameterNames stmt))
+-- | Dense numeric keys in binding order are positional parameters.
+hasNamedParameters :: Statement -> Bool
+hasNamedParameters stmt =
+  or (zipWith (\idx name -> name /= Text.pack (show idx)) [1 :: Int ..] (elems (statementParameterNames stmt)))
 
 -- | Remove all parameter bindings and release an active result.
 clearStatementBindings :: Statement -> IO ()
@@ -433,7 +428,7 @@ namedParameterIndex stmt name = withStatementHandle stmt \_ -> do
   -- The handle is not used. withStatementHandle raises the error for a closed statement or connection.
   when (Text.any (== '\0') name) $
     withQueryError (statementQuery stmt) (throwInvalidArgument (Text.pack "parameter name contains NUL"))
-  pure ((+ 1) <$> findIndex ((== normalizeName name) . normalizeName) (elems (statementParameterNames stmt)))
+  pure ((+ 1) <$> findIndex ((== bindingName name) . foldIdentifier) (elems (statementParameterNames stmt)))
 
 -- | Retrieve the number of columns produced by the supplied prepared statement.
 columnCount :: Statement -> IO Int
@@ -634,9 +629,9 @@ columnIndexError stmt idx total =
               ]
   in  withQueryError (statementQuery stmt) (throwInvalidArgument message)
 
--- | Use DuckDB's ASCII case rules for parameter names.
-normalizeName :: Text -> Text
-normalizeName name =
+-- | Strip one optional prefix from a supplied binding and fold ASCII case.
+bindingName :: Text -> Text
+bindingName name =
   foldIdentifier $
     case Text.uncons name of
       Just (prefix, rest)

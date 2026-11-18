@@ -579,7 +579,8 @@ for the upgrade instructions.
   raise it.
 - Reject duplicate named parameters with DuckDB's ASCII case rules. Keep
   distinct non-ASCII names separate. Preserve sparse numeric parameter names
-  such as `$3`.
+  such as `$3` and distinguish quoted parameter names that start with
+  `$`, `:`, or `@`.
 - Resolve configuration names and aliases case-insensitively. Use DuckDB's
   ASCII identifier rules for catalog names and top-level schemas.
 - `deleteFunction` reports the error from DuckDB. DuckDB does not permit

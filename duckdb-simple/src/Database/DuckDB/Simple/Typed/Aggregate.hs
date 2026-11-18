@@ -44,17 +44,15 @@ import Database.DuckDB.Simple.Typed (
   argumentName,
   conversionMessage,
   newArgumentReader,
+  positionalSignature,
   rowDeclarations,
  )
 import Database.DuckDB.Simple.V2.Registration (
   AggregateCallbacks (..),
   BindCallback,
-  FunctionParameter (..),
-  FunctionSignature (..),
   RegistrationTarget (..),
   aggregateCallbacks,
   configureFunctionSignature,
-  parameter,
   registerAggregateFunctionWithCleanup,
   withRegistrationFactory,
  )
@@ -227,10 +225,7 @@ createAggregateOn target name aggregate = do
   stripes <- evaluate case target of
     ConnectionTarget connection -> connectionAggregateStripes (connectionOptions connection)
     ExtensionTarget{} -> defaultAggregateStripes
-  let parameters =
-        [ (parameter (argumentName index) argumentType){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
-        | (index, argumentType) <- zip [0 ..] argumentTypes
-        ]
+  let signature = positionalSignature argumentTypes (Just resultType)
       callbacks =
         ( aggregateCallbacks
             setStateSize
@@ -243,16 +238,12 @@ createAggregateOn target name aggregate = do
           , aggregateDestroyCallback = Just destroyStates
           }
   withRegistrationFactory target \factory ->
-    registerAggregateFunctionWithCleanup target closeReader (configure parameters resultType factory) callbacks
+    registerAggregateFunctionWithCleanup target closeReader (configure signature factory) callbacks
   where
     columnTypes = rowColumnDeclarations (Proxy @args)
-    configure parameters resultType factory function = do
+    configure signature factory function = do
       withIdentifier name (checked . c_duckdb_v2_aggregate_function_set_name function)
-      signature <- output (c_duckdb_v2_aggregate_function_get_signature function)
-      configureFunctionSignature
-        factory
-        (FunctionSignature parameters (Just resultType))
-        signature
+      output (c_duckdb_v2_aggregate_function_get_signature function) >>= configureFunctionSignature factory signature
       checked
         (c_duckdb_v2_aggregate_function_set_property function DuckDBV2FunctionPropertyNullHandling DuckDBV2FunctionPropertyNullHandlingSpecial)
 

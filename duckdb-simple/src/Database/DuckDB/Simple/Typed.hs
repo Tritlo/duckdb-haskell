@@ -20,6 +20,8 @@ module Database.DuckDB.Simple.Typed (
   ColumnValue (..),
   argumentName,
   rowDeclarations,
+  positionalSignature,
+  readBoundField,
   ArgumentReader,
   newArgumentReader,
   conversionMessage,
@@ -40,8 +42,11 @@ import Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
   ReadFactory (InstanceFactory),
   createHelperInstance,
+  materializeValue,
   prepareGeometryReader,
   prepareVectorReader,
+  readCallbackVariant,
+  readFactoryHandle,
   readInstanceVariant,
  )
 import Database.DuckDB.Simple.Native
@@ -51,7 +56,10 @@ import Database.DuckDB.Simple.Types (Only (..))
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Database.DuckDB.Simple.V2.Registration (
   ContextCallback,
+  FunctionParameter (parameterKind),
+  FunctionSignature (..),
   TypeDeclaration,
+  parameter,
  )
 import GHC.Generics
 
@@ -133,6 +141,24 @@ rowDeclarations :: Text -> [Text] -> [Either Text TypeDeclaration] -> IO [TypeDe
 rowDeclarations name places declarations =
   forM (zip places declarations) \(place, declaration) ->
     either (\reason -> throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, place, reason])) pure declaration
+
+-- | Declare the positional arguments of a typed function. A table function
+-- declares its result columns during bind and supplies no return type here.
+positionalSignature :: [TypeDeclaration] -> Maybe TypeDeclaration -> FunctionSignature
+positionalSignature types =
+  FunctionSignature
+    [ (parameter (argumentName index) dtype){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
+    | (index, dtype) <- zip [0 ..] types
+    ]
+
+-- | Copy one argument of a table function or pragma. Acquire its logical
+-- type within the value's lifetime. The type scope owns it during conversion.
+readBoundField :: TypeScope -> ReadFactory -> DuckDBV2FunctionBindInfoHandle -> Text -> DuckDBIdx -> IO Field
+readBoundField scope factory info name index =
+  bracket (output (c_duckdb_v2_function_bind_get_arg_value info index)) destroyValue \value ->
+    Field name (fromIntegral index)
+      <$> materializeValue readCallbackVariant factory value
+      <*> scopedTypeRep scope (pure (readFactoryHandle factory)) (output (c_duckdb_v2_value_get_logical_type value))
 
 {- Note [Function argument readers]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -15,20 +15,20 @@ module Database.DuckDB.Simple.Pragma.Internal (
   registerPragmaFunctionOn,
 ) where
 
-import Control.Exception (bracket, throwIO)
-import Control.Monad (when)
+import Control.Exception (throwIO)
+import Control.Monad (forM, when)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (targetCastFactory)
 import Database.DuckDB.Simple.Conversion (runConversion)
-import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal (Connection)
-import Database.DuckDB.Simple.Materialize (callbackReadFactory, materializeValue, readCallbackVariant, readFactoryHandle)
+import Database.DuckDB.Simple.Materialize (callbackReadFactory)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.TypeScope (TypeScope, scopedTypeRep, withTypeScope)
+import Database.DuckDB.Simple.TypeScope (TypeScope, withTypeScope)
+import Database.DuckDB.Simple.Typed (readBoundField)
 import qualified Database.DuckDB.Simple.V2.Pragma as V2
 import Database.DuckDB.Simple.V2.Registration (
   FunctionParameter,
@@ -87,7 +87,9 @@ pragmaArguments scope casts name info context = withContextFactory context \cont
   count <- allocaArray 4 \counts -> do
     checked (c_duckdb_v2_function_bind_get_arg_count info counts (advancePtr counts 1) (advancePtr counts 2) (advancePtr counts 3))
     sum <$> peekArray 4 counts
-  fields <- mapM (argumentField factory) (indices count)
+  fields <- forM (indices count) \index -> do
+    argument <- output (c_duckdb_v2_function_bind_get_arg_name info index) >>= readIdentifier
+    readBoundField scope factory info argument index
   converted <- runConversion (parseRow fromRow fields)
   case converted of
     Ok args -> pure args
@@ -99,16 +101,3 @@ pragmaArguments scope casts name info context = withContextFactory context \cont
                 ("duckdb-simple: cannot decode the arguments of pragma " <> name <> ": " <> fromMaybe message (Text.stripPrefix "duckdb-simple: " message))
             )
         )
-  where
-    argumentField factory index = do
-      argument <- output (c_duckdb_v2_function_bind_get_arg_name info index) >>= readIdentifier
-      -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
-      (value, argumentType) <-
-        bracket
-          (output (c_duckdb_v2_function_bind_get_arg_value info index))
-          destroyValue
-          \native ->
-            (,)
-              <$> materializeValue readCallbackVariant factory native
-              <*> scopedTypeRep scope (pure (readFactoryHandle factory)) (output (c_duckdb_v2_value_get_logical_type native))
-      pure (Field argument (fromIntegral index) value argumentType)

@@ -23,26 +23,24 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (attachOpaque, readCallbackState, targetCastFactory, transferCallbackState)
 import Database.DuckDB.Simple.Conversion (runConversion)
-import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
-import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory, materializeValue, readCallbackVariant, readFactoryHandle)
+import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.TypeScope (TypeScope, scopedTypeRep, withTypeScope)
+import Database.DuckDB.Simple.TypeScope (TypeScope, withTypeScope)
 import Database.DuckDB.Simple.Typed (
   ColumnValue (..),
   TypedRow (..),
   argumentName,
   conversionMessage,
+  positionalSignature,
+  readBoundField,
   rowDeclarations,
  )
 import Database.DuckDB.Simple.V2.Registration (
-  FunctionParameter (..),
-  FunctionSignature (..),
   RegistrationTarget,
   TableCallbacks (..),
   configureFunctionSignature,
-  parameter,
   registerTableFunctionWith,
   tableCallbacks,
   withRegistrationFactory,
@@ -113,12 +111,7 @@ createTableFunctionOn target name columns function = do
     rowDeclarations name ["parameter " <> argumentName index | index <- [0 ..]] (rowColumnDeclarations (Proxy @params))
   columnTypes <- rowDeclarations name (map ("column " <>) columns) columnDeclarations
   casts <- targetCastFactory target
-  let signature =
-        FunctionSignature
-          [ (parameter (argumentName index) dtype){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
-          | (index, dtype) <- zip [0 ..] parameterTypes
-          ]
-          Nothing
+  let signature = positionalSignature parameterTypes Nothing
       configure factory tableFunction = do
         withIdentifier name (checked . c_duckdb_v2_table_function_set_name tableFunction)
         output (c_duckdb_v2_table_function_get_signature tableFunction) >>= configureFunctionSignature factory signature
@@ -220,11 +213,7 @@ splitRows = go []
 readArguments :: (FromRow params) => TypeScope -> Text -> Int -> ReadFactory -> DuckDBV2FunctionBindInfoHandle -> IO params
 readArguments scope name count factory input = do
   fields <- forM (take count [0 ..]) \index ->
-    bracket (output (c_duckdb_v2_function_bind_get_arg_value input (fromIntegral index))) destroyValue \value ->
-      -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
-      Field (argumentName index) index
-        <$> materializeValue readCallbackVariant factory value
-        <*> scopedTypeRep scope (pure (readFactoryHandle factory)) (output (c_duckdb_v2_value_get_logical_type value))
+    readBoundField scope factory input (argumentName index) (fromIntegral index)
   converted <- runConversion (parseRow fromRow fields)
   case converted of
     Ok params -> pure params

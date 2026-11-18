@@ -20,7 +20,6 @@ module Database.DuckDB.Simple.Materialize (
   readFactoryHandle,
   prepareGeometryReader,
   materializeValue,
-  prepareValueReader,
   prepareVectorReader,
   TypeTree,
   EnumLabels,

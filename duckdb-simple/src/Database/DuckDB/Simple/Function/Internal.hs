@@ -67,8 +67,15 @@ import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
 import Database.DuckDB.Simple.TypeScope (withTypeScope)
-import Database.DuckDB.Simple.Typed (ArgumentReader, argumentName, conversionMessage, newArgumentReader, rowDeclarations)
-import Database.DuckDB.Simple.V2.Registration (withTypeDeclaration)
+import Database.DuckDB.Simple.Typed (
+  ArgumentReader,
+  argumentName,
+  conversionMessage,
+  newArgumentReader,
+  positionalSignature,
+  rowDeclarations,
+ )
+import Database.DuckDB.Simple.V2.Registration (configureFunctionSignature)
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 import Foreign.Marshal.Utils (copyBytes, fillBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
@@ -315,11 +322,7 @@ registerScalarFunction target name proxy installers = do
           \installCallbacks -> do
             withIdentifier name $ checked . c_duckdb_v2_scalar_function_set_name scalarFun
             signature <- output (c_duckdb_v2_scalar_function_get_signature scalarFun)
-            forM_ (zip [0 :: Int ..] parameters) \(index, dtype) ->
-              withTypeDeclaration factory dtype \logical ->
-                withIdentifier (argumentName index) \argument ->
-                  checked (c_duckdb_v2_function_signature_add_parameter signature argument logical nullHandle DuckDBV2FunctionParameterKindPositionalOnly)
-            withTypeDeclaration factory result $ checked . c_duckdb_v2_function_signature_set_return_type signature
+            configureFunctionSignature factory (positionalSignature parameters (Just result)) signature
             when (isVolatile proxy) $
               checked (c_duckdb_v2_scalar_function_set_property scalarFun DuckDBV2FunctionPropertyStability DuckDBV2FunctionPropertyStabilityVolatile)
             checked

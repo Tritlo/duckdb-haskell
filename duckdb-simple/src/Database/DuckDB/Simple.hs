@@ -306,11 +306,7 @@ withConnectionWithOptions path options = bracket (openWithOptions path options) 
 
 -- | Prepare a SQL statement for execution.
 openStatement :: Connection -> Query -> IO Statement
-openStatement conn queryText = withParsedStatements conn queryText \parsed ->
-  case parsed of
-    [statement] -> createStatementFromParsed conn queryText statement
-    [] -> throwInvalidArgument (Text.pack "SQL query contains no statement")
-    _ -> throwInvalidArgument (Text.pack "prepared SQL contains more than one statement")
+openStatement conn queryText = createStatementWithCollections conn queryText []
 
 -- | Finalize a prepared statement. The operation is idempotent.
 closeStatement :: Statement -> IO ()

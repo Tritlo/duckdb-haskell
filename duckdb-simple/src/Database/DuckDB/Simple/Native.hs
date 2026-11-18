@@ -377,8 +377,7 @@ the list is short in practice or the operation is rare:
 - The row loop of executeScalarFunction in
   "Database.DuckDB.Simple.Function.Internal", for the same readers.
 
-- withParsedStatements, which nests one bracket for each statement of a script,
-  and cleanupAll, for a connection with many open statements, in
+- cleanupAll, for a connection with many open statements, in
   "Database.DuckDB.Simple.Internal".
 
 - The option loop in "Database.DuckDB.Simple.Config".

@@ -38,6 +38,7 @@ module Database.DuckDB.Simple.Internal (
   createConnection,
   closeConnection,
   closeStatementState,
+  createStatementWithCollections,
   createStatementFromParsed,
   createStatementFromParsedWithCollections,
   withParsedStatements,
@@ -99,6 +100,7 @@ import Control.Concurrent (
  )
 import Control.Exception (
   SomeException,
+  allowInterrupt,
   bracket,
   bracketOnError,
   bracket_,
@@ -664,10 +666,24 @@ withKeptParameterTypes Statement{statementParameterTypes} =
 -- | Parse SQL and borrow the resulting statements for one action.
 withParsedStatements :: Connection -> Query -> ([DuckDBV2SqlStatementHandle] -> IO a) -> IO a
 withParsedStatements conn query action = withQueryError query $ withConnectionHandle conn \raw ->
-  withQueryCString query \sql -> bracket (output (c_duckdb_v2_parse_sql raw sql)) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator ->
-    let gather acc = bracket (output (c_duckdb_v2_statement_iterator_next iterator)) (destroy c_duckdb_v2_sql_statement_destroy) \parsed ->
-          if parsed == nullHandle then action (reverse acc) else gather (parsed : acc)
-    in  gather []
+  bracket (parseStatements raw query) (releaseItems (destroy c_duckdb_v2_sql_statement_destroy) . reverse) action
+
+-- | Parse all SQL into owned handles. Release the most recent handle first on
+-- failure. The caller must transfer or release the complete list under a mask.
+parseStatements :: DuckDBV2ConnectionHandle -> Query -> IO [DuckDBV2SqlStatementHandle]
+parseStatements raw query = mask_ $ withQueryCString query \sql -> do
+  iterator <- output (c_duckdb_v2_parse_sql raw sql)
+  let destroyIterator = destroy c_duckdb_v2_statement_iterator_destroy iterator
+      gather owned = do
+        parsed <- flip onException (releaseItems (destroy c_duckdb_v2_sql_statement_destroy) owned) do
+          -- Accept cancellation between acquisitions, while every handle has
+          -- an owner. Native output acquisition remains masked.
+          allowInterrupt
+          output (c_duckdb_v2_statement_iterator_next iterator)
+        if parsed == nullHandle then pure (reverse owned) else gather (parsed : owned)
+  parsed <- gather [] `onException` destroyIterator
+  destroyIterator `onException` releaseItems (destroy c_duckdb_v2_sql_statement_destroy) (reverse parsed)
+  pure parsed
 
 -- | Prepare a borrowed parsed statement. The native handle copies its SQL.
 createStatementFromParsed :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO Statement
@@ -686,62 +702,89 @@ createStatementFromParsed parent query parsed = createStatementFromParsedWithCol
 createStatementFromParsedWithCollections
   :: Connection -> Query -> DuckDBV2SqlStatementHandle -> [(Text, DuckDBV2ColumnDataCollectionHandle, [Text])] -> IO Statement
 createStatementFromParsedWithCollections parent query parsed collections = withQueryError query $ withConnectionHandle parent \raw -> mask_ do
-  addCollections parsed
-  handle <- alloca \slot -> do
-    poke slot nullHandle
-    flip onException (peek slot >>= destroy c_duckdb_v2_prepared_statement_destroy) do
-      -- DuckDB also rejects preparation while another result is open. See
-      -- Note [Connection lock].
-      withConnectionLock parent (runInterruptibleQuery parent (checked (c_duckdb_v2_prepared_statement_create raw parsed 0 slot)))
-      peek slot
+  addStatementCollections query collections parsed
+  handle <- prepareStatementHandle parent raw parsed
   flip onException (destroy c_duckdb_v2_prepared_statement_destroy handle) do
-    -- Keep a separate parsed handle for metadata after the input iterator closes.
+    -- The caller retains its parsed handle, so keep a separate metadata copy.
     text <- output (c_duckdb_v2_sql_statement_get_text parsed) >>= readText
     copied <- withQueryCString (Query text) \sql -> bracket (output (c_duckdb_v2_parse_sql raw sql)) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator ->
       output (c_duckdb_v2_statement_iterator_next iterator)
     flip onException (destroy c_duckdb_v2_sql_statement_destroy copied) do
-      addCollections copied
-      count <- fromIntegral <$> output (c_duckdb_v2_sql_statement_get_parameter_count copied)
-      names <- parameterNames copied count
-      schemas <- newIORef Nothing
-      bindings <- newIORef IntMap.empty
-      stream <- newIORef StatementStreamIdle
-      arrow <- newIORef nullHandle
-      kept <- newIORef Nothing
-      ref <- newIORef (StatementOpen handle copied schemas)
-      let statement = Statement ref parent query stream arrow bindings (listArray (1, count) names) kept
-      children <-
-        readIORef (connectionState parent) >>= \case
-          ConnectionClosed -> throwIO connectionClosedError
-          ConnectionOpen{connectionStatements} -> pure connectionStatements
-      -- The finalizer does not keep its weak key alive through this closure.
-      -- See Note [Native handle ownership].
-      registerChild id (\case StatementOpen{} -> True; _ -> False) children ref (keepAlive parent (closeStatementState statement))
-      pure statement
-  where
-    addCollections statement = forM_ collections \(name, collection, columns) -> do
-      when (any (Text.any (== '\0')) (name : columns)) $
-        withQueryError query (throwInvalidArgument "collection name or column name contains NUL")
-      withIdentifier name \nativeName -> withIdentifierArray columns \nativeColumns ->
-        checked
-          ( c_duckdb_v2_statement_add_collection
-              statement
-              nativeName
-              collection
-              (ConstPtr (if null columns then nullPtr else nativeColumns))
-              (fromIntegral (length columns))
-          )
+      addStatementCollections query collections copied
+      managedStatement parent query handle copied
+
+-- | Parse one statement and retain its owned parsed handle for metadata.
+-- Collections remain borrowed until the managed statement closes.
+createStatementWithCollections
+  :: Connection -> Query -> [(Text, DuckDBV2ColumnDataCollectionHandle, [Text])] -> IO Statement
+createStatementWithCollections parent query collections = withQueryError query $ withConnectionHandle parent \raw -> mask_ do
+  -- Parse all SQL before selecting one statement. A later syntax error has
+  -- precedence over the empty or multiple-statement diagnostics.
+  parsed <- parseStatements raw query
+  flip onException (releaseItems (destroy c_duckdb_v2_sql_statement_destroy) (reverse parsed)) $
+    case parsed of
+      [statement] -> do
+        addStatementCollections query collections statement
+        handle <- prepareStatementHandle parent raw statement
+        managedStatement parent query handle statement
+          `onException` destroy c_duckdb_v2_prepared_statement_destroy handle
+      [] -> throwInvalidArgument "SQL query contains no statement"
+      _ -> throwInvalidArgument "prepared SQL contains more than one statement"
+
+-- | Prepare a borrowed AST. Keep its connection locked until native work ends.
+prepareStatementHandle :: Connection -> DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> IO DuckDBV2PreparedStatementHandle
+prepareStatementHandle parent raw parsed = alloca \slot -> do
+  poke slot nullHandle
+  flip onException (peek slot >>= destroy c_duckdb_v2_prepared_statement_destroy) do
+    -- DuckDB also rejects preparation while another result is open. See
+    -- Note [Connection lock].
+    withConnectionLock parent (runInterruptibleQuery parent (checked (c_duckdb_v2_prepared_statement_create raw parsed 0 slot)))
+    peek slot
+
+-- | Build a managed statement. Take both native handles only on success.
+managedStatement :: Connection -> Query -> DuckDBV2PreparedStatementHandle -> DuckDBV2SqlStatementHandle -> IO Statement
+managedStatement parent query handle parsed = do
+  count <- fromIntegral <$> output (c_duckdb_v2_sql_statement_get_parameter_count parsed)
+  names <- parameterNames parsed count
+  schemas <- newIORef Nothing
+  bindings <- newIORef IntMap.empty
+  stream <- newIORef StatementStreamIdle
+  arrow <- newIORef nullHandle
+  kept <- newIORef Nothing
+  ref <- newIORef (StatementOpen handle parsed schemas)
+  let statement = Statement ref parent query stream arrow bindings (listArray (1, count) names) kept
+  children <-
+    readIORef (connectionState parent) >>= \case
+      ConnectionClosed -> throwIO connectionClosedError
+      ConnectionOpen{connectionStatements} -> pure connectionStatements
+  -- The finalizer does not keep its weak key alive through this closure.
+  -- See Note [Native handle ownership].
+  registerChild id (\case StatementOpen{} -> True; _ -> False) children ref (keepAlive parent (closeStatementState statement))
+  pure statement
+
+-- | Attach borrowed collections to one parsed statement.
+addStatementCollections :: Query -> [(Text, DuckDBV2ColumnDataCollectionHandle, [Text])] -> DuckDBV2SqlStatementHandle -> IO ()
+addStatementCollections query collections statement = forM_ collections \(name, collection, columns) -> do
+  when (any (Text.any (== '\0')) (name : columns)) $
+    withQueryError query (throwInvalidArgument "collection name or column name contains NUL")
+  withIdentifier name \nativeName -> withIdentifierArray columns \nativeColumns ->
+    checked
+      ( c_duckdb_v2_statement_add_collection
+          statement
+          nativeName
+          collection
+          (ConstPtr (if null columns then nullPtr else nativeColumns))
+          (fromIntegral (length columns))
+      )
 
 -- | Prepare SQL with borrowed column collections as named input tables.
 -- The caller must keep each collection alive and unchanged until the callback
 -- returns. An empty column-name list selects DuckDB's default column names.
 -- The statement and all its results close before this function returns.
 withCollectionStatement :: Connection -> Query -> [(Text, DuckDBV2ColumnDataCollectionHandle, [Text])] -> (Statement -> IO a) -> IO a
-withCollectionStatement conn queryText collections action = withParsedStatements conn queryText \parsed ->
-  case parsed of
-    [statement] -> bracket (createStatementFromParsedWithCollections conn queryText statement collections) closeStatementState action
-    [] -> throwInvalidArgument "SQL query contains no statement"
-    _ -> throwInvalidArgument "prepared SQL contains more than one statement"
+withCollectionStatement conn queryText collections action =
+  withQueryError queryText $
+    bracket (createStatementWithCollections conn queryText collections) closeStatementState action
 
 -- | Read the parameter names in binding order. DuckDB sorts all names again
 -- for each name that it returns. DuckDB rejects a mix of named and numbered
@@ -807,7 +850,7 @@ the lock.
 
 These calls take the lock:
 
-- The preparation of a statement (createStatementFromParsedWithCollections).
+- The preparation of a statement (prepareStatementHandle).
 
 - The metadata bind of a statement (statementSchemas).
 
@@ -1214,6 +1257,10 @@ connection lock, and it stores both handles. The next calls give the same
 handles until the cache is empty again. columnCount and columnName in
 "Database.DuckDB.Simple" read the result schema, and preparedParameterType
 reads the type of one parameter.
+
+The SQL constructors retain the owned parsed handle from the iterator. Native
+preparation copies its AST. The constructors for borrowed parsed handles keep a
+separate metadata copy, because the caller owns the input handle.
 
 The statement owns both schemas. withStatementSchemas keeps the statement alive
 while an action reads a schema and copies its borrowed names and types. Keeping

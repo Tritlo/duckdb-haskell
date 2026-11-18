@@ -20,10 +20,7 @@
 --   'ExtensionEntry' and does nothing else. DuckDB finds the entry point from the file name @NAME.duckdb_extension@.
 -- - The threaded runtime. Link the extension with @-threaded@. Otherwise the load fails with an error.
 --
--- The <https://github.com/Tritlo/duckdb-haskell/blob/fc494d8bdf8226f19fb8551f5ac8049f2d1d9920/dev/extensions/README.md extension recipe>
--- gives the build, packaging, loading, and test commands. Use a repository checkout that matches the package
--- sources. The recipe and example are not included in the Hackage archives. This module describes the entry point,
--- typed registrations, and resource lifetimes.
+-- See @dev\/extensions\/README.md@ in this repo.
 --
 -- The Haskell side of a small extension, from @dev\/extensions\/example\/src\/Demo.hs@:
 --

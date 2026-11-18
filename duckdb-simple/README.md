@@ -1734,11 +1734,8 @@ filter pushdown.
 `Database.DuckDB.Simple.Extension` registers the typed functions of this package
 from a loadable DuckDB extension. Build the extension with the `extension` flag
 of `duckdb-ffi` and of `duckdb-simple`. The module's Haddock describes the
-entry point, typed registrations, and resource lifetimes. The repository's
-[extension recipe](https://github.com/Tritlo/duckdb-haskell/blob/fc494d8bdf8226f19fb8551f5ac8049f2d1d9920/dev/extensions/README.md)
-has the build, packaging, loading, and test commands. Use a repository checkout
-that matches the package sources. The recipe and example are not included in
-the Hackage archives. CI builds and tests the example.
+entry point, typed registrations, and resource lifetimes. See
+`dev/extensions/README.md` in this repo. CI builds and tests the example.
 
 ## Tests
 

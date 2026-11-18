@@ -21,10 +21,10 @@ description:
   Haskell FFI bindings generated from the DuckDB 2.0 C APIs with hs-bindgen.
   The retained API supports DuckDB 2.0.x releases. The V2 API requires
   exactly DuckDB 2.0.0, because upstream marks it as unstable.
-  .
+
   Downloads the verified DuckDB 2.0.0 release on supported Linux and macOS
   systems. Also accepts a native library supplied by the user or Nix.
-  .
+
   Includes the complete pinned DuckDB V2 C API.
 
 extra-doc-files: CHANGELOG.md

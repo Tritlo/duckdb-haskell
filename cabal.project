@@ -30,6 +30,7 @@ package duckdb-simple
     "--ignore-link-symbol=Database.DuckDB.Simple.Generic.IsSum"
     "--ignore-link-symbol=Database.DuckDB.Simple.Generic.Encoded"
     "--ignore-link-symbol=Database.DuckDB.Simple.Function.Internal.rawResult"
+    "--ignore-link-symbol=Database.DuckDB.Simple.VariantCodec.VariantState"
     "--ignore-link-symbol=Database.DuckDB.Simple.FromRow.RowParseRO"
     "--ignore-link-symbol=Database.DuckDB.Simple.Typed.rowColumnDeclarations"
     "--ignore-link-symbol=Database.DuckDB.Simple.Typed.rowColumnValues"

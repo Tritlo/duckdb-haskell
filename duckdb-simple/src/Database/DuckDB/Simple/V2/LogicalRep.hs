@@ -230,13 +230,13 @@ Bindings construct native types from their declarations at every depth. The
 connection factory constructs recognized CRS types directly. For an unknown
 label, DuckDB either reports its specific binder error or drops the CRS when
 ignore_unknown_crs is set. Only these two outcomes use the SQL fallback.
-Malformed definitions and other native errors retain their original errors.
+Any other error from the native constructor propagates to the caller.
 
 The fallback opens a separate connection on the same instance. It cannot run
 SQL on the caller connection because the caller can have an active result.
 The query applies fully qualified built-ins to a fixed point and the bound label.
-The vector accessor returns an owned logical type. The type survives cleanup
-of the chunk, result, statement, and helper connection. No type map persists.
+The SELECT has a schema before its first execution step. Copy its field type
+while the schema is live. The helper can close without fetching a row.
 Typed NULLs and empty containers use the same resolver as nonempty values.
 -}
 
@@ -269,14 +269,10 @@ queryGeometryType crs instance_ = mask_ $
             (output (c_duckdb_v2_statement_execute connection parsed (ConstPtr nullPtr) (ConstPtr param) 1))
             (destroy c_duckdb_v2_result_destroy)
             \result ->
-              bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
-                when (chunk == nullHandle) $ throwInternalError (Text.pack "the CRS type query returned no row")
-                vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
-                logical <- output (c_duckdb_v2_vector_get_logical_type vector)
-                flip onException (destroyLogicalType logical) do
-                  rep <- logicalTypeToBaseRep logical
-                  case rep of
-                    LogicalTypeGeometry (Just _) -> pure logical
-                    _ -> throwInvalidArgument (Text.pack "the type query did not preserve the GEOMETRY CRS")
+              bracket (output (c_duckdb_v2_result_get_schema result)) (destroy c_duckdb_v2_schema_destroy) \schema -> alloca \nameSlot -> do
+                logical <- output (c_duckdb_v2_schema_get_field schema 0 nameSlot)
+                count <- output (c_duckdb_v2_logical_type_get_param_count logical)
+                when (count == 0) $ throwInvalidArgument (Text.pack "the type query did not preserve the GEOMETRY CRS")
+                output (c_duckdb_v2_logical_type_copy logical)
   where
     sql = Text.pack "SELECT system.main.ST_SetCRS(system.main.ST_GeomFromGeoJSON('{\"type\":\"Point\",\"coordinates\":[0,0]}'::VARCHAR), ?)"

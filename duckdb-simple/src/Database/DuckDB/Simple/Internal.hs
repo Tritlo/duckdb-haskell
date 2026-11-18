@@ -786,17 +786,12 @@ withCollectionStatement conn queryText collections action =
   withQueryError queryText $
     bracket (createStatementWithCollections conn queryText collections) closeStatementState action
 
--- | Read the parameter names in binding order. DuckDB sorts all names again
--- for each name that it returns. DuckDB rejects a mix of named and numbered
--- parameters, and numbered names are distinct and sorted. So @count@ names that
--- end with @count@ are the positions 1 to @count@. Read only the last name then.
+-- | Read the authoritative parameter names in binding order.
 parameterNames :: DuckDBV2SqlStatementHandle -> Int -> IO [Text]
-parameterNames _ 0 = pure []
-parameterNames statement count = do
-  let name index = output (c_duckdb_v2_sql_statement_get_parameter_name statement (fromIntegral index)) >>= readIdentifier
-      positions = map (Text.pack . show) [1 .. count]
-  final <- name (count - 1)
-  if final == last positions then pure positions else forM [0 .. count - 1] name
+parameterNames statement count = forM [0 .. count - 1] $ \index ->
+  -- V2 has no bulk name accessor. Its indexed accessor sorts all names on each
+  -- call. SQL text cannot determine the names of a parser-extension statement.
+  output (c_duckdb_v2_sql_statement_get_parameter_name statement (fromIntegral index)) >>= readIdentifier
 
 -- | Error raised when an operation targets a closed connection.
 connectionClosedError :: SQLError

@@ -226,6 +226,24 @@ coreRegressionTests =
           (queryNamed conn "SELECT $3::BIGINT, $1::BIGINT, $3::BIGINT" ["1" := (11 :: Int64), "3" := (33 :: Int64)] :: IO [(Int64, Int64, Int64)])
             >>= (@?= [(33, 11, 33)])
           (query conn "SELECT ?::BIGINT, ?::BIGINT" ((1 :: Int64), (2 :: Int64)) :: IO [(Int64, Int64)]) >>= (@?= [(1, 2)])
+          (query conn "SELECT $02::BIGINT, $01::BIGINT" ((11 :: Int64), (22 :: Int64)) :: IO [(Int64, Int64)]) >>= (@?= [(22, 11)])
+    , testCase "quoted numeric names remain named parameters" $
+        withConnection ":memory:" $ \conn ->
+          forM_
+            [ ("SELECT $foo::BIGINT, $\"2\"::BIGINT", "foo")
+            , ("SELECT $\"01\"::BIGINT, $\"2\"::BIGINT", "01")
+            , ("SELECT $`0`::BIGINT, $`2`::BIGINT", "0")
+            ]
+            $ \(sql, first) -> do
+              (queryNamed conn sql [first := (11 :: Int64), "2" := (22 :: Int64)] :: IO [(Int64, Int64)]) >>= (@?= [(11, 22)])
+              Internal.withParsedStatements conn sql $ \parsed -> case parsed of
+                [raw] -> bracket (Internal.createStatementFromParsed conn "SELECT ?, ?" raw) closeStatement $ \stmt -> do
+                  namedParameterIndex stmt first >>= (@?= Just 1)
+                  outcome <- try (bind stmt [toField (11 :: Int64), toField (22 :: Int64)])
+                  case outcome of
+                    Left (_ :: FormatError) -> pure ()
+                    Right () -> assertFailure "expected positional binding rejection for quoted names"
+                _ -> assertFailure "expected one parsed statement"
     , testCase "statements bind several thousand parameters by position and by name" $
         withConnection ":memory:" $ \conn -> do
           let count = 3000 :: Int
@@ -240,7 +258,7 @@ coreRegressionTests =
               :: IO [Only Int64]
             )
             >>= (@?= [Only (sum values)])
-          -- The last parameter decides whether the names are the positions 1 to n.
+          -- Dense numbered parameters bind by position despite their SQL order.
           (query conn "SELECT $2::BIGINT, $1::BIGINT, $3::BIGINT" (1 :: Int64, 2 :: Int64, 3 :: Int64) :: IO [(Int64, Int64, Int64)])
             >>= (@?= [(2, 1, 3)])
           (queryNamed conn "SELECT $1::BIGINT, $3::BIGINT" ["1" := (11 :: Int64), "3" := (33 :: Int64)] :: IO [(Int64, Int64)]) >>= (@?= [(11, 33)])

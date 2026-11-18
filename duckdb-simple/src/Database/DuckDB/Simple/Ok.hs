@@ -3,12 +3,12 @@
 
 -- |
 -- Module      : Database.DuckDB.Simple.Ok
--- Description : Lightweight error accumulation for row parsing.
+-- Description : Accumulate errors from row parsing.
 --
--- The @Ok@ type mirrors the helper used by @sqlite-simple@: it behaves like an
--- @Either [SomeException]@ with sensible @Alternative@ semantics that accumulate
--- failure reasons instead of discarding them. This underpins the row parser
--- machinery in @Database.DuckDB.Simple.FromRow@.
+-- The @Ok@ type mirrors the helper used by @sqlite-simple@. It behaves like
+-- @Either [SomeException]@. Its @Alternative@ instance keeps the errors when
+-- both alternatives fail. @Database.DuckDB.Simple.Conversion.runConversion@
+-- returns it after conversion effects and diagnostics have completed.
 module Database.DuckDB.Simple.Ok (
   Ok (..),
   ManyErrors (..),
@@ -19,7 +19,7 @@ import Control.Exception (Exception, SomeException, toException)
 import Control.Monad (MonadPlus (..))
 import qualified Control.Monad.Fail as Fail
 
--- | Simple success-or-errors container with error accumulation.
+-- | A value or a list of errors.
 data Ok a
   = Errors [SomeException]
   | Ok !a
@@ -56,7 +56,7 @@ instance MonadPlus Ok where
 instance Fail.MonadFail Ok where
   fail msg = Errors [toException (userError msg)]
 
--- | Bundle multiple underlying exceptions into a single throwable value.
+-- | Store multiple exceptions in one exception.
 newtype ManyErrors = ManyErrors [SomeException]
   deriving stock (Show)
 

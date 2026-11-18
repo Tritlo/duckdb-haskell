@@ -1,5 +1,8 @@
 # Changelog
 
+See [MIGRATION.md](https://github.com/Tritlo/duckdb-haskell/blob/main/MIGRATION.md)
+for the upgrade instructions.
+
 ## 2.0.0.0
 
 - Target DuckDB 2.0. The retained API supports DuckDB 2.0.x releases. Use the
@@ -10,6 +13,24 @@
   `Database.DuckDB.FFI`. See MIGRATION.md for the changed types and names.
 - Add `Database.DuckDB.FFI.V2` with the 620 functions of the new C API.
   Upstream marks this API as unstable, so it requires exactly DuckDB 2.0.0.
+- DuckDB 2.0.0 plans casts between some pairs of types as casts that cannot
+  fail. This includes registered casts, for example from INTEGER to VARCHAR. If
+  a registered cast reports an error for such a pair with an Invalid Input, Out
+  of Range, or Conversion code, or with a code that DuckDB does not map, for
+  example `DUCKDB_V2_ERROR_API`, DuckDB gives an INTERNAL error. During query
+  execution, that error invalidates the database. A V1 cast cannot
+  choose the code of its error. A V2 cast can report
+  `DUCKDB_V2_ERROR_TYPE_MISMATCH`. The other codes that keep their type and the
+  database, and that abort an explicit transaction under each transaction
+  invalidation policy, are the codes with the prefix `DUCKDB_V2_ERROR_` and
+  these names: IO_GENERAL, IO_HTTP, INPUT_OBJECT_SIZE, RESOURCE_OUT_OF_MEMORY,
+  RESOURCE_DEPENDENCY, RESOURCE_MISSING_EXTENSION, RESOURCE_AUTOLOAD,
+  TYPE_UNKNOWN, TYPE_INVALID, TYPE_DECIMAL, TYPE_DIVIDE_BY_ZERO, QUERY_SYNTAX,
+  QUERY_PLANNER, QUERY_OPTIMIZER, QUERY_EXPRESSION, QUERY_EXECUTOR,
+  QUERY_SCHEDULER, QUERY_NOT_IMPLEMENTED, QUERY_PARAMETER_NOT_RESOLVED,
+  DATABASE_CONSTRAINT, DATABASE_INDEX, DATABASE_SEQUENCE, DATABASE_STATISTICS,
+  DATABASE_SERIALIZATION, DATABASE_TRANSACTION, CONFIGURATION_SETTINGS,
+  CONFIGURATION_INVALID, RUNTIME_INTERRUPT, and RUNTIME_NULL_POINTER.
 - Add nanosecond timezone timestamps and the data-corruption and
   resource-in-use error tags.
 - Remove the Arrow callback constructors, wrappers, and release helpers. Use
@@ -21,6 +42,12 @@
   the library.
 - Reject platforms other than Linux and macOS on x86_64 and aarch64 at compile
   time.
+- Add an opt-in `extension` mode for loadable V2 extensions on Linux and macOS.
+  It uses the host's function table and does not link another DuckDB library.
+  This mode exposes only the V2 module. The C entry point of an extension calls
+  `duckdb_haskell_extension_load`, which negotiates the function table and
+  starts the threaded GHC runtime.
+- Install `duckdb_extension_v2.h` and `duckdb_haskell_extension.h`.
 
 ## 1.5.6.0
 

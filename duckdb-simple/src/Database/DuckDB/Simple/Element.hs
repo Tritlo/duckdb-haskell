@@ -1,68 +1,124 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 
--- | Decoders for one native DuckDB element in vector memory. Result decoding
--- uses them for the types whose element needs no logical type metadata.
+-- |
+-- Module      : Database.DuckDB.Simple.Element
+-- Description : Decoders for one native DuckDB element in vector memory.
+--
+-- Result decoding uses them for the types whose element needs no logical type
+-- metadata.
 module Database.DuckDB.Simple.Element (
   chunkIsRowValid,
-  bitStringFromBytes,
-  chunkDecodeBlob,
+  containsType,
   decodeElement,
   duckDBHugeIntToInteger,
+  timeTzMaxOffsetSeconds,
+  timeTzOffsetBits,
+  valueTypeName,
   vectorElementType,
   withVectorType,
 ) where
 
-import Control.Exception (bracket, throwIO)
-import Control.Monad (when)
-import Data.Bits (clearBit, shiftL, xor, (.|.))
+import Control.Exception (bracket, throwIO, try)
+import Data.Bits (clearBit, shiftL, shiftR, testBit, xor, (.&.), (.|.))
 import qualified Data.ByteString as BS
-import Data.Int (Int64)
+import Data.Coerce (coerce)
+import Data.Int (Int32, Int64)
 import Data.Ratio ((%))
+import Data.Text (Text)
+import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Time.Calendar (addDays, fromGregorian)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Time.LocalTime (TimeOfDay (..), minutesToTimeZone, utc, utcToLocalTime)
+import Data.Time.LocalTime (TimeOfDay (..), utc, utcToLocalTime)
 import qualified Data.UUID as UUID
 import Data.Void (Void)
 import Data.Word (Word64, Word8)
-import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
   BitString (..),
   FieldValue (..),
   IntervalValue (..),
   TimeWithZone (..),
-  fromBigNumBytes,
+  fieldTypeName,
  )
-import Database.DuckDB.Simple.LogicalRep (destroyLogicalType)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
+import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.C.Types (CBool (..))
-import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
+import Foreign.Marshal.Alloc (alloca, allocaBytes)
+import Foreign.Marshal.Array (advancePtr)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable (..), peekElemOff)
+import GHC.Exts (Ptr (..), Word (W#))
+import GHC.Num.Integer (integerFromAddr)
+import GHC.Records (getField)
 
+{- Note [Vector memory layouts]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Some readers and writers use the memory of a vector directly. These are the
+layouts that they use.
+
+The validity mask. Each uint64_t word covers 64 rows: bit N of word W is row
+W*64+N, and a set bit means valid. The header gives this layout in the comment
+of duckdb_v2_vector_flat_get_validity_mutable.
+
+- Read (chunkIsRowValid). The V2 API has no call that reads the validity of
+  one row, so the reader reads the mask memory from duckdb_v2_vector_get_view.
+  The header does not say what a null mask pointer means. In DuckDB 2.0.0 a
+  null pointer means that the vector has no mask, and then every row is valid.
+
+- Write (markValid and markInvalid). The writer sets or clears one bit of the
+  mask from duckdb_v2_vector_flat_get_validity_mutable. The header says that
+  this call allocates the mask on first use, so the pointer is never null. The
+  header also says that a raw mask write marks only the rows of this vector,
+  and that a NULL STRUCT or ARRAY row needs duckdb_v2_vector_set_null. The
+  writer writes a mask bit only for a raw result type. A NULL of each other
+  result type goes through duckdb_v2_vector_set_value. See
+  Note [Result writers] in "Database.DuckDB.Simple.Function.Internal".
+
+The bytes slot. A VARCHAR, BLOB, BIT, or BIGNUM element is a 16-byte
+duckdb_v2_bytes value. The byte length is a uint32_t at byte 0. A value of at
+most DUCKDB_V2_BYTES_INLINE_LENGTH (12) bytes follows the length, at byte 4.
+For a longer value, the slot holds the first 4 bytes of the value at byte 4 and
+the address of the value at byte 8. The header defines the slot in the comment
+of struct duckdb_v2_bytes.
+
+- Read (chunkDecodeBlob). The reader reads the generated fields of the union.
+
+- Write (writeArenaText). The writer needs no factory. It writes the length and
+  the bytes through the generated field pointers, as the reader reads them. A
+  longer value goes to the arena of the vector.
+
+The storage of a DECIMAL or ENUM element depends on the type (decimalStorage and
+enumStorage). The header of duckdb_v2_vector_get_view gives both mappings.
+-}
+
+-- | Read a validity bit of a mask from @duckdb_v2_vector_get_view@. A null
+-- mask pointer gives 'True' for each row. See Note [Vector memory layouts].
 chunkIsRowValid :: Ptr Word64 -> DuckDBIdx -> IO Bool
-chunkIsRowValid validity rowIdx
+chunkIsRowValid validity row
   | validity == nullPtr = pure True
-  | otherwise = do
-      CBool flag <- c_duckdb_validity_row_is_valid validity rowIdx
-      pure (flag /= 0)
+  | otherwise = (\word -> testBit word (fromIntegral (row `rem` 64))) <$> peekElemOff validity (fromIntegral (row `div` 64))
 
+-- | Copy one generated V2 byte value, including interior NUL bytes. See
+-- Note [Vector memory layouts].
 chunkDecodeBlob :: Ptr Void -> DuckDBIdx -> IO BS.ByteString
-chunkDecodeBlob dataPtr rowIdx = do
-  let base = castPtr dataPtr :: Ptr Word8
-      offset = fromIntegral rowIdx * duckdbStringTSize
-      stringPtr = castPtr (base `plusPtr` offset) :: Ptr DuckDBStringT
-  len <- peek stringPtr >>= c_duckdb_string_t_length
-  if len == 0
-    then pure BS.empty
-    else do
-      ConstPtr ptr <- c_duckdb_string_t_data stringPtr
-      BS.packCStringLen (ptr, fromIntegral len)
-
-duckdbStringTSize :: Int
-duckdbStringTSize = sizeOf (undefined :: DuckDBStringT)
+chunkDecodeBlob dataPtr row = do
+  -- Read each field through its generated field pointer. A getField on the
+  -- union value calls the bindings package. That call copies the union.
+  let ptr = advancePtr @DuckDBV2Bytes (castPtr dataPtr) (fromIntegral row)
+      value = getField @"value" ptr
+  len <- peek (getField @"length" (getField @"inlined" value))
+  source <-
+    if len <= fromIntegral dUCKDB_V2_BYTES_INLINE_LENGTH
+      then pure (coerce (getField @"inlined" (getField @"inlined" value)))
+      else peek (getField @"ptr" (getField @"pointer" value))
+  if len == 0 then pure BS.empty else BS.packCStringLen (source, fromIntegral len)
 
 -- | Decode DuckDB's BIT bytes: a padding count, then the data bytes. Clear the
 -- unused high bits of the first data byte, which DuckDB sets.
@@ -74,75 +130,72 @@ bitStringFromBytes bytes = case BS.unpack bytes of
     BitString padding (BS.pack (foldl clearBit first [8 - fromIntegral padding .. 7] : rest))
 
 -- | Borrow the logical type of a vector. The type is destroyed after the action.
-withVectorType :: DuckDBVector -> (DuckDBLogicalType -> IO a) -> IO a
-withVectorType vector = bracket (c_duckdb_vector_get_column_type vector) destroyLogicalType
+withVectorType :: DuckDBV2VectorHandle -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
+withVectorType vector = bracket (output (c_duckdb_v2_vector_get_logical_type vector)) destroyLogicalType
 
-vectorElementType :: DuckDBVector -> IO DuckDBType
-vectorElementType vec =
-  bracket (c_duckdb_vector_get_column_type vec) destroyLogicalType (fmap (\(DuckDBTypeAlias dtype) -> dtype) . c_duckdb_get_type_id)
+-- | Read the native logical type id of a vector.
+vectorElementType :: DuckDBV2VectorHandle -> IO DuckDBV2LogicalTypeId
+vectorElementType vector = withVectorType vector (output . c_duckdb_v2_logical_type_get_id)
 
 -- | Decode the element at an index of a vector's data. The type must not need
 -- logical type metadata: DECIMAL, ENUM, GEOMETRY, and nested types use their own
 -- decoders. The caller checks validity.
-decodeElement :: DuckDBType -> Ptr Void -> Int -> IO FieldValue
+decodeElement :: DuckDBV2LogicalTypeId -> Ptr Void -> Int -> IO FieldValue
 decodeElement dtype dataPtr rowIdx = case dtype of
-  DuckDBTypeBoolean -> do
+  DuckDBV2LogicalTypeIdBoolean -> do
     raw <- peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx
     pure (FieldBool (raw /= 0))
-  DuckDBTypeTinyInt -> FieldInt8 <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBTypeSmallInt -> FieldInt16 <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBTypeInteger -> FieldInt32 <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBTypeBigInt -> FieldInt64 <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBTypeUTinyInt -> FieldWord8 <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBTypeUSmallInt -> FieldWord16 <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBTypeUInteger -> FieldWord32 <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBTypeUBigInt -> FieldWord64 <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBTypeFloat -> FieldFloat <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBTypeDouble -> FieldDouble <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBTypeVarchar -> FieldText . TextEncoding.decodeUtf8 <$> chunkDecodeBlob dataPtr index
-  DuckDBTypeStringLiteral -> FieldText . TextEncoding.decodeUtf8 <$> chunkDecodeBlob dataPtr index
-  DuckDBTypeBlob -> FieldBlob <$> chunkDecodeBlob dataPtr index
-  DuckDBTypeUUID -> do
-    DuckDBUHugeInt lower upperBiased <- peekElemOff (castPtr dataPtr :: Ptr DuckDBUHugeInt) rowIdx
-    let upper = upperBiased `xor` (0x8000000000000000 :: Word64)
+  DuckDBV2LogicalTypeIdTinyInt -> FieldInt8 <$> peekElemOff (castPtr dataPtr) rowIdx
+  DuckDBV2LogicalTypeIdSmallInt -> FieldInt16 <$> peekElemOff (castPtr dataPtr) rowIdx
+  DuckDBV2LogicalTypeIdInteger -> FieldInt32 <$> peekElemOff (castPtr dataPtr) rowIdx
+  DuckDBV2LogicalTypeIdBigInt -> FieldInt64 <$> peekElemOff (castPtr dataPtr) rowIdx
+  DuckDBV2LogicalTypeIdUTinyInt -> FieldWord8 <$> peekElemOff (castPtr dataPtr) rowIdx
+  DuckDBV2LogicalTypeIdUSmallInt -> FieldWord16 <$> peekElemOff (castPtr dataPtr) rowIdx
+  DuckDBV2LogicalTypeIdUInteger -> FieldWord32 <$> peekElemOff (castPtr dataPtr) rowIdx
+  DuckDBV2LogicalTypeIdUBigInt -> FieldWord64 <$> peekElemOff (castPtr dataPtr) rowIdx
+  DuckDBV2LogicalTypeIdFloat -> FieldFloat <$> peekElemOff (castPtr dataPtr) rowIdx
+  DuckDBV2LogicalTypeIdDouble -> FieldDouble <$> peekElemOff (castPtr dataPtr) rowIdx
+  DuckDBV2LogicalTypeIdVarchar -> FieldText . TextEncoding.decodeUtf8 <$> chunkDecodeBlob dataPtr index
+  DuckDBV2LogicalTypeIdBlob -> FieldBlob <$> chunkDecodeBlob dataPtr index
+  DuckDBV2LogicalTypeIdUUID -> do
+    DuckDBV2HugeintT lower upperBiased <- peekElemOff (castPtr dataPtr :: Ptr DuckDBV2HugeintT) rowIdx
+    let upper = fromIntegral upperBiased `xor` (0x8000000000000000 :: Word64)
     pure (FieldUUID (UUID.fromWords64 (fromIntegral upper) lower))
-  DuckDBTypeDate -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldDate . decodeDuckDBDate
-  DuckDBTypeTime -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTime . decodeDuckDBTime
-  DuckDBTypeTimeNs -> FieldTime . decodeDuckDBTimeNs <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBTypeTimeTz -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimeTZ . decodeDuckDBTimeTz
-  DuckDBTypeTimestamp -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestamp
-  DuckDBTypeTimestampS -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampSeconds
-  DuckDBTypeTimestampMs -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampMilliseconds
-  DuckDBTypeTimestampNs -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampNanoseconds
-  DuckDBTypeTimestampTz -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestampTZ . decodeDuckDBTimestampUTCTime
-  DuckDBTypeTimestampTzNs -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestampTZ . decodeDuckDBTimestampNsUTCTime
-  DuckDBTypeInterval -> FieldInterval . intervalValueFromDuckDB <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBTypeHugeInt -> FieldHugeInt . duckDBHugeIntToInteger <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBTypeUHugeInt -> FieldUHugeInt . duckDBUHugeIntToInteger <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBTypeBit -> FieldBit . bitStringFromBytes <$> chunkDecodeBlob dataPtr index
-  DuckDBTypeBigNum -> do
+  DuckDBV2LogicalTypeIdDate -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldDate . decodeDuckDBDate
+  DuckDBV2LogicalTypeIdTime -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTime . decodeDuckDBTime
+  DuckDBV2LogicalTypeIdTimeNs -> FieldTime . decodeDuckDBTimeNs <$> peekElemOff (castPtr dataPtr) rowIdx
+  DuckDBV2LogicalTypeIdTimeTz -> FieldTimeTZ . decodeDuckDBTimeTz <$> peekElemOff (castPtr dataPtr) rowIdx
+  DuckDBV2LogicalTypeIdTimestamp -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestamp
+  DuckDBV2LogicalTypeIdTimestampSec -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampSeconds
+  DuckDBV2LogicalTypeIdTimestampMs -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampMilliseconds
+  DuckDBV2LogicalTypeIdTimestampNs -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampNanoseconds
+  DuckDBV2LogicalTypeIdTimestampTz -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestampTZ . decodeDuckDBTimestampUTCTime
+  DuckDBV2LogicalTypeIdTimestampTzNs -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestampTZ . decodeDuckDBTimestampNsUTCTime
+  DuckDBV2LogicalTypeIdInterval -> FieldInterval . intervalValueFromDuckDB <$> peekElemOff (castPtr dataPtr) rowIdx
+  DuckDBV2LogicalTypeIdHugeInt -> FieldHugeInt . duckDBHugeIntToInteger <$> peekElemOff (castPtr dataPtr) rowIdx
+  DuckDBV2LogicalTypeIdUHugeInt -> FieldUHugeInt . duckDBUHugeIntToInteger <$> peekElemOff (castPtr dataPtr) rowIdx
+  DuckDBV2LogicalTypeIdBit -> FieldBit . bitStringFromBytes <$> chunkDecodeBlob dataPtr index
+  DuckDBV2LogicalTypeIdBigNum -> do
     bytes <- chunkDecodeBlob dataPtr index
-    pure (FieldBigNum (BigNum (if BS.length bytes < 3 then 0 else fromBigNumBytes (BS.unpack bytes))))
-  DuckDBTypeIntegerLiteral -> FieldInt64 <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBTypeInvalid ->
-    error "duckdb-simple: INVALID type in eager result"
-  DuckDBTypeAny ->
-    error "duckdb-simple: ANY columns should not appear in results"
+    FieldBigNum . BigNum <$> decodeBigNum bytes
+  DuckDBV2LogicalTypeIdInvalid ->
+    throwInternalError (Text.pack "INVALID type in eager result")
+  DuckDBV2LogicalTypeIdAny ->
+    throwInternalError (Text.pack "ANY columns should not appear in results")
   other ->
-    error ("duckdb-simple: UNKNOWN type in eager result: " <> show other)
+    throwInternalError (Text.pack ("UNKNOWN type in eager result: " <> show other))
   where
     index = fromIntegral rowIdx :: DuckDBIdx
 
 -- | Decode dates with exact epoch arithmetic and preserve infinity.
-decodeDuckDBDate :: DuckDBDate -> IO Date
-decodeDuckDBDate (DuckDBDate days) =
-  pure (decodeUnbounded (\value -> addDays (toInteger value) (fromGregorian 1970 1 1)) days)
+decodeDuckDBDate :: Int32 -> IO Date
+decodeDuckDBDate = pure . decodeUnbounded (\value -> addDays (toInteger value) (fromGregorian 1970 1 1))
 
-decodeDuckDBTime :: DuckDBTime -> IO TimeOfDay
-decodeDuckDBTime raw = timeStructToTimeOfDay <$> c_duckdb_from_time raw
+decodeDuckDBTime :: Int64 -> IO TimeOfDay
+decodeDuckDBTime = pure . decodeTimeUnits 1000000
 
-decodeDuckDBTimestamp :: DuckDBTimestamp -> IO LocalTimestamp
-decodeDuckDBTimestamp (DuckDBTimestamp micros) = decodeTimestampUnits 1000000 micros
+decodeDuckDBTimestamp :: Int64 -> IO LocalTimestamp
+decodeDuckDBTimestamp = decodeTimestampUnits 1000000
 
 -- | Interpret native infinity sentinels before converting a finite payload.
 decodeUnbounded :: (Integral a, Bounded a) => (a -> b) -> a -> Unbounded b
@@ -153,73 +206,111 @@ decodeUnbounded decode value
 
 -- | Decode timestamp units without overflowing an intermediate Int64.
 decodeTimestampUnits :: Integer -> Int64 -> IO LocalTimestamp
-decodeTimestampUnits units =
-  pure . decodeUnbounded (utcToLocalTime utc . posixSecondsToUTCTime . fromRational . (% units) . toInteger)
+decodeTimestampUnits units = pure . decodeUnbounded (utcToLocalTime utc . posixSecondsToUTCTime . fromRational . (% units) . toInteger)
 
-decodeDuckDBTimeNs :: DuckDBTimeNs -> TimeOfDay
-decodeDuckDBTimeNs (DuckDBTimeNs nanos) =
-  let (hours, remainderHours) = nanos `divMod` (60 * 60 * 1000000000)
-      (minutes, remainderMinutes) = remainderHours `divMod` (60 * 1000000000)
-      (seconds, fractionalNanos) = remainderMinutes `divMod` 1000000000
-      fractional = fromRational (toInteger fractionalNanos % 1000000000)
-      totalSeconds = fromIntegral seconds + fractional
-  in  TimeOfDay
-        (fromIntegral hours)
-        (fromIntegral minutes)
-        totalSeconds
+-- | Decode raw time units with exact fractional seconds.
+decodeTimeUnits :: Int64 -> Int64 -> TimeOfDay
+decodeTimeUnits units value =
+  let (hours, remHours) = value `divMod` (3600 * units)
+      (minutes, remMinutes) = remHours `divMod` (60 * units)
+  in  TimeOfDay (fromIntegral hours) (fromIntegral minutes) (fromRational (toInteger remMinutes % toInteger units))
 
-decodeDuckDBTimeTz :: DuckDBTimeTz -> IO TimeWithZone
-decodeDuckDBTimeTz raw = do
-  DuckDBTimeTzStruct timeStruct offset <- c_duckdb_from_time_tz raw
-  when (offset `rem` 60 /= 0) $
-    throwIO (userError "duckdb-simple: TIMETZ offset cannot be represented in whole minutes")
-  let timeOfDay = timeStructToTimeOfDay timeStruct
-      minutes = fromIntegral offset `div` 60
-      zone = minutesToTimeZone minutes
-  pure TimeWithZone{timeWithZoneTime = timeOfDay, timeWithZoneZone = zone}
+decodeDuckDBTimeNs :: Int64 -> TimeOfDay
+decodeDuckDBTimeNs = decodeTimeUnits 1000000000
 
-decodeDuckDBTimestampSeconds :: DuckDBTimestampS -> IO LocalTimestamp
-decodeDuckDBTimestampSeconds (DuckDBTimestampS seconds) =
-  decodeTimestampUnits 1 seconds
+-- | The largest UTC offset of a TIMETZ value in seconds: 15:59:59. DuckDB 2.0.0
+-- defines it as @dtime_tz_t::MAX_OFFSET@ in
+-- @src/include/duckdb/common/types/datetime.hpp@. The low 24 bits of a TIMETZ
+-- value hold this maximum minus the offset (@encode_offset@ and
+-- @decode_offset@ in that file). The V2 header says only "micros in the high
+-- 40 bits, a biased offset in the low 24" (the comment of
+-- @duckdb_v2_value_get_time_tz@). The header does not give the value of the
+-- bias.
+timeTzMaxOffsetSeconds :: Int
+timeTzMaxOffsetSeconds = 16 * 60 * 60 - 1
 
-decodeDuckDBTimestampMilliseconds :: DuckDBTimestampMs -> IO LocalTimestamp
-decodeDuckDBTimestampMilliseconds (DuckDBTimestampMs millis) =
-  decodeTimestampUnits 1000 millis
+-- | The number of low bits of a TIMETZ value that hold the biased offset. The
+-- high 40 bits hold the time of day in microseconds. DuckDB 2.0.0 names the two
+-- widths @dtime_tz_t::OFFSET_BITS@ and @dtime_tz_t::TIME_BITS@.
+timeTzOffsetBits :: Int
+timeTzOffsetBits = 24
 
-decodeDuckDBTimestampNanoseconds :: DuckDBTimestampNs -> IO LocalTimestamp
-decodeDuckDBTimestampNanoseconds (DuckDBTimestampNs nanos) = decodeTimestampUnits 1000000000 nanos
-
-decodeDuckDBTimestampUTCTime :: DuckDBTimestamp -> IO UTCTimestamp
-decodeDuckDBTimestampUTCTime (DuckDBTimestamp micros) =
-  pure (decodeUnbounded (posixSecondsToUTCTime . fromRational . (% 1000000) . toInteger) micros)
-
--- | Decode UTC nanoseconds with exact epoch arithmetic and preserve infinity.
-decodeDuckDBTimestampNsUTCTime :: DuckDBTimestampNs -> IO UTCTimestamp
-decodeDuckDBTimestampNsUTCTime (DuckDBTimestampNs nanos) =
-  pure (decodeUnbounded (posixSecondsToUTCTime . fromRational . (% 1000000000) . toInteger) nanos)
-
-intervalValueFromDuckDB :: DuckDBInterval -> IntervalValue
-intervalValueFromDuckDB (DuckDBInterval months days micros) =
-  IntervalValue
-    { intervalMonths = months
-    , intervalDays = days
-    , intervalMicros = micros
+-- | Decode the time of day and the offset in seconds of a TIMETZ value.
+decodeDuckDBTimeTz :: Word64 -> TimeWithZone
+decodeDuckDBTimeTz raw =
+  TimeWithZone
+    { timeWithZoneTime = decodeTimeUnits 1000000 (fromIntegral (raw `shiftR` timeTzOffsetBits))
+    , timeWithZoneOffsetSeconds = fromIntegral (timeTzMaxOffsetSeconds - fromIntegral (raw .&. (1 `shiftL` timeTzOffsetBits - 1)))
     }
 
-duckDBHugeIntToInteger :: DuckDBHugeInt -> Integer
-duckDBHugeIntToInteger (DuckDBHugeInt lower upper) =
-  (fromIntegral upper `shiftL` 64) .|. fromIntegral lower
+decodeDuckDBTimestampSeconds :: Int64 -> IO LocalTimestamp
+decodeDuckDBTimestampSeconds = decodeTimestampUnits 1
 
-duckDBUHugeIntToInteger :: DuckDBUHugeInt -> Integer
-duckDBUHugeIntToInteger (DuckDBUHugeInt lower upper) =
-  (fromIntegral upper `shiftL` 64) .|. fromIntegral lower
+decodeDuckDBTimestampMilliseconds :: Int64 -> IO LocalTimestamp
+decodeDuckDBTimestampMilliseconds = decodeTimestampUnits 1000
 
-timeStructToTimeOfDay :: DuckDBTimeStruct -> TimeOfDay
-timeStructToTimeOfDay (DuckDBTimeStruct hour minute second micros) =
-  let secondsInt = fromIntegral second :: Integer
-      fractional = fromRational (toInteger micros % 1000000)
-      totalSeconds = fromInteger secondsInt + fractional
-  in  TimeOfDay
-        (fromIntegral hour)
-        (fromIntegral minute)
-        totalSeconds
+decodeDuckDBTimestampNanoseconds :: Int64 -> IO LocalTimestamp
+decodeDuckDBTimestampNanoseconds = decodeTimestampUnits 1000000000
+
+decodeDuckDBTimestampUTCTime :: Int64 -> IO UTCTimestamp
+decodeDuckDBTimestampUTCTime = pure . decodeUnbounded (posixSecondsToUTCTime . fromRational . (% 1000000) . toInteger)
+
+-- | Decode UTC nanoseconds and preserve infinity.
+decodeDuckDBTimestampNsUTCTime :: Int64 -> IO UTCTimestamp
+decodeDuckDBTimestampNsUTCTime = pure . decodeUnbounded (posixSecondsToUTCTime . fromRational . (% 1000000000) . toInteger)
+
+intervalValueFromDuckDB :: DuckDBV2IntervalT -> IntervalValue
+intervalValueFromDuckDB (DuckDBV2IntervalT months days micros) = IntervalValue months days micros
+
+duckDBHugeIntToInteger :: DuckDBV2HugeintT -> Integer
+duckDBHugeIntToInteger (DuckDBV2HugeintT lower upper) = (fromIntegral upper `shiftL` 64) .|. fromIntegral lower
+
+duckDBUHugeIntToInteger :: DuckDBV2UhugeintT -> Integer
+duckDBUHugeIntToInteger (DuckDBV2UhugeintT lower upper) = (fromIntegral upper `shiftL` 64) .|. fromIntegral lower
+
+-- | Decode opaque BIGNUM storage through the V2 magnitude interface.
+decodeBigNum :: BS.ByteString -> IO Integer
+decodeBigNum bytes = BS.useAsCStringLen bytes \(raw, len) -> alloca \lengthSlot -> alloca \signSlot -> do
+  let decode ptr capacity = checked (c_duckdb_v2_bignum_decode (ConstPtr (castPtr raw)) (fromIntegral len) ptr capacity lengthSlot signSlot)
+      finish magnitude = do
+        count <- peek lengthSlot
+        negative <- peek signSlot
+        value <- bigEndianInteger magnitude count
+        pure $! if negative == 0 then value else negate value
+  -- A buffer of the storage size usually holds the magnitude. If the buffer is
+  -- too short, DuckDB gives the required size, and a second call decodes the value.
+  allocaBytes len \first -> do
+    outcome <- try (decode first (fromIntegral len))
+    case outcome of
+      Right () -> finish first
+      Left err
+        | sqlErrorType err == Just ErrorInputObjectSize -> do
+            count <- peek lengthSlot
+            allocaBytes (fromIntegral count) \magnitude -> decode magnitude count >> finish magnitude
+        | otherwise -> throwIO err
+
+-- | Read an unsigned big-endian magnitude in linear time.
+bigEndianInteger :: Ptr Word8 -> DuckDBIdx -> IO Integer
+bigEndianInteger (Ptr addr) count = case fromIntegral count of W# size -> integerFromAddr size addr 1#
+
+-- | The SQL type name of a decoded value. Errors name the type because a
+-- value can be large.
+valueTypeName :: FieldValue -> Text
+valueTypeName = fieldTypeName (LogicalTypeScalar LogicalTypeIdVariant)
+
+-- | Test whether a type is or contains a type that the predicate accepts. The
+-- test visits the element type of a LIST and an ARRAY, the key type and the
+-- value type of a MAP, the field types of a STRUCT and a TUPLE, the member
+-- types of a UNION, and the base type of an alias. See Note [Type aliases] in
+-- "Database.DuckDB.Simple.LogicalRep".
+containsType :: (LogicalTypeRep -> Bool) -> LogicalTypeRep -> Bool
+containsType accepts rep =
+  accepts rep || case rep of
+    LogicalTypeAlias _ base -> containsType accepts base
+    LogicalTypeList child -> containsType accepts child
+    LogicalTypeArray child _ -> containsType accepts child
+    LogicalTypeMap key value -> containsType accepts key || containsType accepts value
+    LogicalTypeStruct fields -> any (containsType accepts . structFieldValue) fields
+    LogicalTypeTuple fields -> any (containsType accepts) fields
+    LogicalTypeUnion members -> any (containsType accepts . unionMemberType) members
+    _ -> False

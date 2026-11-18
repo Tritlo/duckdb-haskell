@@ -14,6 +14,13 @@ tests are in `duckdb-simple/test`, and its leak test is in `duckdb-simple/leakte
 The pure geometry types and codecs are maintained in
 [geometry-simple](https://github.com/Tritlo/geometry-simple).
 
+## Design principle
+
+The motto of `duckdb-simple` is "least surprise". The library does not add
+hidden behavior. Functions that accept the same input must give the same result
+as DuckDB. When two functions treat an input differently, make them consistent
+unless a documented reason requires the difference.
+
 ## Testing guidelines
 
 Test new behavior through the database where possible. Add regressions for
@@ -30,11 +37,14 @@ C ABI assertions. Keep it outside Git. The checksum file and generator are
 tracked. Run the generator without `--check` after an intentional input change.
 Review the new checksums.
 
-`dev/release.sh` generates and verifies both APIs before it builds the
-Hackage source archives and documentation. It then uploads the selected
-packages. The source archives contain the generated Haskell modules and C ABI
-checks. Package users do not need Nix, LLVM, or hs-bindgen. The release script
-uploads candidates by default. Use `--publish` for an authorized release.
+`dev/release.sh` generates and verifies both APIs. It then builds the Hackage
+source archives and documentation of all selected packages, and asks for the
+credentials after that. Stop at the prompt for a rehearsal without an upload.
+The source archives contain the generated Haskell modules and C ABI checks.
+Package users do not need Nix, LLVM, or hs-bindgen. The release script uploads
+candidates by default. Use `--publish` for an authorized release.
+
+Run the release from `nix-shell dev/nix/shell.nix`.
 
 Build all components before running the tests. With Cabal 3.16 and 3.18,
 `cabal test all` on a clean tree can skip building the tests for a package
@@ -46,25 +56,28 @@ cabal test all --test-show-details=direct
 cabal run duckdb-simple-leak-test -- all 100
 ```
 
-The last command checks 10,000 query cycles, 10,000 callback cycles, 10,000
-VARIANT/GEOMETRY cycles, and 7,000 cancellation attempts.
-Each phase keeps one connection open.
-The normal leak test uses one tenth of those counts. Native RSS and thread
-checks require Linux `/proc`.
+The last command runs the `all` mode with 100 batches: 32
+open/close cycles, the dropped-handles check, 10,000 query cycles, 10,000
+callback cycles, 7,000 cancellation attempts, 10,000 cycles of VARIANT,
+GEOMETRY, and other composite values, and 2,000 typed registration cycles.
+The sustained phases keep one connection open.
+The normal leak test uses 10 batches, so each batched phase runs one tenth
+of those counts. Native RSS and thread checks require Linux `/proc`.
 Callback collection and functional checks also run on other systems.
 
-The Linux CI job with GHC 9.12.4 also runs the open/close, callback,
-cancellation, VARIANT/GEOMETRY, and DataFrame checks under Valgrind. Definite
-and indirect native leaks fail the job. That job sets `DUCKDB_LEAK_RSS_CHECK=0`
-because Valgrind changes process RSS. The ordinary leak test keeps the RSS
-assertion enabled.
+The Linux CI job with GHC 9.12.4 also runs these under Valgrind: the V2 test of
+`duckdb-ffi`, the leak test modes `open-close`, `dropped-handles`, `long-lived`,
+`callbacks`, `cancel`, `new-types`, and `typed` with one batch each, and the
+DataFrame test. Definite and indirect native leaks fail the job. That job sets
+`DUCKDB_LEAK_RSS_CHECK=0` because Valgrind changes process RSS. The ordinary
+leak test keeps the RSS assertion enabled.
 
 Use `--with-compiler=ghc-VERSION` to select a supported compiler.
 For benchmarks, build both versions with the same compiler and DuckDB library.
 For example:
 
 ```sh
-cabal bench duckdb-simple-bench --benchmark-options='fold 100000'
+cabal bench duckdb-simple-bench --benchmark-options='fold 100000 +RTS -N1 -T -RTS'
 ```
 
 Nix CI builds DuckDB from the pinned source. It builds and tests both packages
@@ -91,9 +104,12 @@ sets the style and the column limit.
 Format Cabal files with `cabal-gild`. Keep names consistent with the surrounding
 module.
 
-Build parameter types with the type cache of the statement's connection. The
-cache reads its types on a separate connection the first time a parameter
-needs one. Do not run queries on the statement's connection during binding.
+Build parameter values with a factory borrowed from the statement's connection.
+Construct recognized GEOMETRY CRS names and full definitions directly. Resolve
+unknown custom labels on demand through SQL on a helper connection. Use a helper
+connection for VARIANT metadata queries too, so these queries do not interrupt
+an active stream. Use public V2 operations and SQL metadata.
+Do not read private payload layouts or convert handles between the two APIs.
 
 ## Native library configuration
 
@@ -112,10 +128,11 @@ library. Set `extra-lib-dirs` to an absolute path to select
 a library in another directory. See the `cabal.project` example in the README.
 Nix builds use the library supplied by Nix and do not download it.
 
-CI tests the pinned 2.0.0 release with all supported compilers on Linux and
-GHC 9.14.1 on macOS. The V2 API requires exactly DuckDB 2.0.0. Set
-`DUCKDB_TEST_VERSION` to the exact expected version, such as `2.0.0`, to detect
-loader configuration errors. Run the full suite after each native pin update.
+CI tests the pinned 2.0.0 release with all supported compilers on Linux x86_64,
+and with GHC 9.14.1 on Linux aarch64 and on macOS. The V2 API requires exactly
+DuckDB 2.0.0. Set `DUCKDB_TEST_VERSION` to the exact expected version, such as
+`2.0.0`, to detect loader configuration errors. Run the full suite after each
+native pin update.
 
 CI also builds and tests with `--enable-optimization=0` on GHC 9.14.1 and
 DuckDB 2.0. Floating-point conversion must preserve special values without
@@ -125,3 +142,20 @@ compiler rewrite rules.
 
 Document exported functions and types with Haddock comments.
 Build the documentation with `cabal haddock all`.
+
+Explain a concept that more than one definition depends on in a Note, in the
+style of GHC. Put the Note next to the definition that owns the concept:
+
+```haskell
+{- Note [Callback marks]
+~~~~~~~~~~~~~~~~~~~~~~~~
+The text of the Note.
+-}
+```
+
+At each other place that depends on the concept, refer to the Note: `See
+Note [Callback marks]`. Add the module name when the Note is in another module.
+Keep the Haddock comment of a definition short. Put the reasons that connect
+several definitions in the Note, and do not repeat them at the other places.
+Start each item of a list in a Note with `-`. `fourmolu` changes a `*` at the
+start of a line to `\*`.

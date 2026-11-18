@@ -2,29 +2,74 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
+-- The tests call deleteFunction on purpose, so its warning does not apply.
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
--- | Regression tests for extension callbacks and native handle ownership.
+-- |
+-- Module      : ExtensionRegressionTests
+-- Description : Regression tests for extension callbacks and native handle ownership.
 module ExtensionRegressionTests (main, extensionRegressionTests) where
 
-import Control.Exception (AsyncException (ThreadKilled), ErrorCall, Exception (..), SomeException, bracket, throwIO, try)
-import Control.Monad (forM_, replicateM_, void)
+import Control.Concurrent (forkIOWithUnmask, killThread, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
+import Control.Exception (
+  AsyncException (ThreadKilled),
+  ErrorCall,
+  Exception (..),
+  IOException,
+  SomeException,
+  bracket,
+  bracket_,
+  finally,
+  throwIO,
+  try,
+ )
+import Control.Monad (forM, forM_, forever, replicateM_, void, when)
 import qualified Data.ByteString as BS
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
+import Data.List (find, isInfixOf, nub, sort)
+import Data.Maybe (isJust)
 import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as Text
+import Data.Time.Clock (addUTCTime, getCurrentTime)
 import Data.Word (Word64)
-import Database.DuckDB.FFI
+import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Catalog as Catalog
 import qualified Database.DuckDB.Simple.Config as Config
 import qualified Database.DuckDB.Simple.Copy as Copy
 import qualified Database.DuckDB.Simple.FileSystem as FileSystem
+import Database.DuckDB.Simple.FromField (FieldValue (..))
+import Database.DuckDB.Simple.Internal (
+  MacroFunctionType,
+  acquireItems,
+  errorTypeCodes,
+  errorTypeFromNative,
+  logLevelFromNative,
+  logLevelToNative,
+  logScopeFromNative,
+  macroFunctionTypeToNative,
+  settingScopeFromNative,
+  settingScopeToNative,
+  throwInternalError,
+  tokenTypeFromNative,
+ )
 import qualified Database.DuckDB.Simple.Logging as Logging
-import System.Directory (removeFile)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
+import qualified Database.DuckDB.Simple.Tokenizer as Tokenizer
+import qualified Database.DuckDB.Simple.V2.Registration as Registration
+import Numeric.Natural (Natural)
+import System.Directory (doesFileExist, getHomeDirectory, getTemporaryDirectory, removeFile)
+import System.FilePath (takeDirectory)
 import System.IO (hClose, openBinaryTempFile)
+import System.Mem (performMajorGC)
+import System.Mem.Weak (deRefWeak)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
+import TestUtils (assertInputErrorContaining, assertRangeError, assertReleasedAfter, assertSqlErrorContaining, assertSqlErrorType)
 
 -- | Run the extension regression tests as a standalone executable.
 main :: IO ()
@@ -35,27 +80,53 @@ extensionRegressionTests :: TestTree
 extensionRegressionTests =
   testGroup
     "extension regressions"
-    [ testCase "scalar closed connection cleanup" do
+    [ -- A registration on a closed connection raises the error before it
+      -- allocates a callback.
+      testCase "scalar registration on a closed connection raises the closed error" do
         conn <- open ":memory:"
         close conn
-        replicateM_ 32 $ assertSqlError $ createFunction conn "closed_scalar" (1 :: Int64)
-    , testCase "stateful closed connection cleanup" do
+        replicateM_ 32 $ assertSqlErrorContaining "connection is closed" $ createFunction conn "closed_scalar" (1 :: Int64)
+    , testCase "stateful registration on a closed connection raises the closed error" do
         conn <- open ":memory:"
         close conn
-        replicateM_ 32 $ assertSqlError $ createFunctionWithState conn "closed_state" (pure ()) (\() -> (1 :: Int64))
-    , testCase "COPY closed connection cleanup" do
+        replicateM_ 32
+          $ assertSqlErrorContaining "connection is closed"
+          $ createFunctionWithState conn "closed_state" (pure ()) (\() -> (1 :: Int64))
+    , testCase "COPY registration on a closed connection raises the closed error" do
         conn <- open ":memory:"
         close conn
-        replicateM_ 32 $ assertSqlError $ registerCopy conn "closed_copy" Nothing
-    , testCase "logging closed connection cleanup" do
+        replicateM_ 32 $ assertSqlErrorContaining "connection is closed" $ registerCopy conn "closed_copy" Nothing
+    , testCase "logging registration on a closed connection raises the closed error" do
         conn <- open ":memory:"
         close conn
-        replicateM_ 32 $ assertSqlError $ Logging.registerLogStorage conn "closed_log" (\_ -> pure ())
-    , testCase "scalar replacement registration cleanup" $
+        replicateM_ 32 $ assertSqlErrorContaining "connection is closed" $ Logging.registerLogStorage conn "closed_log" (\_ -> pure ())
+    , testCase "scalar replacement releases each replaced callback before the connection closes" $
         withConnection ":memory:" \conn -> do
           createFunction conn "duplicate_scalar" (42 :: Int64)
-          replicateM_ 32 $ createFunction conn "duplicate_scalar" (7 :: Int64)
+          assertReleasedAfter "a replaced scalar function" \token -> do
+            replicateM_ 32 $ createFunction conn "duplicate_scalar" (readIORef token)
+            createFunction conn "duplicate_scalar" (7 :: Int64)
           query_ conn "SELECT duplicate_scalar()" >>= (@?= [Only (7 :: Int64)])
+    , testCase "a scalar function of a rolled-back transaction is gone and releases its callback" $
+        withConnection ":memory:" \conn -> do
+          assertReleasedAfter "a rolled-back scalar function" \token -> do
+            _ <- execute_ conn "BEGIN TRANSACTION"
+            createFunction conn "rolled_scalar" (\(x :: Int64) -> (+ x) <$> readIORef token)
+            query_ conn "SELECT rolled_scalar(1)" >>= (@?= [Only (2 :: Int64)])
+            void (execute_ conn "ROLLBACK")
+          assertSqlErrorType ErrorDatabaseCatalog (query_ conn "SELECT rolled_scalar(1)" :: IO [Only Int64])
+          createFunction conn "rolled_scalar" (\(x :: Int64) -> x + 100)
+          query_ conn "SELECT rolled_scalar(1)" >>= (@?= [Only (101 :: Int64)])
+          -- A registration that stays keeps its callback.
+          kept <- do
+            token <- newIORef (1 :: Int64)
+            weak <- mkWeakIORef token (pure ())
+            createFunction conn "kept_scalar" (\(x :: Int64) -> (+ x) <$> readIORef token)
+            pure weak
+          performMajorGC
+          performMajorGC
+          deRefWeak kept >>= assertBool "a registration that stays keeps its callback" . isJust
+          query_ conn "SELECT kept_scalar(1)" >>= (@?= [Only (2 :: Int64)])
     , testCase "scalar deletion refusal keeps function and connection usable" $
         withConnection ":memory:" \conn -> do
           createFunction conn "retained_scalar" (42 :: Int64)
@@ -66,21 +137,82 @@ extensionRegressionTests =
         withConnection ":memory:" \conn -> do
           deleteFunction conn "absent_scalar"
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-    , testCase "stateful replacement registration cleanup" $
+    , testCase "clearing bindings permits statement reuse after cancellation" $
+        withConnection ":memory:" \conn -> do
+          let parameters = replicate 32 (toField (Text.replicate 4096 "x"))
+              sql = Query ("SELECT length(concat(" <> Text.intercalate ", " (replicate 32 "?::VARCHAR") <> "))")
+          withStatement conn sql \stmt -> replicateM_ 16 do
+            started <- newEmptyMVar
+            done <- newEmptyMVar
+            -- Each worker alternates binding and clearing. The cancellation
+            -- can occur in either operation. The last query checks reuse.
+            -- Unmask the loop because bracket masks the creation of the worker.
+            bracket
+              ( forkIOWithUnmask \unmask ->
+                  try @SomeException (unmask (putMVar started () >> forever (bind stmt parameters >> clearStatementBindings stmt)))
+                    >>= putMVar done
+              )
+              ( \worker -> do
+                  stopped <- timeout (5 * 1000000) (killThread worker >> readMVar done)
+                  case stopped of
+                    Just _ -> pure ()
+                    Nothing -> assertFailure "the binding worker did not stop during cleanup"
+              )
+              \worker -> do
+                outcome <- timeout (5 * 1000000) do
+                  takeMVar started
+                  threadDelay 1000
+                  killThread worker
+                  readMVar done
+                case outcome of
+                  Just (Left failure) | fromException failure == Just ThreadKilled -> pure ()
+                  Just (Left failure) -> throwIO failure
+                  Just (Right ()) -> assertFailure "the binding worker returned before cancellation"
+                  Nothing -> assertFailure "the binding worker did not finish after cancellation"
+            clearStatementBindings stmt
+            bind stmt parameters
+            nextRow stmt >>= (@?= Just (Only (131072 :: Int64)))
+    , testCase "deleteFunction reads the name with the qualified-name rules of DuckDB" $
+        withConnection ":memory:" \conn -> do
+          let macroCount :: Text.Text -> Text.Text -> IO [Only Int64]
+              macroCount schema name = query conn "SELECT count(*) FROM duckdb_functions() WHERE schema_name = ? AND function_name = ?" (schema, name)
+          void $ execute_ conn "CREATE MACRO \"a.b\"(x) AS x + 1; CREATE SCHEMA s; CREATE MACRO s.f(x) AS x; CREATE MACRO s.g(x) AS x"
+          mapM (uncurry macroCount) [("main", "a.b"), ("s", "f"), ("s", "g")] >>= (@?= replicate 3 [Only 1])
+          deleteFunction conn "\"a.b\""
+          macroCount "main" "a.b" >>= (@?= [Only 0])
+          deleteFunction conn "s.f"
+          macroCount "s" "f" >>= (@?= [Only 0])
+          deleteFunction conn "memory.s.g"
+          macroCount "s" "g" >>= (@?= [Only 0])
+          -- The parser rejects a quote inside a part that has no quotes, so no
+          -- statement runs.
+          void $ execute_ conn "CREATE TABLE kept (i INTEGER)"
+          assertSqlErrorContaining "Unexpected quote" $ deleteFunction conn "x\"; DROP TABLE kept; --"
+          query_ conn "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'kept'" >>= (@?= [Only (1 :: Int64)])
+          assertSqlErrorContaining "Unexpected quote" $ deleteFunction conn "a\"b"
+          assertSqlErrorContaining "between one and three parts" $ deleteFunction conn "a.b.c.d"
+    , testCase "stateful replacement releases each replaced callback before the connection closes" $
         withConnection ":memory:" \conn -> do
           createFunctionWithState conn "duplicate_state" (pure ()) (\() -> (42 :: Int64))
-          replicateM_ 32 $ createFunctionWithState conn "duplicate_state" (pure ()) (\() -> (7 :: Int64))
+          assertReleasedAfter "a replaced stateful function" \token -> do
+            replicateM_ 32 $ createFunctionWithState conn "duplicate_state" (readIORef token) (id :: Int64 -> Int64)
+            createFunctionWithState conn "duplicate_state" (pure ()) (\() -> (7 :: Int64))
           query_ conn "SELECT duplicate_state()" >>= (@?= [Only (7 :: Int64)])
-    , testCase "scalar invalid signature registration cleanup" $
+    , -- DuckDB refuses the type of the argument after the registration
+      -- allocates its callbacks.
+      testCase "scalar registration with an invalid signature releases its callbacks at the failure" $
         withConnection ":memory:" \conn ->
-          replicateM_ 32 $ assertSqlError $ createFunction conn "invalid_scalar" InvalidSignature
-    , testCase "stateful invalid signature registration cleanup" $
+          assertReleasedAfter "a scalar function with an invalid signature" \token ->
+            replicateM_ 32 $ assertSqlError $ createFunction conn "invalid_scalar" (InvalidSignature token)
+    , testCase "stateful registration with an invalid signature releases its callbacks at the failure" $
         withConnection ":memory:" \conn ->
-          replicateM_ 32 $ assertSqlError $ createFunctionWithState conn "invalid_state" (pure ()) (\() -> InvalidSignature)
-    , testCase "logging duplicate registration cleanup" $
+          assertReleasedAfter "a stateful function with an invalid signature" \token ->
+            replicateM_ 32 $ assertSqlError $ createFunctionWithState conn "invalid_state" (readIORef token) (\_ -> InvalidSignature token)
+    , testCase "logging duplicate registration releases each rejected callback at the failure" $
         withConnection ":memory:" \conn -> do
           Logging.registerLogStorage conn "duplicate_log" (\_ -> pure ())
-          replicateM_ 32 $ assertSqlError $ Logging.registerLogStorage conn "duplicate_log" (\_ -> pure ())
+          assertReleasedAfter "a rejected log storage" \token ->
+            replicateM_ 32 $ assertSqlError $ Logging.registerLogStorage conn "duplicate_log" (\_ -> void (readIORef token))
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "empty registration names fail safely" $
         withConnection ":memory:" \conn -> replicateM_ 32 do
@@ -94,21 +226,79 @@ extensionRegressionTests =
           assertSqlError $ createFunctionWithState conn "nul\0state" (pure ()) (\() -> (1 :: Int64))
           assertSqlError $ registerCopy conn "nul\0copy" Nothing
           assertSqlError $ Logging.registerLogStorage conn "nul\0log" (\_ -> pure ())
-    , testCase "partial scalar setup cleanup" $
-        withConnection ":memory:" \conn -> replicateM_ 32 do
-          outcome <- try (createFunction conn "broken_signature" BrokenSignature) :: IO (Either ErrorCall ())
-          case outcome of
-            Left _ -> pure ()
-            Right () -> assertFailure "expected signature exception"
+    , testCase "a scalar registration whose setup fails releases its callbacks at the failure" $
+        -- The registration forces the argument declaration after it acquires the callbacks.
+        -- If a change forces the declaration before the acquisition, this check cannot fail.
+        withConnection ":memory:" \conn ->
+          assertReleasedAfter "a scalar function whose setup fails" \token -> replicateM_ 32 do
+            outcome <- try (createFunction conn "broken_signature" (BrokenSignature token)) :: IO (Either ErrorCall ())
+            case outcome of
+              Left err -> assertBool (displayException err) ("broken scalar signature" `isInfixOf` displayException err)
+              Right () -> assertFailure "expected signature exception"
+    , testCase "a raw result of another type than the result vector is an SQL error" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "mismatched_result" MismatchedResult
+          assertSqlErrorContaining
+            "but the result value has the type BIGINT"
+            (query_ conn "SELECT mismatched_result()" :: IO [Only Text.Text])
+          query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "scalar exceptions become SQL errors" $
         withConnection ":memory:" \conn -> do
           createFunction conn "throw_scalar" (throwIO (userError "scalar callback failure") :: IO Int64)
           assertSqlErrorContaining "scalar callback failure" (query_ conn "SELECT throw_scalar()" :: IO [Only Int64])
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+    , testCase "a scalar callback failure gives an SQL error of the type ErrorInputInvalid" $
+        withConnection ":memory:" \conn -> do
+          -- An untyped callback failure gets the code DuckDBV2ErrorApi.
+          -- DuckDB 2.0.0 reports that code as an invalid input.
+          createFunction conn "throw_typed_scalar" (throwIO (userError "typed callback failure") :: IO Int64)
+          outcome <- try (query_ conn "SELECT throw_typed_scalar()" :: IO [Only Int64])
+          case outcome of
+            Left (err :: SQLError) -> do
+              sqlErrorType err @?= Just ErrorInputInvalid
+              assertBool (show err) ("typed callback failure" `Text.isInfixOf` sqlErrorMessage err)
+            Right _ -> assertFailure "expected SQL error"
+    , testCase "an internal error of the library in a callback leaves the database usable" $
+        withConnection ":memory:" \conn -> do
+          -- See Note [Internal errors in callbacks] in "Database.DuckDB.Simple.Native".
+          createFunction conn "throw_internal" (throwInternalError "internal callback failure" :: IO Int64)
+          createAggregate
+            conn
+            "internal_step"
+            Aggregate
+              { aggregateInitial = 0 :: Int64
+              , aggregateStep = \_ (Only (_ :: Int64)) -> throwInternalError "internal step failure"
+              , aggregateCombine = \a b -> pure (a + b)
+              , aggregateResult = pure
+              }
+          forM_
+            [ ("SELECT throw_internal()", "internal callback failure")
+            , ("SELECT internal_step(i) FROM range(3) t(i)", "internal step failure") :: (Text.Text, Text.Text)
+            ]
+            \(sql, text) -> do
+              result <- try (query_ conn (Query sql) :: IO [Only Int64])
+              case result of
+                Left err -> do
+                  assertBool (show err) (text `Text.isInfixOf` sqlErrorMessage err)
+                  -- runCallback holds back ErrorRuntimeInternal.
+                  sqlErrorType err @?= Just ErrorInputInvalid
+                Right rows -> assertFailure (Text.unpack sql <> ": expected the error of the callback, got " <> show rows)
+              query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "exception rendering cannot escape scalar callback" $
         withConnection ":memory:" \conn -> do
           createFunction conn "throw_bad_display" (throwIO BrokenDisplay :: IO Int64)
           assertSqlErrorContaining "Haskell callback failed" (query_ conn "SELECT throw_bad_display()" :: IO [Only Int64])
+    , testCase "a failing exception category cannot turn a callback failure into success" $
+        withConnection ":memory:" \conn -> do
+          let failure = SQLError "bad category" (error "category failed") Nothing Nothing
+          createFunction conn "bad_category" (throwIO failure :: IO Int64)
+          result <- try (query_ conn "SELECT bad_category()" :: IO [Only Int64])
+          case result of
+            Left err -> do
+              sqlErrorType err @?= Just ErrorInputInvalid
+              assertBool (show err) ("Haskell callback failed" `Text.isInfixOf` sqlErrorMessage err)
+            Right rows -> assertFailure ("expected a callback failure, got " <> show rows)
+          query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "scalar async exceptions become SQL errors" $
         withConnection ":memory:" \conn -> do
           createFunction conn "throw_async_scalar" (throwIO ThreadKilled :: IO Int64)
@@ -159,6 +349,38 @@ extensionRegressionTests =
           createFunction conn "text_payload" payload
           createFunction conn "text_identity" (id :: Text.Text -> Text.Text)
           query_ conn "SELECT text_identity(text_payload())" >>= (@?= [Only payload])
+    , testCase "a throwing String result tail fails the query and permits another call" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "broken_text" \(index :: Int64) ->
+            if index == 1
+              then replicate 64 'x' <> error "text result tail failed"
+              else replicate 64 'x'
+          assertSqlErrorContaining "text result tail failed" $
+            (query_ conn "SELECT broken_text(i) FROM range(3) t(i)" :: IO [Only String])
+          query_ conn "SELECT broken_text(0)" >>= (@?= [Only (replicate 64 'x')])
+    , testGroup
+        "native acquisition cleanup"
+        [ testCase label do
+            released <- newIORef []
+            outcome <- try (acquireItems (\item -> atomicModifyIORef' released (\items -> (items <> [item], ()))) actions)
+            case outcome of
+              Left (failure :: SomeException) ->
+                assertBool "the acquisition exception reaches the caller" ("acquisition failed" `isInfixOf` displayException failure)
+              Right _ -> assertFailure "the acquisition succeeded"
+            readIORef released >>= (@?= [2, 1 :: Int])
+        | (label, actions) <-
+            [ ("a failing list spine releases the acquired prefix in reverse order", pure 1 : pure 2 : error "acquisition failed")
+            , ("a failing acquisition action releases the acquired prefix in reverse order", [pure 1, pure 2, throwIO (userError "acquisition failed")])
+            ]
+        ]
+    , testCase "a failing lazy list parameter permits another query" $
+        withConnection ":memory:" \conn -> do
+          outcome <- try (query conn "SELECT ?::BIGINT[]" (Only (1 : error "parameter tail failed" :: [Int64])) :: IO [Only [Int64]])
+          case outcome of
+            Left (failure :: ErrorCall) ->
+              assertBool "the list exception reaches the caller" ("parameter tail failed" `isInfixOf` displayException failure)
+            Right _ -> assertFailure "the lazy list parameter succeeded"
+          query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "scalar NULL arguments reach Maybe functions" $
         withConnection ":memory:" \conn -> do
           createFunction conn "null_default" (\(x :: Maybe Int64) -> maybe 42 id x)
@@ -173,86 +395,527 @@ extensionRegressionTests =
           createFunction conn "double_identity" (id :: Double -> Double)
           query_ conn "SELECT double_identity(123.25::DECIMAL(10,2))" >>= (@?= [Only (123.25 :: Double)])
     , testCase "COPY exceptions become SQL errors in every phase" $
-        withConnection ":memory:" \conn ->
+        withMissingFile \path -> withConnection ":memory:" \conn ->
           mapM_
             ( \phase -> do
                 let name = "copy_fail_" <> Text.pack (show phase)
                 registerCopy conn name (Just phase)
                 assertSqlErrorContaining (Text.pack ("copy phase " <> show phase)) $
-                  execute_ conn (Query ("COPY (SELECT 1) TO '/tmp/duckdb-simple-regression-copy' (FORMAT " <> name <> ")"))
+                  execute conn (Query ("COPY (SELECT 1) TO ? (FORMAT " <> name <> ")")) (Only (Text.pack path))
             )
             [0 .. 3]
     , testCase "COPY state is valid across repeated queries" $
-        withConnection ":memory:" \conn -> do
+        withMissingFile \path -> withConnection ":memory:" \conn -> do
           registerCopy conn "copy_repeat" Nothing
-          replicateM_ 32 $ void $ execute_ conn "COPY (SELECT * FROM range(5000)) TO '/tmp/duckdb-simple-regression-copy' (FORMAT copy_repeat)"
-    , testCase "logging exceptions stay inside callback" $
+          replicateM_ 32 $ void $ execute conn "COPY (SELECT * FROM range(5000)) TO ? (FORMAT copy_repeat)" (Only (Text.pack path))
+    , testCase "log sink callback exceptions cannot fail a query" do
+        calls <- newIORef (0 :: Int)
         withConnection ":memory:" \conn -> do
-          calls <- newIORef (0 :: Int)
-          Logging.registerLogStorage conn "throwing_log" \_ -> do
-            modifyIORef' calls (+ 1)
-            throwIO (userError "log callback failure")
-          void $ execute_ conn "SET logging_storage = 'throwing_log'"
-          void $ execute_ conn "SET enable_logging = true"
-          void $ execute_ conn "SELECT write_log('callback regression', level := 'INFO', scope := 'connection')"
-          readIORef calls >>= \n -> assertBool "log callback ran" (n > 0)
+          Logging.registerLogStorage conn "throwing_log" (\_ -> atomicModifyIORef' calls (\n -> (n + 1, ())) >> throwIO ThreadKilled)
+          void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'throwing_log'; SELECT write_log('contained')"
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-    , testCase "logging messages preserve UTF8" $
+        readIORef calls >>= assertBool "the sink ran" . (> 0)
+    , testCase "log sinks copy entries and flush when released" do
+        entries <- newIORef []
+        flushes <- newIORef (0 :: Int)
+        start <- getCurrentTime
         withConnection ":memory:" \conn -> do
-          messages <- newIORef []
-          Logging.registerLogStorage conn "unicode_log" \entry ->
-            modifyIORef' messages (Logging.logEntryMessage entry :)
-          void $ execute_ conn "SET logging_storage = 'unicode_log'"
-          void $ execute_ conn "SET enable_logging = true"
-          void $ execute_ conn "SELECT write_log('\955', level := 'INFO', scope := 'connection')"
-          readIORef messages >>= \entries -> assertBool "Unicode log message" ("\955" `elem` entries)
-    , testCase "filesystem action exceptions release handles" $
+          Logging.registerLogSink
+            conn
+            "captured_log"
+            (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ())))
+            (atomicModifyIORef' flushes (\count -> (count + 1, ())))
+          void $
+            execute_
+              conn
+              "CALL enable_logging(); SET logging_storage = 'captured_log'; SELECT write_log('Matti λ', level := 'warning', log_type := 'HaskellTest'); SET logging_storage = 'memory'"
+          -- DuckDB 2.0.0 flushes the sink five times for these statements.
+          readIORef flushes >>= (@?= 5)
+        end <- getCurrentTime
+        received <- filter ((== "HaskellTest") . Logging.logEntryType) <$> readIORef entries
+        map Logging.logEntryMessage received @?= ["Matti λ"]
+        map Logging.logEntrySeverity received @?= [Logging.LogLevelWarning]
+        map Logging.logEntryScope received @?= [Logging.LogScopeConnection]
+        assertBool "entry has a timestamp" (all ((/= Nothing) . Logging.logEntryTimestamp) received)
+        -- A timestamp in the wrong unit is far from the clock of the test.
+        let nearClock time = addUTCTime (-300) start <= time && time <= addUTCTime 300 end
+        assertBool
+          ("timestamps " <> show (map Logging.logEntryTimestamp received) <> " are within five minutes of " <> show (start, end))
+          (all (maybe False nearClock . Logging.logEntryTimestamp) received)
+        assertBool "entry has a connection id" (all ((/= Nothing) . Logging.logEntryConnectionId) received)
+        -- The release flushes the sink one more time.
+        readIORef flushes >>= (@?= 6)
+    , testCase "instance log sinks receive connection and instance messages" do
+        entries <- newIORef []
+        withEnvironment \environment -> withInstance environment [] \instance_ -> do
+          attachDatabase instance_ ":memory:" "shared" []
+          setDefaultDatabase instance_ "shared"
+          Logging.registerInstanceLogSink instance_ "instance_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
+          withConnectionOn instance_ \conn -> do
+            void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'instance_log'"
+            Logging.logConnectionMessage conn Logging.LogLevelWarning "HaskellConnection" "from a connection"
+            Logging.logInstanceMessage instance_ Logging.LogLevelWarning "HaskellInstance" "from an instance"
+            void $ execute_ conn "SET logging_storage = 'memory'"
+        received <- readIORef entries
+        let ofType kind = filter ((== kind) . Logging.logEntryType) received
+        map Logging.logEntryMessage (ofType "HaskellConnection") @?= ["from a connection"]
+        map Logging.logEntryScope (ofType "HaskellConnection") @?= [Logging.LogScopeConnection]
+        assertBool "connection entry has a connection id" (all ((/= Nothing) . Logging.logEntryConnectionId) (ofType "HaskellConnection"))
+        map Logging.logEntryMessage (ofType "HaskellInstance") @?= ["from an instance"]
+        map Logging.logEntryScope (ofType "HaskellInstance") @?= [Logging.LogScopeDatabase]
+        map Logging.logEntryConnectionId (ofType "HaskellInstance") @?= [Nothing]
+    , testCase "log entries carry the connection, transaction, and query ids of DuckDB" do
+        entries <- newIORef []
+        (connectionId, transactionId, queryId) <- withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+          Logging.registerLogSink conn "id_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
+          void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'id_log'"
+          -- In a transaction, the transaction id and the query id differ.
+          void $ execute_ conn "BEGIN"
+          _ <- query_ conn "SELECT 1" :: IO [Only Int64]
+          rows <-
+            query_
+              conn
+              "SELECT write_log('ids', level := 'warning', log_type := 'HaskellIds'), current_connection_id(), current_transaction_id(), current_query_id()"
+              :: IO [(FieldValue, Word64, Word64, Word64)]
+          void $ execute_ conn "COMMIT; SET logging_storage = 'memory'"
+          case rows of
+            [(_, connection, transaction, queryNumber)] -> pure (connection, transaction, queryNumber)
+            _ -> assertFailure ("expected one row, got " <> show rows)
+        assertEqual "the ids differ" 3 (length (nub [connectionId, transactionId, queryId]))
+        received <- filter ((== "HaskellIds") . Logging.logEntryType) <$> readIORef entries
+        map Logging.logEntryConnectionId received @?= [Just connectionId]
+        map Logging.logEntryTransactionId received @?= [Just transactionId]
+        map Logging.logEntryQueryId received @?= [Just queryId]
+        map Logging.logEntryThreadId received @?= [Nothing]
+    , testCase "filesystem action exceptions propagate and the file opens again" $
         withTemporaryFile \path ->
           withConnection ":memory:" \conn -> do
-            outcome <- try $ FileSystem.withFileHandle conn path [DuckDBFileFlagWrite] \_ -> throwIO (userError "file action failure")
-            case outcome :: Either SomeException () of
-              Left _ -> pure ()
+            outcome <- try $ FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \_ -> throwIO (userError "file action failure")
+            case outcome of
+              Left (err :: IOException) -> displayException err @?= "user error (file action failure)"
               Right () -> assertFailure "expected file action exception"
-            FileSystem.withFileHandle conn path [DuckDBFileFlagWrite] \handle -> do
+            FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \handle -> do
               FileSystem.writeFileHandleBytes handle (BS.pack [0, 255]) >>= (@?= 2)
               FileSystem.fileHandleSync handle
-            FileSystem.withFileHandle conn path [DuckDBFileFlagRead] \handle -> do
+            FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle -> do
               FileSystem.readFileHandleChunk handle 0 >>= (@?= BS.empty)
               FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [0, 255])
     , testCase "filesystem errors remain controlled" $
         withConnection ":memory:" \conn -> do
-          assertSqlError $ FileSystem.withFileHandle conn "/tmp/duckdb-review-missing-dir/no-file" [DuckDBFileFlagRead] (\_ -> pure ())
+          assertSqlError $ FileSystem.withFileHandle conn "/tmp/duckdb-review-missing-dir/no-file" [FileSystem.FileFlagRead] (\_ -> pure ())
           withTemporaryFile \path ->
-            assertSqlError $ FileSystem.withFileHandle conn (path <> "\0suffix") [DuckDBFileFlagRead] (\_ -> pure ())
-    , testCase "catalog unsupported kinds fail safely" $
-        withConnection ":memory:" \conn ->
-          withTransaction conn $
-            mapM_
-              (\kind -> assertSqlError $ Catalog.lookupCatalogEntry conn "memory" "main" "probe" kind)
-              [ DuckDBCatalogEntryTypeInvalid
-              , DuckDBCatalogEntryTypeSchema
-              , DuckDBCatalogEntryTypePreparedStatement
-              , DuckDBCatalogEntryTypeDatabase
-              , DuckDBCatalogEntryType 99
-              ]
+            assertInputErrorContaining "file path contains NUL" $
+              FileSystem.withFileHandle conn (path <> "\0suffix") [FileSystem.FileFlagRead] (\_ -> pure ())
     , testCase "catalog and config NUL names fail safely" $
         withConnection ":memory:" \conn -> do
-          assertSqlError $ Config.getConfigOption conn "threads\0suffix"
+          -- The NUL check runs before the handler that gives Nothing for an unknown option.
+          nulName <- try (Config.getConfigOption conn "threads\0suffix")
+          case nulName of
+            Left (err :: SQLError) -> do
+              sqlErrorType err @?= Just ErrorInputInvalid
+              sqlErrorMessage err @?= "duckdb-simple: config option name contains NUL"
+            Right value -> assertFailure ("expected the NUL error, got " <> show (fmap Config.configValueText value))
+          -- DuckDB reads the name with its length, so it gets the NUL byte and
+          -- reports an unknown option. The library rejects the name before
+          -- the native call.
+          let rejectsNul = assertInputErrorContaining "config option name contains NUL"
+          rejectsNul $ Config.setConfigOption conn Config.SettingScopeSession "threads\0suffix" "1"
+          rejectsNul $ Config.setConfigValue conn Config.SettingScopeSession "threads\0suffix" (1 :: Int64)
+          rejectsNul $ Config.getConfigValue conn "threads\0suffix"
+          rejectsNul $ Config.getConfigDefaultValue conn "threads\0suffix"
           withTransaction conn do
             assertSqlError $ Catalog.catalogTypeName conn "memory\0suffix"
-            assertSqlError $ Catalog.lookupCatalogEntry conn "memory" "main\0suffix" "probe" DuckDBCatalogEntryTypeTable
+            assertSqlError $ Catalog.lookupCatalogEntry conn "memory" "main\0suffix" "probe" Catalog.CatalogTable
     , testCase "catalog names preserve UTF8" $
         withConnection ":memory:" \conn -> do
           void $ execute_ conn "CREATE TABLE \"\955\" (i INT)"
           withTransaction conn do
-            entry <- Catalog.lookupCatalogEntry conn "memory" "main" "\955" DuckDBCatalogEntryTypeTable
+            entry <- Catalog.lookupCatalogEntry conn "memory" "main" "\955" Catalog.CatalogTable
             fmap Catalog.catalogEntryName entry @?= Just "\955"
+    , testCase "catalog names use ASCII identifier comparison independently of collation" $
+        withConnection ":memory:" \conn -> do
+          void $ execute_ conn "CREATE TABLE MiXeD (i INT); CREATE TABLE \"Ä\" (i INT); CREATE TABLE \"ä\" (i INT)"
+          void $ execute_ conn "SET default_collation = 'nocase'"
+          Catalog.catalogTypeName conn "MEMORY" >>= (@?= Just "duckdb")
+          entry <- Catalog.lookupCatalogEntry conn "MEMORY" "MAIN" "mixed" Catalog.CatalogTable
+          fmap Catalog.catalogEntryName entry @?= Just "MiXeD"
+          forM_ ["Ä", "ä"] \name -> do
+            found <- Catalog.lookupCatalogEntry conn "memory" "main" name Catalog.CatalogTable
+            fmap Catalog.catalogEntryName found @?= Just name
+    , testCase "catalog lookup keeps nested and literal-dot schema names distinct" $
+        withConnection ":memory:" \conn -> do
+          void $ execute_ conn "CREATE SCHEMA parent; CREATE SCHEMA parent.child; CREATE TABLE parent.child.inside (i INT)"
+          Catalog.lookupCatalogEntry conn "memory" "child" "inside" Catalog.CatalogTable >>= (@?= Nothing)
+          void $ execute_ conn "CREATE SCHEMA \"parent.child\"; CREATE TABLE \"parent.child\".outside (i INT)"
+          found <- Catalog.lookupCatalogEntry conn "memory" "parent.child" "outside" Catalog.CatalogTable
+          fmap Catalog.catalogEntryName found @?= Just "outside"
     , testCase "catalog and config missing values remain safe" $
         withConnection ":memory:" \conn -> do
           Config.getConfigOption conn "no_such_config_option" >>= (@?= Nothing)
           withTransaction conn do
             Catalog.catalogTypeName conn "no_such_catalog" >>= (@?= Nothing)
-            Catalog.lookupCatalogEntry conn "memory" "main" "no_such_table" DuckDBCatalogEntryTypeTable >>= (@?= Nothing)
+            Catalog.lookupCatalogEntry conn "memory" "main" "no_such_table" Catalog.CatalogTable >>= (@?= Nothing)
+    , testCase "configuration descriptors remain usable after connection close" $
+        withConnection ":memory:" \conn -> do
+          Config.setConfigOption conn Config.SettingScopeGlobal "threads" "1"
+          options <- Config.listConfigOptions conn
+          fmap Config.configValueText <$> Config.getConfigOption conn "threads" >>= (@?= Just (Just "1"))
+          close conn
+          case find ((== "threads") . Config.configOptionName) options of
+            Nothing -> assertFailure "missing threads descriptor"
+            Just option -> do
+              Config.configOptionSetting option @?= Just "1"
+              Config.configOptionName option @?= "threads"
+              assertBool "description is retained" (not (Text.null (Config.configOptionDescription option)))
+    , testCase "listed options give the aliases of DuckDB" $
+        withConnection ":memory:" \conn -> do
+          void $ execute_ conn "SET progress_bar_time = 1234"
+          options <- Config.listConfigOptions conn
+          let option name = find ((== name) . Config.configOptionName) options
+          aliases <- query_ conn "SELECT name, aliases FROM duckdb_settings() WHERE len(aliases) > 0 ORDER BY name" :: IO [(Text.Text, [Text.Text])]
+          assertBool "DuckDB lists options with aliases" (not (null aliases))
+          forM_ aliases \(name, expected) ->
+            assertEqual (Text.unpack name) (Just (sort expected)) (sort . Config.configOptionAliases <$> option name)
+          Config.configOptionSetting <$> option "progress_bar_time" @?= Just (Just "1234")
+    , testCase "option descriptors give Nothing for a NULL value and a missing default" $
+        withConnection ":memory:" \conn -> do
+          Config.registerCustomOption
+            conn
+            (Config.customOption "haskell_described" (Registration.TypeExpression "BIGINT"))
+              { Config.customOptionDefault = Just (Registration.defaultValue (3 :: Int64))
+              }
+          void $ execute_ conn "RESET progress_bar_time"
+          options <- Config.listConfigOptions conn
+          let described get name = get <$> find ((== name) . Config.configOptionName) options
+          described Config.configOptionDefault "haskell_described" @?= Just (Just "3")
+          -- progress_bar_time has no static default. After RESET its value is 2000.
+          described Config.configOptionDefault "progress_bar_time" @?= Just Nothing
+          described Config.configOptionSetting "progress_bar_time" @?= Just (Just "2000")
+          -- enable_profiling has a NULL value until a write.
+          described Config.configOptionSetting "enable_profiling" @?= Just Nothing
+          -- getConfigOption shows the NULL value in the same way.
+          fmap Config.configValueText <$> Config.getConfigOption conn "enable_profiling" >>= (@?= Just Nothing)
+    , testCase "instance options list global values" $
+        withEnvironment \environment -> withInstance environment [("threads", "1")] \instance_ -> do
+          options <- Config.listInstanceOptions instance_
+          fmap Config.configOptionSetting (find ((== "threads") . Config.configOptionName) options) @?= Just (Just "1")
+    , testCase "connection options set a session option on one connection only" $
+        withEnvironment \environment -> withInstance environment [] \instance_ -> do
+          attachDatabase instance_ ":memory:" "shared" []
+          setDefaultDatabase instance_ "shared"
+          -- DuckDB gives progress_bar_time the session scope by default.
+          let options = defaultConnectionOptions{connectionConfig = [("progress_bar_time", "1234")]}
+          bracket (connectWithOptions instance_ options) close \configured ->
+            withConnectionOn instance_ \other -> do
+              query_ configured "SELECT current_setting('progress_bar_time')" >>= (@?= [Only (1234 :: Int64)])
+              query_ other "SELECT current_setting('progress_bar_time')" >>= (@?= [Only (2000 :: Int64)])
+    , testCase "configuration values resolve case-insensitive names and aliases" $
+        withConnection ":memory:" \conn -> do
+          Config.setConfigOption conn Config.SettingScopeGlobal "threads" "1"
+          forM_ ["threads", "THREADS", "worker_threads", "WORKER_THREADS"] \name ->
+            fmap Config.configValueText <$> Config.getConfigOption conn name >>= (@?= Just (Just "1"))
+          Config.getConfigOption conn "NO_SUCH_CONFIG_OPTION" >>= (@?= Nothing)
+          close conn
+          assertSqlError $ Config.getConfigOption conn "threads"
+    , testCase "typed reads copy the value of every listed option" $
+        withConnection ":memory:" \conn -> do
+          options <- Config.listConfigOptions conn
+          assertBool "options are listed" (not (null options))
+          failures <- forM options \option -> do
+            let name = Config.configOptionName option
+            outcome <- try (Config.getConfigValue conn name)
+            pure case outcome of
+              Left (err :: SomeException) -> [(name, displayException err)]
+              Right _ -> []
+          concat failures @?= []
+          assertSqlError $ Config.getConfigValue conn "NO_SUCH_CONFIG_OPTION"
+          assertSqlError $ Config.getConfigDefaultValue conn "NO_SUCH_CONFIG_OPTION"
+    , testCase "custom options retain typed defaults scopes and callback errors" $
+        withConnection ":memory:" \conn -> do
+          let option =
+                (Config.customOption "haskell_limit" (Registration.StructuredType (LogicalTypeScalar LogicalTypeIdBigInt)))
+                  { Config.customOptionDefault = Just (Registration.defaultValue (3 :: Int64))
+                  , Config.customOptionDescription = "A Haskell option"
+                  , Config.customOptionDefaultScope = Config.SettingScopeSession
+                  , Config.customOptionScopes = [Config.SettingScopeGlobal, Config.SettingScopeSession]
+                  , Config.customOptionUpdate = Just \value -> case value of
+                      FieldInt64 number | number < 0 -> throwIO (userError "limit must be nonnegative")
+                      _ -> pure ()
+                  }
+          Config.registerCustomOption conn option
+          Config.getConfigDefaultValue conn "haskell_limit" >>= (@?= FieldInt64 3)
+          Config.setConfigValue conn Config.SettingScopeSession "haskell_limit" (7 :: Int64)
+          Config.getConfigValue conn "haskell_limit" >>= (@?= (FieldInt64 7, Config.SettingScopeSession))
+          assertSqlErrorContaining "limit must be nonnegative" $ Config.setConfigValue conn Config.SettingScopeSession "haskell_limit" (-1 :: Int64)
+          void $ execute_ conn "RESET haskell_limit"
+          fmap Config.configValueText <$> Config.getConfigOption conn "haskell_limit" >>= (@?= Just (Just "3"))
+          assertSqlError $ Config.registerCustomOption conn option
+    , testCase "listConfigFlags lists a custom option of the connection" $
+        withConnection ":memory:" \conn -> do
+          Config.registerCustomOption conn (Config.customOption "haskell_listed" (Registration.TypeExpression "BIGINT"))
+          flags <- Config.listConfigFlags conn
+          options <- Config.listConfigOptions conn
+          assertBool "the custom option is listed" ("haskell_listed" `elem` map Config.configFlagName flags)
+          map Config.configFlagName flags @?= map Config.configOptionName options
+    , testCase "typed reads of a VARIANT custom option give the value that it holds" $
+        withConnection ":memory:" \conn -> do
+          let variantType = Registration.TypeExpression "VARIANT"
+          Config.registerCustomOption
+            conn
+            (Config.customOption "haskell_variant" variantType){Config.customOptionDefault = Just (Registration.defaultValue (5 :: Int64))}
+          Config.getConfigDefaultValue conn "haskell_variant" >>= (@?= FieldInt64 5)
+          Config.setConfigValue conn Config.SettingScopeGlobal "haskell_variant" (7 :: Int64)
+          Config.getConfigValue conn "haskell_variant" >>= (@?= (FieldInt64 7, Config.SettingScopeGlobal))
+          -- A nested value gives the value of the same VARIANT in a result.
+          void $ execute_ conn "SET haskell_variant = {'a': 1, 'b': [1, 2]}"
+          [Only expected] <- query_ conn "SELECT {'a': 1, 'b': [1, 2]}::VARIANT" :: IO [Only FieldValue]
+          fst <$> Config.getConfigValue conn "haskell_variant" >>= (@?= expected)
+    , testCase "VARIANT option updates decode GLOBAL and SESSION values and can reject a write" $
+        withConnection ":memory:" \conn -> do
+          seen <- newIORef Nothing
+          let update value = case value of
+                FieldText "reject" -> throwIO (userError "rejected VARIANT value")
+                _ -> writeIORef seen (Just value)
+          Config.registerCustomOption conn $
+            (Config.customOption "haskell_variant_update" (Registration.TypeExpression "VARIANT"))
+              { Config.customOptionScopes = [Config.SettingScopeGlobal, Config.SettingScopeSession]
+              , Config.customOptionUpdate = Just update
+              }
+          [Only expected] <- query_ conn "SELECT {'a': [1,2]}::VARIANT" :: IO [Only FieldValue]
+          void $ execute_ conn "SET GLOBAL haskell_variant_update = {'a': [1,2]}"
+          readIORef seen >>= (@?= Just expected)
+          Config.getConfigValue conn "haskell_variant_update" >>= (@?= (expected, Config.SettingScopeGlobal))
+          void $ execute_ conn "SET SESSION haskell_variant_update = 7::BIGINT"
+          readIORef seen >>= (@?= Just (FieldInt64 7))
+          assertSqlErrorContaining "rejected VARIANT value" $ execute_ conn "SET SESSION haskell_variant_update = 'reject'"
+          Config.getConfigValue conn "haskell_variant_update" >>= (@?= (FieldInt64 7, Config.SettingScopeSession))
+    , testCase "setConfigValue with an Integer or a Natural checks the range of an unsigned option" $
+        withConnection ":memory:" \conn -> do
+          -- DuckDB 2.0.0 gives asof_loop_join_threshold the type UBIGINT.
+          let option = "asof_loop_join_threshold"
+              current = fst <$> Config.getConfigValue conn option
+          Config.setConfigValue conn Config.SettingScopeSession option (9 :: Integer)
+          current >>= (@?= FieldWord64 9)
+          assertSqlErrorContaining "out of range for the destination type UINT64" $
+            Config.setConfigValue conn Config.SettingScopeSession option (-5 :: Integer)
+          current >>= (@?= FieldWord64 9)
+          Config.setConfigValue conn Config.SettingScopeSession option (11 :: Natural)
+          current >>= (@?= FieldWord64 11)
+    , testCase "setConfigValue with an Integer or a Natural outside the HUGEINT range raises an error" $
+        withConnection ":memory:" \conn -> do
+          -- toDuckValue gives no BIGNUM value for an Integer or a Natural. See
+          -- Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
+          let option = "asof_loop_join_threshold"
+          assertRangeError $
+            Config.setConfigValue conn Config.SettingScopeSession option (2 ^ (128 :: Int) + 5 :: Integer)
+          -- A Natural from 2^127 is a UHUGEINT value. DuckDB checks its cast.
+          assertSqlErrorContaining "out of range for the destination type UINT64" $
+            Config.setConfigValue conn Config.SettingScopeSession option (2 ^ (127 :: Int) :: Natural)
+          assertRangeError $
+            Config.setConfigValue conn Config.SettingScopeSession option (2 ^ (128 :: Int) + 5 :: Natural)
+    , testCase "table descriptions resolve names and copy borrowed column types" $
+        withConnection ":memory:" \conn -> do
+          void $ execute_ conn "CREATE TABLE \"\955\" (id BIGINT DEFAULT 7, twice BIGINT GENERATED ALWAYS AS (id * 2))"
+          description <- Catalog.describeTable conn "\"\955\""
+          Catalog.tableDescriptionName description @?= ["memory", "main", "\955"]
+          Catalog.tableDescriptionReadonly description @?= False
+          map Catalog.columnDescriptionName (Catalog.tableDescriptionColumns description) @?= ["id", "twice"]
+          map Catalog.columnDescriptionHasDefault (Catalog.tableDescriptionColumns description) @?= [True, False]
+          map Catalog.columnDescriptionGenerated (Catalog.tableDescriptionColumns description) @?= [False, True]
+          query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+    , testCase "tokenization copies Unicode byte offsets and unterminated state" $
+        withConnection ":memory:" \conn -> do
+          let sql = "SELECT \"\955\", 'x'; -- comment\n"
+              bytes = Text.encodeUtf8 sql
+          parsed <- Tokenizer.tokenize conn sql
+          Tokenizer.tokenizationUnterminated parsed @?= False
+          forM_ (Tokenizer.tokenizationTokens parsed) \token ->
+            BS.take (BS.length (Tokenizer.tokenBytes token)) (BS.drop (Tokenizer.tokenOffset token) bytes) @?= Tokenizer.tokenBytes token
+          assertBool "comment token" (any ((== Tokenizer.TokenTypeComment) . Tokenizer.tokenType) (Tokenizer.tokenizationTokens parsed))
+          unfinished <- Tokenizer.tokenize conn "SELECT 'unclosed"
+          Tokenizer.tokenizationUnterminated unfinished @?= True
+    , testCase "tokenization reports the type of each token" $
+        withConnection ":memory:" \conn -> do
+          parsed <- Tokenizer.tokenize conn "SELECT amount, 'text', 42 + 1; -- note\n"
+          [(Tokenizer.tokenType token, Tokenizer.tokenBytes token) | token <- Tokenizer.tokenizationTokens parsed]
+            @?= [ (Tokenizer.TokenTypeKeyword, "SELECT")
+                , (Tokenizer.TokenTypeIdentifier, "amount")
+                , (Tokenizer.TokenTypeOperator, ",")
+                , (Tokenizer.TokenTypeStringLiteral, "'text'")
+                , (Tokenizer.TokenTypeOperator, ",")
+                , (Tokenizer.TokenTypeNumberLiteral, "42")
+                , (Tokenizer.TokenTypeOperator, "+")
+                , (Tokenizer.TokenTypeNumberLiteral, "1")
+                , (Tokenizer.TokenTypeTerminator, ";")
+                , (Tokenizer.TokenTypeComment, "-- note\n")
+                ]
+    , testCase "configuration writes and reads each setting scope" $
+        withConnection ":memory:" \conn -> do
+          let option name scope =
+                (Config.customOption name (Registration.StructuredType (LogicalTypeScalar LogicalTypeIdBigInt)))
+                  { Config.customOptionDefault = Just (Registration.defaultValue (0 :: Int64))
+                  , Config.customOptionDefaultScope = scope
+                  , Config.customOptionScopes = [Config.SettingScopeGlobal, Config.SettingScopeSession]
+                  }
+          Config.registerCustomOption conn (option "haskell_global_scope" Config.SettingScopeGlobal)
+          Config.registerCustomOption conn (option "haskell_session_scope" Config.SettingScopeSession)
+          Config.setConfigValue conn Config.SettingScopeDefault "haskell_global_scope" (1 :: Int64)
+          Config.getConfigValue conn "haskell_global_scope" >>= (@?= (FieldInt64 1, Config.SettingScopeGlobal))
+          Config.setConfigOption conn Config.SettingScopeDefault "haskell_session_scope" "2"
+          Config.getConfigValue conn "haskell_session_scope" >>= (@?= (FieldInt64 2, Config.SettingScopeSession))
+          Config.setConfigValue conn Config.SettingScopeGlobal "haskell_global_scope" (3 :: Int64)
+          Config.getConfigValue conn "haskell_global_scope" >>= (@?= (FieldInt64 3, Config.SettingScopeGlobal))
+          Config.setConfigOption conn Config.SettingScopeSession "haskell_global_scope" "4"
+          Config.getConfigValue conn "haskell_global_scope" >>= (@?= (FieldInt64 4, Config.SettingScopeSession))
+          fmap Config.configValueScope <$> Config.getConfigOption conn "haskell_global_scope" >>= (@?= Just Config.SettingScopeSession)
+          options <- Config.listConfigOptions conn
+          sort
+            [ (Config.configOptionName descriptor, Config.configOptionScope descriptor, Config.configOptionScopes descriptor)
+            | descriptor <- options
+            , "haskell_" `Text.isPrefixOf` Config.configOptionName descriptor
+            ]
+            @?= [ ("haskell_global_scope", Config.SettingScopeGlobal, [Config.SettingScopeGlobal, Config.SettingScopeSession])
+                , ("haskell_session_scope", Config.SettingScopeSession, [Config.SettingScopeGlobal, Config.SettingScopeSession])
+                ]
+    , testCase "log sinks receive each log level and its scope" do
+        entries <- newIORef []
+        withConnection ":memory:" \conn -> do
+          Logging.registerLogSink conn "level_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
+          void $ execute_ conn "CALL enable_logging(level := 'trace'); SET logging_storage = 'level_log'"
+          forM_ [minBound .. maxBound] \level -> Logging.logConnectionMessage conn level "HaskellLevels" (Text.pack (show level))
+          void $ execute_ conn "SET logging_storage = 'memory'"
+        received <- filter ((== "HaskellLevels") . Logging.logEntryType) <$> readIORef entries
+        sort [(Logging.logEntrySeverity entry, Logging.logEntryLevel entry, Logging.logEntryMessage entry) | entry <- received]
+          @?= [ (level, name, Text.pack (show level))
+              | (level, name) <- zip [minBound .. maxBound] ["TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "FATAL"]
+              ]
+        map Logging.logEntryScope received @?= replicate 6 Logging.LogScopeConnection
+    , testCase "native errors report their error type" $
+        withConnection ":memory:" \conn ->
+          forM_
+            [ ("SELEC 1", ErrorQueryParser)
+            , ("SELECT * FROM no_such_table", ErrorDatabaseCatalog)
+            , ("SELECT no_such_column", ErrorQueryBinder)
+            , ("SELECT 'abc'::INTEGER", ErrorTypeConversion)
+            ]
+            \(sql, expected) -> do
+              outcome <- try (execute_ conn sql)
+              case outcome of
+                Left (err :: SQLError) -> sqlErrorType err @?= Just expected
+                Right _ -> assertFailure ("expected an error from " <> show sql)
+    , testCase "each enum value has the name of its native value" do
+        assertNativeRoundTrip settingScopeToNative settingScopeFromNative DuckDBV2SettingScopeMaxEnum
+        assertNativeRoundTrip logLevelToNative logLevelFromNative DuckDBV2LogLevelMaxEnum
+        -- The package converts these three types in one direction only.
+        assertFromNative logScopeFromNative [DuckDBV2LogScopeDatabase, DuckDBV2LogScopeConnection, DuckDBV2LogScopeThread] DuckDBV2LogScopeMaxEnum
+        assertFromNative
+          tokenTypeFromNative
+          [ DuckDBV2TokenTypeInvalid
+          , DuckDBV2TokenTypeKeyword
+          , DuckDBV2TokenTypeIdentifier
+          , DuckDBV2TokenTypeStringLiteral
+          , DuckDBV2TokenTypeNumberLiteral
+          , DuckDBV2TokenTypeOperator
+          , DuckDBV2TokenTypeComment
+          , DuckDBV2TokenTypeTerminator
+          , DuckDBV2TokenTypeEndOfInput
+          ]
+          DuckDBV2TokenTypeMaxEnum
+        let macroTypes = [minBound .. maxBound] :: [MacroFunctionType]
+        map (show . macroFunctionTypeToNative) macroTypes @?= map (("DuckDBV2" <>) . show) macroTypes
+        let errorTypes = [minBound .. maxBound] :: [ErrorType]
+        map (\errorType -> lookup errorType errorTypeCodes >>= errorTypeFromNative) errorTypes @?= map Just errorTypes
+        map (fmap show . (`lookup` errorTypeCodes)) errorTypes @?= map (Just . ("DuckDBV2" <>) . show) errorTypes
+        map errorTypeFromNative [DuckDBV2ErrorNone, DuckDBV2ErrorMaxEnum] @?= [Nothing, Nothing]
+    , testCase "positioned file operations preserve the sequential position" $
+        withTemporaryFile \path -> withConnection ":memory:" \conn ->
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagRead, FileSystem.FileFlagWrite] \handle -> do
+            FileSystem.writeFileHandleBytes handle (BS.pack [1, 2, 3, 4]) >>= (@?= 4)
+            FileSystem.fileHandleSeek handle 1
+            FileSystem.readFileHandleAt handle 2 2 >>= (@?= BS.pack [3, 4])
+            FileSystem.fileHandleTell handle >>= (@?= 1)
+            FileSystem.writeFileHandleAt handle 0 (BS.pack [8, 9])
+            FileSystem.fileHandleTell handle >>= (@?= 1)
+            FileSystem.fileHandleSeek handle 0
+            FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [8, 9, 3, 4])
+    , testCase "file reads shorter than the file give the requested bytes" $
+        withTemporaryFile \path -> withConnection ":memory:" \conn -> do
+          let bytes = BS.pack [0 .. 15]
+          BS.writeFile path bytes
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle -> do
+            FileSystem.readFileHandleChunk handle 4 >>= (@?= BS.take 4 bytes)
+            FileSystem.fileHandleTell handle >>= (@?= 4)
+            FileSystem.readFileHandleAt handle 8 4 >>= (@?= BS.take 4 (BS.drop 8 bytes))
+            -- A chunk read gives the bytes that remain after the position.
+            FileSystem.readFileHandleChunk handle 100 >>= (@?= BS.drop 4 bytes)
+    , testCase "a positioned read past the end gives the error of DuckDB" $
+        withTemporaryFile \path -> withConnection ":memory:" \conn -> do
+          BS.writeFile path (BS.pack [0 .. 15])
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle -> do
+            outcome <- try (FileSystem.readFileHandleAt handle 14 4)
+            case outcome of
+              Left (err :: SQLError) -> do
+                sqlErrorType err @?= Just ErrorIOGeneral
+                assertBool "DuckDB read error" ("Could not read enough bytes" `Text.isInfixOf` sqlErrorMessage err)
+              Right bytes -> assertFailure ("expected an IO error, got " <> show bytes)
+            -- The library checks only that the end of the range fits in Int64.
+            assertInputErrorContaining "file read range exceeds Int64 range" $ FileSystem.readFileHandleAt handle maxBound 1
+            assertInputErrorContaining "file offset is negative" $ FileSystem.readFileHandleAt handle (-1) 1
+            assertInputErrorContaining "file read size is negative" $ FileSystem.readFileHandleAt handle 0 (-1)
+            assertInputErrorContaining "file offset is negative" $ FileSystem.fileHandleSeek handle (-1)
+            -- A size of 0 gives no bytes, also past the end, as in DuckDB.
+            FileSystem.readFileHandleAt handle 20 0 >>= (@?= BS.empty)
+            FileSystem.readFileHandleAt handle 12 4 >>= (@?= BS.pack [12 .. 15])
+    , testCase "a positioned write checks that its end fits in Int64" $
+        withTemporaryFile \path -> withConnection ":memory:" \conn ->
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \handle -> do
+            assertInputErrorContaining "file write range exceeds Int64 range" $ FileSystem.writeFileHandleAt handle (maxBound - 1) (BS.pack [1, 2])
+            assertInputErrorContaining "file offset is negative" $ FileSystem.writeFileHandleAt handle (-1) (BS.pack [1])
+            FileSystem.fileHandleSize handle >>= (@?= 0)
+    , testCase "file flags of the other file tests create read and write a file" $
+        withTemporaryFile \path -> withConnection ":memory:" \conn -> do
+          removeFile path
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagCreate, FileSystem.FileFlagWrite] \handle ->
+            FileSystem.writeFileHandleBytes handle (BS.pack [1, 2, 3]) >>= (@?= 3)
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \handle ->
+            FileSystem.writeFileHandleBytes handle (BS.pack [4]) >>= (@?= 1)
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle ->
+            FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [4, 2, 3])
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagRead, FileSystem.FileFlagWrite] \handle -> do
+            FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [4, 2, 3])
+            FileSystem.writeFileHandleBytes handle (BS.pack [5]) >>= (@?= 1)
+            FileSystem.fileHandleSize handle >>= (@?= 4)
+    , testCase "file flags truncate a file and refuse to create an existing file" $
+        withTemporaryFile \path -> withConnection ":memory:" \conn -> do
+          BS.writeFile path (BS.pack [1, 2, 3])
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite, FileSystem.FileFlagCreateNew] FileSystem.fileHandleSize >>= (@?= 0)
+          let exclusive = [FileSystem.FileFlagWrite, FileSystem.FileFlagCreate, FileSystem.FileFlagExclusiveCreate]
+          assertSqlError $ FileSystem.withFileHandle conn path exclusive (\_ -> pure ())
+          removeFile path
+          FileSystem.withFileHandle conn path exclusive \handle ->
+            FileSystem.writeFileHandleBytes handle (BS.pack [7]) >>= (@?= 1)
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle ->
+            FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [7])
+    , testCase "file paths support expansion glob movement and removal" $
+        withTemporaryFile \path -> withConnection ":memory:" \conn -> do
+          FileSystem.pathExists conn path >>= (@?= True)
+          -- A directory is not a file.
+          FileSystem.pathExists conn (takeDirectory path) >>= (@?= False)
+          home <- getHomeDirectory
+          FileSystem.expandPath conn "~/duckdb-simple-path" >>= (@?= home <> "/duckdb-simple-path")
+          FileSystem.globPaths conn (path <> "*") >>= (@?= [path])
+          FileSystem.pathIsRemote conn "https://example.com/data.parquet" >>= (@?= True)
+          FileSystem.pathIsRemote conn path >>= (@?= False)
+          let moved = path <> ".moved"
+          bracket_ (FileSystem.movePath conn path moved) (FileSystem.movePath conn moved path) do
+            FileSystem.pathExists conn path >>= (@?= False)
+            FileSystem.pathExists conn moved >>= (@?= True)
+          ( do
+              FileSystem.removePath conn path >>= (@?= True)
+              FileSystem.removePath conn path >>= (@?= False)
+            )
+            `finally` BS.writeFile path BS.empty
+          assertSqlError $ FileSystem.globPaths conn (path <> "\0suffix")
     ]
 
 -- | Raise a second exception when the callback error is rendered.
@@ -262,34 +925,48 @@ data BrokenDisplay = BrokenDisplay
 instance Exception BrokenDisplay where
   displayException _ = error "broken error rendering"
 
--- | Force a setup exception after scalar callbacks have been acquired.
-data BrokenSignature = BrokenSignature
+-- | Force a setup exception after scalar callbacks have been acquired. The
+-- registration reads the declaration of the argument in the setup. The token
+-- lets a case check the release of the value.
+newtype BrokenSignature = BrokenSignature (IORef Int64)
 
 instance Function BrokenSignature where
-  argumentTypes _ = error "broken scalar signature"
-  returnType _ = error "unused return type"
+  argumentTypes _ = [Right (error "broken scalar signature")]
+  returnType _ = returnType (Proxy @Int64)
   isVolatile _ = False
   applyFunction _ _ = error "unused function"
 
--- | Supply an argument type which DuckDB rejects at registration.
-data InvalidSignature = InvalidSignature
+-- | Declare a VARCHAR result, but give a BIGINT value.
+data MismatchedResult = MismatchedResult
+
+instance Function MismatchedResult where
+  argumentTypes _ = []
+  returnType _ = Right (Registration.TypeExpression "VARCHAR")
+  isVolatile _ = True
+  applyFunction fields _ = applyFunction fields (1 :: Int64)
+
+-- | Supply an argument type which DuckDB rejects at registration. The token
+-- lets a case check the release of the value.
+newtype InvalidSignature = InvalidSignature (IORef Int64)
 
 instance Function InvalidSignature where
-  argumentTypes _ = [DuckDBTypeInvalid]
-  returnType _ = returnType (Proxy :: Proxy Int64)
+  argumentTypes _ = [Right (Registration.TypeExpression "no_such_type")]
+  returnType _ = returnType (Proxy @Int64)
   isVolatile _ = False
   applyFunction _ _ = error "unregistered function"
 
--- | Register a COPY callback and optionally fail one phase.
+-- | Register a COPY callback and optionally fail one phase. The bind state and
+-- the global state are the column count that DuckDB gives. Each query of this
+-- module has one column.
 registerCopy :: Connection -> Text.Text -> Maybe Int -> IO ()
 registerCopy conn name failingPhase =
   Copy.registerCopyToFunction
     conn
     name
-    (\_ -> failPhase 0)
-    (\info -> (Copy.copyInitBindState info @?= ()) >> failPhase 1)
-    (\info _ -> (Copy.copySinkGlobalState info @?= ()) >> failPhase 2)
-    (\info -> (Copy.copyFinalizeGlobalState info @?= ()) >> failPhase 3)
+    (\info -> failPhase 0 >> pure (length (Copy.copyBindColumnTypes info)))
+    (\info -> (Copy.copyInitBindState info @?= 1) >> failPhase 1 >> pure (Copy.copyInitBindState info))
+    (\info _ -> (Copy.copySinkGlobalState info @?= 1) >> failPhase 2)
+    (\info -> (Copy.copyFinalizeGlobalState info @?= 1) >> failPhase 3)
   where
     failPhase phase =
       if failingPhase == Just phase
@@ -300,15 +977,38 @@ registerCopy conn name failingPhase =
 assertSqlError :: IO a -> Assertion
 assertSqlError = assertSqlErrorContaining Text.empty
 
--- | Require a SQL exception which includes the expected message.
-assertSqlErrorContaining :: Text.Text -> IO a -> Assertion
-assertSqlErrorContaining expected action = do
-  outcome <- try (void action)
-  case outcome of
-    Left (err :: SQLError) ->
-      assertBool ("expected SQL error containing " <> show expected <> ", got " <> show err) $
-        expected `Text.isInfixOf` sqlErrorMessage err
-    Right () -> assertFailure "expected SQL error"
+-- | Convert each value to its native value and back. The native value must have
+-- the pattern name of the value. The native sentinel must raise 'SQLError'.
+assertNativeRoundTrip :: (Bounded a, Enum a, Eq a, Show a, Show native) => (a -> native) -> (native -> IO a) -> native -> Assertion
+assertNativeRoundTrip toNative fromNative sentinel = do
+  let values = [minBound .. maxBound]
+  mapM (fromNative . toNative) values >>= (@?= values)
+  map (show . toNative) values @?= map (("DuckDBV2" <>) . show) values
+  assertSqlErrorContaining "unknown native" (fromNative sentinel)
+
+-- | Check that the native values convert to all constructors in order, and that
+-- each constructor has the pattern name of its native value. The native sentinel
+-- must raise 'SQLError'.
+assertFromNative :: (Bounded a, Enum a, Eq a, Show a, Show native) => (native -> IO a) -> [native] -> native -> Assertion
+assertFromNative fromNative natives sentinel = do
+  values <- mapM fromNative natives
+  values @?= [minBound .. maxBound]
+  map show natives @?= map (("DuckDBV2" <>) . show) values
+  assertSqlErrorContaining "unknown native" (fromNative sentinel)
+
+-- | Give the action a unique temporary path where no file exists. Remove the
+-- file after the action if the action created it. DuckDB writes a COPY TO
+-- target that exists through a second file, so the path has no file.
+withMissingFile :: (FilePath -> IO a) -> IO a
+withMissingFile = bracket acquire release
+  where
+    acquire = do
+      directory <- getTemporaryDirectory
+      (path, handle) <- openBinaryTempFile directory "duckdb-extension-regression"
+      hClose handle
+      removeFile path
+      pure path
+    release path = doesFileExist path >>= \exists -> when exists (removeFile path)
 
 -- | Remove a temporary file after the action.
 withTemporaryFile :: (FilePath -> IO a) -> IO a

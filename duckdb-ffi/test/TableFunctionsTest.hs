@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
 module TableFunctionsTest (tests) where
@@ -13,6 +14,7 @@ import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Maybe (fromMaybe)
+import Data.Proxy (Proxy (..))
 import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -20,7 +22,8 @@ import Foreign.C.String (peekCString)
 import Foreign.C.Types (CBool (..), CChar)
 import Foreign.Marshal.Alloc (alloca, free, mallocBytes)
 import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullPtr)
-import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)
+import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff)
+import HsBindgen.Runtime.Marshal (staticSizeOf)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -504,7 +507,7 @@ localInitSentinel :: Int64
 localInitSentinel = 0x105105105
 
 sizeOfInt64 :: Int
-sizeOfInt64 = sizeOf (undefined :: Int64)
+sizeOfInt64 = staticSizeOf (Proxy @Int64)
 
 withOptionalValue :: IO DuckDBValue -> (DuckDBValue -> IO a) -> IO (Maybe a)
 withOptionalValue acquire action = do

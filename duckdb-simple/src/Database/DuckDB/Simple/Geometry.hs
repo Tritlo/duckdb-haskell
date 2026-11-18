@@ -1,4 +1,8 @@
--- | Raw geometry values and conversion to 'G.Geometry' from @geometry-simple@.
+{-# LANGUAGE StrictData #-}
+
+-- |
+-- Module      : Database.DuckDB.Simple.Geometry
+-- Description : Raw geometry values and conversion to 'G.Geometry' from @geometry-simple@.
 module Database.DuckDB.Simple.Geometry (
   RawGeometry (..),
   fromRawGeometry,
@@ -13,17 +17,25 @@ import Data.Text (Text)
 -- | ISO WKB bytes with an optional CRS definition.
 -- The definition can be an identifier, a custom name, or WKT2\/PROJJSON text.
 -- Reading this type copies the bytes without decoding the coordinates.
--- This type has no @ToField@ instance. Bind 'rawGeometryWKB' with
--- @ST_GeomFromWKB(?)@. Apply 'rawGeometryCRS' with @ST_SetCRS(..., ?)@.
--- Omit @ST_SetCRS@ when the CRS is 'Nothing'. SQL NULL propagates to the geometry.
+-- A parameter of this type binds as a GEOMETRY value with the CRS
+-- 'rawGeometryCRS'. DuckDB then casts it to the type of the parameter. A value
+-- without a CRS takes the CRS of the target. A target without a CRS removes the
+-- CRS of the value. A target with another CRS raises an error. Use
+-- @Maybe RawGeometry@ for SQL NULL. A @SizedArray@, a list, or a typed row cannot
+-- hold this type. A STRUCT, TUPLE, or UNION parameter binds a @FieldGeometry@
+-- value with its CRS. A VARIANT parameter binds one only when it has no CRS. See
+-- Note [Raw GEOMETRY parameters] in "Database.DuckDB.Simple.ToField".
+-- Parameters accept custom CRS labels, including in composite types. Binding a
+-- blank label or a label containing NUL raises an @SQLError@. Typed registrations
+-- require a recognized name or a full definition.
 -- DuckDB can normalize the byte order and CRS definition during import.
 -- The pinned native API requires the same Z/M dimensions for all collection
 -- members, including empty members. Native import rejects mixed member layouts.
 -- The standalone WKB codec preserves these layouts.
 -- Derived equality compares the bytes and CRS, not spatial equivalence.
 data RawGeometry = RawGeometry
-  { rawGeometryWKB :: !ByteString
-  , rawGeometryCRS :: !(Maybe Text)
+  { rawGeometryWKB :: ByteString
+  , rawGeometryCRS :: Maybe Text
   }
   deriving (Eq, Show, Read)
 
@@ -34,7 +46,7 @@ fromRawGeometry :: RawGeometry -> Either String G.Geometry
 fromRawGeometry = decodeWKB . rawGeometryWKB
 
 -- | Encode a shape as ISO WKB with no CRS. Set 'rawGeometryCRS' on the result
--- to supply a CRS definition for explicit SQL import. This does not transform
+-- to give the value a CRS definition. This does not transform
 -- the coordinates. The standalone codec can encode mixed collection layouts
 -- that the pinned native API rejects during import.
 toRawGeometry :: G.Geometry -> Either String RawGeometry

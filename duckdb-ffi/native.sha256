@@ -1,3 +1,6 @@
 993ad89e7dfca66cd6da994c2cad090c2fc160ddf9f550498a098ab4bb13cfb1  v2.0.0/duckdb-shared-libs-linux-amd64.tar.gz
 c60eecf91143ca6bbac55c4f4d40dc22520488b0ac257c86e0fe9a2b451cf2b7  v2.0.0/duckdb-shared-libs-linux-arm64.tar.gz
 14cd63180614cfd961f7959146ecd9087527ff20b67311efdc3fa1c29c18204d  v2.0.0/duckdb-shared-libs-osx-universal.tar.gz
+c6507206baf7793c6013dbd82368469a45f20dc0e17a6f92f204602f652ed2bc  v2.0.0/duckdb-cli-linux-amd64.tar.gz
+859e1875d2a9515fbb4bf8871061437a14af82320da68c753f094c4b776348fe  v2.0.0/duckdb-cli-linux-arm64.tar.gz
+8a8f67e7c7f7d1392fa63ba3971948391392fe2a25fca63e7008e33c50beb4c2  v2.0.0/duckdb-cli-osx-universal.tar.gz

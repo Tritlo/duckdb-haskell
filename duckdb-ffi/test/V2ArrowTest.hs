@@ -20,7 +20,7 @@ import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (Storable (..))
 import GHC.Records (getField)
 import HsBindgen.Runtime.HasCField (fromPtr)
-import HsBindgen.Runtime.Prelude (fromFunPtr, toFunPtr)
+import HsBindgen.Runtime.Prelude (fromFunPtr, staticSizeOf, toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
 import V2Test (
@@ -81,13 +81,13 @@ readRows chunk = do
 -- | Run an action with a zeroed Arrow array. At the end, release the array if it still has a release callback.
 withArrowArray :: (Ptr ArrowArray -> IO a) -> IO a
 withArrowArray action = alloca $ \ptr -> do
-  fillBytes ptr 0 (sizeOf (undefined :: ArrowArray))
+  fillBytes ptr 0 (staticSizeOf (Proxy @ArrowArray))
   action ptr `finally` (peek ptr >>= \array -> unless (getField @"release" array == nullFunPtr) (fromFunPtr (getField @"release" array) ptr))
 
 -- | Run an action with a zeroed Arrow schema. At the end, release the schema if it still has a release callback.
 withArrowSchema :: (Ptr ArrowSchema -> IO a) -> IO a
 withArrowSchema action = alloca $ \ptr -> do
-  fillBytes ptr 0 (sizeOf (undefined :: ArrowSchema))
+  fillBytes ptr 0 (staticSizeOf (Proxy @ArrowSchema))
   action ptr
     `finally` (peek ptr >>= \schema -> unless (getField @"release" schema == nullFunPtr) (fromFunPtr (getField @"release" schema) ptr))
 

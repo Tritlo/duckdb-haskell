@@ -1,0 +1,56 @@
+{-# LANGUAGE BlockArguments #-}
+
+-- |
+-- Module      : Database.DuckDB.Simple.V2.Config
+-- Description : Register custom options with native builders and update callbacks.
+--
+-- The functions of this module give native handles to their actions.
+-- "Database.DuckDB.Simple.Config" has the typed custom options.
+--
+-- Use 'registerCustomOptionWith' when the update callback needs the native update info. With that info, the
+-- callback can replace the new value with @c_duckdb_v2_custom_option_update_set_value@, read the scope of
+-- the write, or find if the update is a RESET. The configuration action sets the name, the type, and the
+-- other properties of the option with the @c_duckdb_v2_custom_option_set_@ functions of @Database.DuckDB.FFI.V2@.
+module Database.DuckDB.Simple.V2.Config (
+  registerCustomOptionWith,
+) where
+
+import Database.DuckDB.Simple.Callback (
+  attachOpaque,
+  checkTargetThreads,
+  guardContext,
+  install,
+  installOptional,
+  withCallbackResources,
+  withTarget,
+ )
+import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.V2.Registration (ContextCallback, RegistrationTarget (..))
+
+-- | Configure and register a custom option with managed callback cleanup.
+-- The configuration action borrows the builder. Do not set user data or callbacks.
+-- An extension target includes the borrowed initialization context.
+registerCustomOptionWith
+  :: RegistrationTarget -> (DuckDBV2CustomOptionHandle -> IO ()) -> Maybe (ContextCallback DuckDBV2CustomOptionUpdateInfoHandle) -> IO ()
+registerCustomOptionWith target configure callback =
+  withTarget
+    target
+    c_duckdb_v2_custom_option_create
+    c_duckdb_v2_custom_option_destroy
+    c_duckdb_v2_connection_register_custom_option
+    c_duckdb_v2_extension_register_custom_option
+    \option register ->
+      withCallbackResources
+        (checkTargetThreads target)
+        ( \allocate -> installOptional callback \update ->
+            install
+              allocate
+              DuckDBV2CustomOptionUpdateCallbackFn
+              (DuckDBV2CustomOptionUpdateCallbackFn_Aux (guardContext update))
+              (c_duckdb_v2_custom_option_set_update_callback option)
+        )
+        (attachOpaque (c_duckdb_v2_custom_option_set_user_data option))
+        \installCallback -> do
+          configure option
+          installCallback
+          register

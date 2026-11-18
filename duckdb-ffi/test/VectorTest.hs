@@ -11,9 +11,9 @@ import Data.Coerce (coerce)
 import Data.Int (Int32)
 import Data.Word (Word64)
 import Database.DuckDB.FFI
-import Foreign.Marshal.Array (allocaArray, withArray)
-import Foreign.Ptr (Ptr, nullPtr, plusPtr)
-import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)
+import Foreign.Marshal.Array (advancePtr, allocaArray, withArray)
+import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff)
 import GHC.Records (getField)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -189,4 +189,4 @@ vectorReferenceValue =
 -- helpers -------------------------------------------------------------------
 
 plusElem :: Ptr Int32 -> Int -> Ptr Int32
-plusElem base idx = base `plusPtr` (idx * sizeOf (undefined :: Int32))
+plusElem = advancePtr

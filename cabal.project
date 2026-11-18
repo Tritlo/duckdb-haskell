@@ -1,12 +1,10 @@
 packages: duckdb-*/*.cabal
-
 -- GHC version
 with-compiler: ghc-9.14.1
 -- Build tests, benchmarks, and documentation by default
-tests:      True
+tests: True
 benchmarks: True
 documentation: True
-
 -- Global compiler options
 -- uuid-types has an overly tight upper bound on template-haskell,
 -- which prevents building with GHC 9.14+ (template-haskell-2.24).
@@ -15,7 +13,6 @@ documentation: True
 allow-newer: uuid-types:template-haskell, bytestring-lexing:base
 
 program-options
-
   -- Default warning flags
   ghc-options:
     -Wall
@@ -32,8 +29,9 @@ package duckdb-simple
     "--ignore-link-symbol=Database.DuckDB.Simple.Generic.gLogicalType"
     "--ignore-link-symbol=Database.DuckDB.Simple.Generic.IsSum"
     "--ignore-link-symbol=Database.DuckDB.Simple.Generic.Encoded"
-    "--ignore-link-symbol=Database.DuckDB.Simple.Function.argumentType"
-    "--ignore-link-symbol=Database.DuckDB.Simple.Function.scalarReturnType"
-    "--ignore-link-symbol=Database.DuckDB.Simple.Function.toScalarValue"
-    "--ignore-link-symbol=Database.DuckDB.Simple.TypeCache.TypeCache"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Function.Internal.rawResult"
+    "--ignore-link-symbol=Database.DuckDB.Simple.VariantCodec.VariantState"
     "--ignore-link-symbol=Database.DuckDB.Simple.FromRow.RowParseRO"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Typed.rowColumnDeclarations"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Typed.rowColumnValues"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Typed.ColumnValue"

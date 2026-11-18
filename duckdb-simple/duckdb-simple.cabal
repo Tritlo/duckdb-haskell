@@ -1,6 +1,6 @@
 cabal-version: 3.4
 name: duckdb-simple
-version: 0.4.0.0
+version: 1.0.0.0
 license: MPL-2.0
 license-file: LICENSE
 author: Matthias Pall Gissurarson
@@ -21,9 +21,11 @@ description:
   A high-level DuckDB interface with typed parameters and results,
   prepared statements, chunked folds, transactions, and Haskell scalar
   functions. The API follows the style of sqlite-simple and postgresql-simple.
-  .
-  Supports DuckDB 2.0.x releases. Tested with DuckDB 2.0.0.
-  The duckdb-ffi package also provides the new V2 C API.
+
+  The backend uses the generated V2 API from duckdb-ffi. Upstream marks
+  that API as unstable, so this release requires exactly DuckDB 2.0.0.
+  It provides shared environments and instances, function registration,
+  native streaming, and Arrow batches.
 
 extra-doc-files:
   CHANGELOG.md
@@ -39,6 +41,11 @@ flag dataframe-tests
   default: False
   manual: True
 
+flag extension
+  description: Build loadable extensions with private C callback helpers.
+  default: False
+  manual: True
+
 flag quack-tests
   description: Test authenticated local Quack connections with supplied extensions.
   default: False
@@ -50,8 +57,9 @@ library
     Database.DuckDB.Simple.Arrow
     Database.DuckDB.Simple.Catalog
     Database.DuckDB.Simple.Config
+    Database.DuckDB.Simple.Conversion
     Database.DuckDB.Simple.Copy
-    Database.DuckDB.Simple.Deprecated.Streaming
+    Database.DuckDB.Simple.Extension
     Database.DuckDB.Simple.FileSystem
     Database.DuckDB.Simple.FromField
     Database.DuckDB.Simple.FromRow
@@ -62,29 +70,62 @@ library
     Database.DuckDB.Simple.Logging
     Database.DuckDB.Simple.LogicalRep
     Database.DuckDB.Simple.Ok
+    Database.DuckDB.Simple.Pragma
+    Database.DuckDB.Simple.QueryMetrics
+    Database.DuckDB.Simple.Registration
+    Database.DuckDB.Simple.Streaming
     Database.DuckDB.Simple.Time
     Database.DuckDB.Simple.ToField
+    Database.DuckDB.Simple.Tokenizer
     Database.DuckDB.Simple.ToRow
     Database.DuckDB.Simple.Types
+    Database.DuckDB.Simple.V2.Config
+    Database.DuckDB.Simple.V2.Copy
+    Database.DuckDB.Simple.V2.FunctionDocs
+    Database.DuckDB.Simple.V2.Logging
+    Database.DuckDB.Simple.V2.LogicalRep
+    Database.DuckDB.Simple.V2.Pragma
+    Database.DuckDB.Simple.V2.Registration
     Database.DuckDB.Simple.Variant
 
   other-modules:
     Database.DuckDB.Simple.Arrow.Internal
     Database.DuckDB.Simple.Callback
+    Database.DuckDB.Simple.CallbackMark
+    Database.DuckDB.Simple.Config.Internal
+    Database.DuckDB.Simple.Copy.Internal
     Database.DuckDB.Simple.Element
+    Database.DuckDB.Simple.Function.Internal
+    Database.DuckDB.Simple.Logging.Internal
     Database.DuckDB.Simple.Materialize
+    Database.DuckDB.Simple.Native
+    Database.DuckDB.Simple.Pragma.Internal
     Database.DuckDB.Simple.Result
-    Database.DuckDB.Simple.TypeCache
+    Database.DuckDB.Simple.Typed
+    Database.DuckDB.Simple.Typed.Aggregate
+    Database.DuckDB.Simple.Typed.Table
+    Database.DuckDB.Simple.TypeScope
     Database.DuckDB.Simple.VariantCodec
 
   hs-source-dirs: src
   default-language: Haskell2010
+
+  if flag(extension)
+    if os(linux) || os(osx)
+      -- Keep the C stubs private to this shared library. Omit unfoldings, so
+      -- optimized clients cannot inline references to the hidden stubs.
+      cc-options: -fvisibility=hidden
+      ghc-options:
+        -fomit-interface-pragmas
+        -optc-fvisibility=hidden
+    else
+      buildable: False
   build-depends:
     array >=0.5 && <0.6,
-    base >=4.14 && <5,
+    base >=4.18 && <5,
     bytestring >=0.11 && <0.13,
     containers >=0.6 && <0.9,
-    duckdb-ffi >=2.0.0.0 && <2.1,
+    duckdb-ffi >=2.0.0.0 && <2.0.1,
     geometry-simple >=0.1.1.0 && <0.2,
     hs-bindgen-runtime >=1.0.0.0 && <1.1,
     text >=2.0 && <2.2,
@@ -93,20 +134,27 @@ library
     uuid >=1.3 && <1.4,
 
 test-suite duckdb-simple-test
+  if flag(extension)
+    buildable: False
   type: exitcode-stdio-1.0
   hs-source-dirs: test
   main-is: Spec.hs
   other-modules:
     ArrowTests
     CancellationTests
+    CopyTests
     CoreRegressionTests
     ExtensionRegressionTests
     GeometryRegressionTests
     Properties
+    RegistrationTests
+    SizedArrayTests
     SqlFeatureTests
     StreamingTests
     TestUtils
     TimeTests
+    TypedRegistrationTests
+    UserCastTests
     ValueRegressionTests
     VariantRegressionTests
 
@@ -117,12 +165,13 @@ test-suite duckdb-simple-test
 
   build-depends:
     array >=0.5 && <0.6,
-    base >=4.14 && <5,
+    base >=4.18 && <5,
     bytestring,
     containers >=0.6 && <0.9,
     directory >=1.3 && <1.4,
-    duckdb-ffi >=2.0.0.0 && <2.1,
+    duckdb-ffi >=2.0.0.0 && <2.0.1,
     duckdb-simple,
+    filepath >=1.4 && <1.6,
     geometry-simple >=0.1.1.0 && <0.2,
     hs-bindgen-runtime >=1.0.0.0 && <1.1,
     QuickCheck >=2.14 && <2.18,
@@ -135,52 +184,34 @@ test-suite duckdb-simple-test
     uuid >=1.3 && <1.4,
     vector >=0.13 && <0.14,
 
-test-suite duckdb-simple-codec-test
-  type: exitcode-stdio-1.0
-  hs-source-dirs:
-    test-codec
-    src
-
-  main-is: Main.hs
-  other-modules:
-    Database.DuckDB.Simple.Element
-    Database.DuckDB.Simple.FromField
-    Database.DuckDB.Simple.Geometry
-    Database.DuckDB.Simple.Internal
-    Database.DuckDB.Simple.LogicalRep
-    Database.DuckDB.Simple.Ok
-    Database.DuckDB.Simple.Time
-    Database.DuckDB.Simple.TypeCache
-    Database.DuckDB.Simple.Variant
-    Database.DuckDB.Simple.VariantCodec
-
-  default-language: Haskell2010
-  build-depends:
-    array >=0.5 && <0.6,
-    base >=4.14 && <5,
-    bytestring >=0.11 && <0.13,
-    containers >=0.6 && <0.9,
-    duckdb-ffi >=2.0.0.0 && <2.1,
-    geometry-simple >=0.1.1.0 && <0.2,
-    hs-bindgen-runtime >=1.0.0.0 && <1.1,
-    tasty >=1.4 && <1.6,
-    tasty-hunit >=0.10 && <0.12,
-    text >=2.0 && <2.2,
-    time >=1.12 && <1.16,
-    transformers >=0.6 && <0.7,
-    uuid >=1.3 && <1.4,
-
 test-suite duckdb-simple-leak-test
+  if flag(extension)
+    buildable: False
   type: exitcode-stdio-1.0
   hs-source-dirs: leaktest
   main-is: Main.hs
   default-language: Haskell2010
   ghc-options: -threaded
   build-depends:
-    base >=4.14 && <5,
+    base >=4.18 && <5,
     bytestring,
+    containers >=0.6 && <0.9,
     duckdb-simple,
     geometry-simple >=0.1.1.0 && <0.2,
+    text,
+
+-- This suite has no -threaded. It checks the guard for such a program.
+test-suite duckdb-simple-nonthreaded-test
+  if flag(extension)
+    buildable: False
+  type: exitcode-stdio-1.0
+  hs-source-dirs: nonthreaded-test
+  main-is: Main.hs
+  default-language: Haskell2010
+  build-depends:
+    base >=4.18 && <5,
+    duckdb-simple,
+    text,
 
 test-suite duckdb-simple-dataframe-test
   type: exitcode-stdio-1.0
@@ -189,13 +220,13 @@ test-suite duckdb-simple-dataframe-test
   default-language: Haskell2010
   ghc-options: -threaded
 
-  if !flag(dataframe-tests)
+  if flag(extension) || !flag(dataframe-tests)
     buildable: False
   build-depends:
-    base >=4.14 && <5,
+    base >=4.18 && <5,
     dataframe-arrow-bridge >=1.0 && <1.1,
     dataframe-core >=2.5 && <2.6,
-    duckdb-ffi >=2.0.0.0 && <2.1,
+    duckdb-ffi >=2.0.0.0 && <2.0.1,
     duckdb-simple,
     hs-bindgen-runtime >=1.0.0.0 && <1.1,
     tasty >=1.4 && <1.6,
@@ -209,10 +240,10 @@ test-suite duckdb-simple-quack-test
   default-language: Haskell2010
   ghc-options: -threaded
 
-  if !flag(quack-tests)
+  if flag(extension) || !flag(quack-tests)
     buildable: False
   build-depends:
-    base >=4.14 && <5,
+    base >=4.18 && <5,
     directory >=1.3 && <1.4,
     duckdb-simple,
     tasty >=1.4 && <1.6,
@@ -221,6 +252,8 @@ test-suite duckdb-simple-quack-test
     time,
 
 benchmark duckdb-simple-bench
+  if flag(extension)
+    buildable: False
   type: exitcode-stdio-1.0
   hs-source-dirs: bench
   main-is: Main.hs
@@ -231,8 +264,10 @@ benchmark duckdb-simple-bench
     -rtsopts
 
   build-depends:
-    base >=4.14 && <5,
+    array >=0.5 && <0.6,
+    base >=4.18 && <5,
     bytestring,
+    containers >=0.6 && <0.9,
     duckdb-simple,
     geometry-simple >=0.1.1.0 && <0.2,
     text,

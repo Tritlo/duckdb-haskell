@@ -1,10 +1,13 @@
+{-# LANGUAGE DisambiguateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Generate and verify release bindings from typed hs-bindgen declarations.
+-- |
+-- Module      : Main
+-- Description : Generate and verify release bindings from typed hs-bindgen declarations.
 module Main (main) where
 
 import Control.Monad (forM_, unless)
@@ -26,14 +29,25 @@ import HsBindgen
 import HsBindgen.Artefact
 import HsBindgen.Backend.Category
 import HsBindgen.Backend.Hs.AST qualified as Hs
+import HsBindgen.Backend.Hs.Haddock.Documentation qualified as Doc (Comment (..), CommentBlockContent (..), CommentInlineContent (..))
 import HsBindgen.Backend.Hs.Name qualified as Name
 import HsBindgen.Backend.Hs.Origin qualified as Origin
 import HsBindgen.Backend.Hs.Translation.Field qualified as Field
 import HsBindgen.Backend.HsModule.Render (render)
 import HsBindgen.Backend.HsModule.Translation (translateModuleSingle)
 import HsBindgen.Backend.HsModule.Translation.Doxygen (computeExportTags, resolveExports)
+import HsBindgen.Backend.SHs.AST qualified as Binding (Binding (comment))
+import HsBindgen.Backend.SHs.AST qualified as DerivingInstance (DerivingInstance (comment))
+import HsBindgen.Backend.SHs.AST qualified as EmptyData (EmptyData (comment))
+import HsBindgen.Backend.SHs.AST qualified as ForeignImport (ForeignImport (comment))
+import HsBindgen.Backend.SHs.AST qualified as Instance (Instance (comment))
+import HsBindgen.Backend.SHs.AST qualified as Parameter (Parameter (comment))
 import HsBindgen.Backend.SHs.AST qualified as Pattern (PatternSynonym (..))
+import HsBindgen.Backend.SHs.AST qualified as PatternSynonym (PatternSynonym (comment))
+import HsBindgen.Backend.SHs.AST qualified as Result (Result (comment))
 import HsBindgen.Backend.SHs.AST qualified as SHs
+import HsBindgen.Backend.SHs.AST qualified as StructField (Field (comment))
+import HsBindgen.Backend.SHs.AST qualified as TypeSynonym (TypeSynonym (comment))
 import HsBindgen.BindingSpec (BindingSpecConfig (..))
 import HsBindgen.BindingSpec qualified as BindingSpec
 import HsBindgen.Config (Config_ (..), FieldNamingStrategy (..), UniqueId (..), toBindgenConfig)
@@ -145,7 +159,9 @@ generateModule scratchDirectory moduleName headers outputPath checksPath = do
       <> show (Set.toList (generated `Set.difference` native))
   assertions <- sequence [assertion values index check | (index, check) <- zip [0 ..] checks]
   createDirectoryIfMissing True (scratchDirectory </> "generated/Database/DuckDB/FFI")
-  writeFile (scratchDirectory </> outputPath) bindings
+  writeFile
+    (scratchDirectory </> outputPath)
+    ("-- | Raw bindings to the DuckDB C API in @" <> intercalate "@ and @" headers <> "@.\n" <> bindings)
   writeFile (scratchDirectory </> checksPath) (abiHeader headers <> unlines assertions)
   putStrLn (moduleName <> ": generated " <> show (length functions) <> " functions and " <> show (length assertions) <> " ABI checks.")
 
@@ -162,12 +178,87 @@ namedBindings = do
       renames = Map.fromList [(pattern', enumName pattern') | pattern' <- patterns]
       rename value = Map.findWithDefault value value renames
       tags = Map.mapKeys rename (computeExportTags doxygen nativeDeclarations)
-      named = fmap (\(wrappers, bindings) -> (wrappers, map (nameEnums rename) bindings)) declarations
+      functions =
+        Map.fromList
+          [ (original, exported.text)
+          | (_, bindings) <- toList declarations
+          , SHs.DBinding function <- bindings
+          , Name.ExportedName exported <- [function.name]
+          , Just documentation <- [function.comment]
+          , Just original <- [documentation.origin]
+          ]
+      types = Set.fromList [declaration.info.id.hsName.text | declaration <- nativeDeclarations, isType declaration]
+      named = fmap (\(wrappers, bindings) -> (wrappers, map (documentReferences types functions . nameEnums rename) bindings)) declarations
   unless (length patterns == Set.size (Set.fromList (Map.elems renames))) $
     error "The public enum naming rules produce duplicate names."
   pure
     $ render
     $ translateModuleSingle (config :: Bindgen.BindgenConfig).frontend.fieldNamingStrategy def headers name (resolveExports tags) named
+
+{- Note [Generated documentation references]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The safe function category adds c_ to function names. Doxygen references keep
+C names. Resolve these references from the exported declarations. Use the type
+namespace for types that share a name with their constructor.
+
+hs-bindgen 1.0.0.0 does not close the quote when it renders Doc.Type. Emit the
+complete type reference as text until that renderer is fixed. Escape literal
+apostrophes in C prose so SQL strings do not become Haskell references.
+-}
+
+-- | Resolve documentation references without changing declarations or C metadata.
+-- See Note [Generated documentation references].
+documentReferences :: Set.Set Text -> Map Text Text -> SHs.SDecl -> SHs.SDecl
+documentReferences types functions = \case
+  SHs.DTypSyn value -> SHs.DTypSyn value{TypeSynonym.comment = comment value.comment}
+  SHs.DInst value -> SHs.DInst value{Instance.comment = comment value.comment}
+  SHs.DRecord value -> SHs.DRecord value{SHs.comment = comment value.comment, SHs.fields = map field value.fields}
+  SHs.DNewtype value -> SHs.DNewtype value{SHs.comment = comment value.comment, SHs.field = field value.field}
+  SHs.DEmptyData value -> SHs.DEmptyData value{EmptyData.comment = comment value.comment}
+  SHs.DDerivingInstance value -> SHs.DDerivingInstance value{DerivingInstance.comment = comment value.comment}
+  SHs.DForeignImport value ->
+    SHs.DForeignImport
+      value
+        { ForeignImport.comment = comment value.comment
+        , SHs.parameters = map parameter value.parameters
+        , SHs.result = result value.result
+        }
+  SHs.DBinding value ->
+    SHs.DBinding
+      value
+        { Binding.comment = comment value.comment
+        , SHs.parameters = map parameter value.parameters
+        , SHs.result = result value.result
+        }
+  SHs.DPatternSynonym value -> SHs.DPatternSynonym value{PatternSynonym.comment = comment value.comment}
+  value@SHs.DCompletePragma{} -> value
+  where
+    field :: SHs.Field -> SHs.Field
+    field value = value{StructField.comment = comment value.comment}
+    parameter :: SHs.Parameter -> SHs.Parameter
+    parameter value = value{Parameter.comment = comment value.comment}
+    result :: SHs.Result -> SHs.Result
+    result value = value{Result.comment = comment value.comment}
+    comment :: Maybe Doc.Comment -> Maybe Doc.Comment
+    comment = fmap (\value -> value{Doc.title = fmap (map inline) value.title, Doc.children = map block value.children})
+    block :: Doc.CommentBlockContent -> Doc.CommentBlockContent
+    block = \case
+      Doc.Paragraph content -> Doc.Paragraph (map inline content)
+      Doc.ListItem kind content -> Doc.ListItem kind (map block content)
+      Doc.DefinitionList term content -> Doc.DefinitionList (inline term) (map block content)
+      Doc.Header level content -> Doc.Header level (map inline content)
+      value -> value
+    inline :: Doc.CommentInlineContent -> Doc.CommentInlineContent
+    inline = \case
+      Doc.Identifier value
+        | value `Set.member` types -> Doc.TextContent ("t'" <> value <> "'")
+        | Just function <- Map.lookup value functions -> Doc.Identifier function
+      Doc.TextContent value -> Doc.TextContent (Text.replace "'" "\\'" value)
+      Doc.Monospace content -> Doc.Monospace (map inline content)
+      Doc.Emph content -> Doc.Emph (map inline content)
+      Doc.Bold content -> Doc.Bold (map inline content)
+      Doc.Link label url -> Doc.Link (map inline label) url
+      value -> value
 
 -- | Rename enum patterns and their conversion and sequence instances together.
 nameEnums :: (Text -> Text) -> SHs.SDecl -> SHs.SDecl

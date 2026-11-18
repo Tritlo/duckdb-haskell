@@ -42,6 +42,7 @@ import Data.Coerce (Coercible, coerce)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
+import Data.Proxy (Proxy (..))
 import Data.Void (Void)
 import Data.Word (Word64, Word8)
 import Database.DuckDB.FFI.V2
@@ -55,7 +56,7 @@ import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (Storable (..))
 import GHC.Records (getField)
 import GHC.Stack (HasCallStack)
-import HsBindgen.Runtime.Prelude (fromFunPtr, toFunPtr)
+import HsBindgen.Runtime.Prelude (fromFunPtr, staticSizeOf, toFunPtr)
 import HsBindgen.Runtime.PtrConst (PtrConst)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
@@ -513,7 +514,7 @@ testAggregate = do
   combinations <- newIORef (0 :: Int)
   let stateSize info err =
         callbackGuard failures err $
-          checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (sizeOf (0 :: Int64))))
+          checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (staticSizeOf (Proxy @Int64))))
       initialize info err = callbackGuard failures err $ do
         states <- output (c_duckdb_v2_aggregate_function_init_get_states info)
         count <- output (c_duckdb_v2_aggregate_function_init_get_state_count info)
@@ -908,20 +909,20 @@ testArrow :: IO ()
 testArrow = withConnection $ \conn -> withStatement conn "SELECT i::BIGINT AS amount FROM range(5) t(i)" $ \statement -> alloca $ \result -> alloca $ \streamPtr -> do
   poke result (coerce nullPtr)
   checked (c_duckdb_v2_statement_execute_arrow conn statement (coerce nullPtr) (coerce nullPtr) 0 0 result)
-  fillBytes streamPtr 0 (sizeOf (undefined :: ArrowArrayStream))
+  fillBytes streamPtr 0 (staticSizeOf (Proxy @ArrowArrayStream))
   checked (c_duckdb_v2_arrow_result_to_arrow_c_stream result streamPtr)
   peek result >>= (@?= coerce nullPtr)
   stream <- peek streamPtr
   assertBool "Arrow stream owns a release callback" (getField @"release" stream /= nullFunPtr)
   flip finally (fromFunPtr (getField @"release" stream) streamPtr) $ do
     alloca $ \schemaPtr -> do
-      fillBytes schemaPtr 0 (sizeOf (undefined :: ArrowSchema))
+      fillBytes schemaPtr 0 (staticSizeOf (Proxy @ArrowSchema))
       fromFunPtr (getField @"get_schema" stream) streamPtr schemaPtr >>= (@?= 0)
       schema <- peek schemaPtr
       getField @"n_children" schema @?= 1
       fromFunPtr (getField @"release" schema) schemaPtr
     let fetch total = alloca $ \arrayPtr -> do
-          fillBytes arrayPtr 0 (sizeOf (undefined :: ArrowArray))
+          fillBytes arrayPtr 0 (staticSizeOf (Proxy @ArrowArray))
           fromFunPtr (getField @"get_next" stream) streamPtr arrayPtr >>= (@?= 0)
           array <- peek arrayPtr
           if getField @"release" array == nullFunPtr

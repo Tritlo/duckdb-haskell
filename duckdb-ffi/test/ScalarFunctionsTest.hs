@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
 module ScalarFunctionsTest (tests) where
@@ -9,13 +10,15 @@ import Data.Char (toLower)
 import Data.Coerce (coerce)
 import Data.Int (Int32)
 import Data.List (isInfixOf)
+import Data.Proxy (Proxy (..))
 import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca, free, mallocBytes)
 import Foreign.Ptr (Ptr, nullPtr)
-import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)
+import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff)
+import HsBindgen.Runtime.Marshal (staticSizeOf)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -131,7 +134,7 @@ scalarFunctionSetFeatures =
     withDatabase \db ->
       withConnection db \conn ->
         withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)) \intType -> do
-          let bindDataSize = sizeOf (undefined :: Int32)
+          let bindDataSize = staticSizeOf (Proxy @Int32)
 
           extraStorage <- mallocBytes bindDataSize
           poke (coerce extraStorage) (123 :: Int32)

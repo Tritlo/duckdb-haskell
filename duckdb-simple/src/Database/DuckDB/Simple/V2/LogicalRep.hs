@@ -12,7 +12,7 @@
 module Database.DuckDB.Simple.V2.LogicalRep (
   logicalTypeToRep,
   logicalTypeToBaseRep,
-  logicalTypesEqual,
+  valuesHaveType,
   logicalTypeFromRep,
   logicalTypeFromRepWith,
   bindingLogicalType,
@@ -51,16 +51,23 @@ logicalTypeToRep factory = convertLogicalType (Just factory) ReadEnumDictionary
 logicalTypeToBaseRep :: DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
 logicalTypeToBaseRep = convertLogicalType Nothing ReadEnumDictionary
 
--- | Compare native types, including exact field names, collations, and CRS
--- definitions. See Note [Element types of a list] in
--- "Database.DuckDB.Simple.ToField".
-logicalTypesEqual :: DuckDBV2LogicalTypeHandle -> DuckDBV2LogicalTypeHandle -> IO Bool
-logicalTypesEqual left right = do
-  equal <- output (c_duckdb_v2_logical_type_is_equal left right)
-  if equal == 0 then pure False else (==) <$> key left <*> key right
+-- | Check the types of borrowed values against a borrowed logical type,
+-- including exact field names, collations, and CRS definitions. Each temporary
+-- value type is released before the next value is checked. See
+-- Note [Element types of a list] in "Database.DuckDB.Simple.ToField".
+valuesHaveType :: DuckDBV2LogicalTypeHandle -> [DuckDBV2ValueHandle] -> IO Bool
+valuesHaveType logical values = do
+  expected <- key logical
+  let check [] = pure True
+      check (value : remaining) = do
+        matches <- bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \actual -> do
+          equal <- output (c_duckdb_v2_logical_type_is_equal logical actual)
+          if equal == 0 then pure False else (== expected) <$> key actual
+        if matches then check remaining else pure False
+  check values
   where
-    -- Native equality has checked aliases and ENUM dictionaries. The partial
-    -- trees are comparison keys only. They do not leave this function.
+    -- Native equality checks aliases and ENUM dictionaries. The partial trees
+    -- are comparison keys only. They do not leave this function.
     key = convertLogicalType Nothing OmitEnumDictionary
 
 -- | Select complete dictionaries or private comparison keys.

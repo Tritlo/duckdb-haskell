@@ -89,7 +89,6 @@ import Database.DuckDB.Simple.V2.LogicalRep (
   logicalTypeFromRep,
   logicalTypeToBaseRep,
   logicalTypeToRep,
-  logicalTypesEqual,
  )
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import Database.DuckDB.Simple.Variant (Variant (..))
@@ -670,8 +669,6 @@ valueRegressionTests =
                   assertEqual (label <> " native equality") nativeEqual same
                   sameBase <- (==) <$> logicalTypeToBaseRep left <*> logicalTypeToBaseRep right
                   assertEqual (label <> " base equality") baseEqual sameBase
-                  exact <- logicalTypesEqual left right
-                  assertEqual (label <> " exact metadata equality") (same && sameBase) exact
                   -- Equal native types retain their exact metadata. Other types use native inference.
                   if same && sameBase
                     then logicalTypeToRep factory left

@@ -100,7 +100,7 @@ import Database.DuckDB.Simple.V2.LogicalRep (
   logicalTypeFromRep,
   logicalTypeToBaseRep,
   logicalTypeToRep,
-  logicalTypesEqual,
+  valuesHaveType,
  )
 import Database.DuckDB.Simple.Variant (Variant (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -1415,10 +1415,11 @@ constructor:
   Native equality distinguishes aliases, including the alias "NULL". When
   each remaining element has the type of the first one, that type is the
   element type. The check uses native equality to keep aliases and ENUM dictionaries.
-  logicalTypesEqual checks the metadata that equality omits. In DuckDB 2.0.0,
+  valuesHaveType checks the metadata that equality omits. In DuckDB 2.0.0,
   VARCHAR equality ignores collations. STRUCT and UNION names compare without
   ASCII case. GEOMETRY CRS definitions can compare equal through a shared
   identifier. The metadata check keeps exact names, collations, and definitions.
+  It reads the first comparison key once, then checks each remaining value.
   It visits child types but reads no ENUM labels.
 - When the types are different, but timestampTypeForTarget gives each of them
   the same nanosecond type for the target, that type is the element type. For
@@ -1539,15 +1540,7 @@ withValueType ValueBuilder{builderFactory = factory, builderType = makeType} tar
   case present of
     [value] -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType action
     value : rest -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \logical -> do
-      same <-
-        foldM
-          ( \matches element ->
-              if not matches
-                then pure False
-                else bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType (logicalTypesEqual logical)
-          )
-          True
-          rest
+      same <- valuesHaveType logical rest
       let nanoseconds (LogicalTypeScalar dtype) = dtype `elem` [LogicalTypeIdTimeNs, LogicalTypeIdTimestampNs, LogicalTypeIdTimestampTzNs]
           nanoseconds _ = False
       if same

@@ -72,10 +72,12 @@ tests paths =
           [ "SELECT 'first_instance', haskell_add_one(41::BIGINT);"
           , "SELECT 'first_metadata', haskell_argument_type(1::INTEGER);"
           , "SELECT 'first_alias', haskell_canonical_argument_type(haskell_canonical_bigint(1::INTEGER));"
+          , "SELECT 'first_result', haskell_centroid(1, 2)::BLOB = 'POINT (1 2)'::GEOMETRY::BLOB;"
           , ".open :memory:"
           , loadAgain
           , "SELECT 'second_instance', haskell_add_one(41::BIGINT);"
           , "SELECT 'second_aggregate', haskell_sum(i) FROM range(10000) AS t(i);"
+          , "SELECT 'second_result', haskell_centroid(3, 4)::BLOB = 'POINT (3 4)'::GEOMETRY::BLOB;"
           , "SELECT 'second_metadata', haskell_argument_type(1::INTEGER);"
           , "SELECT 'second_alias', haskell_canonical_argument_type(haskell_canonical_bigint(1::INTEGER));"
           , "SELECT 'second_replacement', amount FROM haskell_missing;"
@@ -83,8 +85,10 @@ tests paths =
           [ ["first_instance", "42"]
           , ["first_metadata", "1"]
           , ["first_alias", "1"]
+          , ["first_result", "true"]
           , ["second_instance", "42"]
           , ["second_aggregate", "49995000"]
+          , ["second_result", "true"]
           , ["second_metadata", "1"]
           , ["second_alias", "1"]
           , ["second_replacement", "42"]
@@ -99,6 +103,26 @@ tests paths =
           ]
           [["native_batches", "10000", "1", "10000", "50005000"], ["null", "preserved"], ["text", "true"]]
           []
+    , testCase "VARIANT arguments in scalar and aggregate callbacks" $
+        checkProcess
+          paths
+          [ "SET threads=4;"
+          , "SELECT 'object', haskell_variant_echo(v) = v FROM (SELECT '{\"\":[3, null], \"nested\":{\"x\":true}}'::JSON::VARIANT AS v);"
+          , "SELECT 'sum', haskell_variant_sum(i::VARIANT) FROM range(4097) AS t(i);"
+          , "SELECT haskell_variant_sum('text'::VARIANT);"
+          , "SELECT 'recovered', haskell_variant_sum(v) FROM (VALUES (7::BIGINT::VARIANT), (NULL::VARIANT)) AS t(v);"
+          ]
+          [["object", "true"], ["sum", "8390656"], ["recovered", "7"]]
+          ["haskell_variant_sum expects BIGINT payloads"]
+    , testCase "centroid returns native GEOMETRY values and NULL" $
+        checkProcess
+          paths
+          [ "SELECT 'type', return_type FROM duckdb_functions() WHERE function_name = 'haskell_centroid';"
+          , "SELECT 'groups', g, haskell_centroid(x, y)::BLOB IS NOT DISTINCT FROM CASE WHEN g = 1 THEN 'POINT (2 3)'::GEOMETRY::BLOB END FROM (VALUES (1, 1, 2), (1, 3, 4), (1, NULL, 9), (2, NULL, 1)) AS t(g, x, y) GROUP BY g ORDER BY g;"
+          , "SELECT 'empty', haskell_centroid(i, i) IS NULL FROM range(0) AS t(i);"
+          ]
+          [["type", "GEOMETRY"], ["groups", "1", "true"], ["groups", "2", "true"], ["empty", "true"]]
+          []
     , testCase "a GEOMETRY argument" $
         checkProcess
           paths
@@ -108,17 +132,32 @@ tests paths =
           ]
           [["point_x", "1.0"], ["null_x", "true"], ["rows_x", "5000", "12497500.0"]]
           []
+    , testCase "GEOMETRY aggregate arguments, nested values, NULLs, and chunks" $
+        checkProcess
+          paths
+          [ "SET threads=4;"
+          , "SELECT 'point_sum', haskell_point_x_sum(g) FROM (VALUES ('POINT (1 2)'::GEOMETRY), (NULL::GEOMETRY), ('POINT (3 4)'::GEOMETRY)) AS t(g);"
+          , "SELECT 'null_sum', haskell_point_x_sum(NULL::GEOMETRY);"
+          , "SELECT 'nested_sum', haskell_points_x_sum(g) FROM (VALUES (['POINT (1 2)'::GEOMETRY, NULL::GEOMETRY, 'POINT (3 4)'::GEOMETRY]), (NULL::GEOMETRY[])) AS t(g);"
+          , "SELECT 'rows_sum', haskell_point_x_sum(('POINT (' || i || ' 0)')::GEOMETRY) FROM range(5000) AS t(i);"
+          , "SELECT 'nested_rows_sum', haskell_points_x_sum([('POINT (' || i || ' 0)')::GEOMETRY, NULL::GEOMETRY]) FROM range(5000) AS t(i);"
+          ]
+          [["point_sum", "4.0"], ["null_sum", "0.0"], ["nested_sum", "4.0"], ["rows_sum", "12497500.0"], ["nested_rows_sum", "12497500.0"]]
+          []
     , testCase "a GEOMETRY argument does not run a registered cast from GEOMETRY to BLOB" $
         -- The variable makes the extension register a native cast from GEOMETRY to
         -- BLOB that writes NULL and counts its calls (src/TestCast.hs). The reads
         -- come first, so the count after them must be 0. The CAST after them shows
-        -- that the cast was registered.
+        -- that the registered cast runs.
         checkProcessWith
           [("DUCKDB_HASKELL_DEMO_GEOMETRY_CAST", "1")]
           paths
           [ "SELECT 'point_x', haskell_point_x('POINT (1 2)'::GEOMETRY);"
           , "SELECT 'null_x', haskell_point_x(NULL::GEOMETRY) IS NULL;"
           , "SELECT 'rows_x', count(*), sum(haskell_point_x(('POINT (' || i || ' 0)')::GEOMETRY)) FROM range(5000) AS t(i);"
+          , "SELECT 'aggregate_sum', haskell_point_x_sum(g) FROM (VALUES ('POINT (1 2)'::GEOMETRY), (NULL::GEOMETRY)) AS t(g);"
+          , "SELECT 'aggregate_chunks', haskell_point_x_sum(('POINT (' || i || ' 0)')::GEOMETRY) FROM range(5000) AS t(i);"
+          , "SELECT 'nested_aggregate_chunks', haskell_points_x_sum([('POINT (' || i || ' 0)')::GEOMETRY, NULL::GEOMETRY]) FROM range(5000) AS t(i);"
           , "SELECT 'calls_after_reads', haskell_geometry_cast_calls();"
           , "SELECT 'cast_blob', CAST('POINT (1 2)'::GEOMETRY AS BLOB) IS NULL;"
           , "SELECT 'calls_after_cast', haskell_geometry_cast_calls() > 0;"
@@ -126,6 +165,9 @@ tests paths =
           [ ["point_x", "1.0"]
           , ["null_x", "true"]
           , ["rows_x", "5000", "12497500.0"]
+          , ["aggregate_sum", "1.0"]
+          , ["aggregate_chunks", "12497500.0"]
+          , ["nested_aggregate_chunks", "12497500.0"]
           , ["calls_after_reads", "0"]
           , ["cast_blob", "true"]
           , ["calls_after_cast", "true"]
@@ -232,7 +274,9 @@ tests paths =
         quoted <- sqlLiteral file
         checkProcess
           paths
-          [ "COPY (SELECT CASE WHEN i % 1000 = 7 THEN NULL ELSE i END AS value FROM range(3000) AS t(i)) TO " <> quoted <> " (FORMAT haskell_lines);"
+          [ "COPY (SELECT (CASE WHEN i % 1000 = 7 THEN NULL ELSE i END)::VARIANT AS value FROM range(3000) AS t(i)) TO "
+              <> quoted
+              <> " (FORMAT haskell_lines);"
           , "CREATE TABLE copied (value BIGINT);"
           , "COPY copied FROM " <> quoted <> " (FORMAT haskell_lines);"
           , "SELECT 'copy_from', count(*), count(value), sum(value) FROM copied;"
@@ -240,7 +284,7 @@ tests paths =
           , "SELECT 'after_copy_error', 42;"
           ]
           [["copy_from", "3000", "2997", "4495479"], ["after_copy_error", "42"]]
-          ["haskell_lines writes exactly one BIGINT column"]
+          ["haskell_lines writes one BIGINT or VARIANT column with BIGINT or NULL values"]
         written <- readFile file
         written @?= unlines [if i `mod` 1000 == 7 then "" else show i | i <- [0 .. 2999 :: Int]]
     , testGroup

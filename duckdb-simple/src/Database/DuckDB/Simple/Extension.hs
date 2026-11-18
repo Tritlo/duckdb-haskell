@@ -20,14 +20,7 @@
 --   'ExtensionEntry' and does nothing else. DuckDB finds the entry point from the file name @NAME.duckdb_extension@.
 -- - The threaded runtime. Link the extension with @-threaded@. Otherwise the load fails with an error.
 --
--- These steps build, package, and load an extension:
---
--- 1. Build the foreign library with Cabal in a project that enables the two flags, as
---    @dev\/extensions\/cabal.project@ and @dev\/extensions\/example\/duckdb-haskell-extension-example.cabal@ do.
--- 2. Append the DuckDB metadata to the library with @dev\/extensions\/Pack.hs@, as @dev\/extensions\/PACKAGING.md@
---    shows.
--- 3. Load the file with @LOAD@ in a DuckDB 2.0.0 process that accepts unsigned extensions, as
---    @dev\/extensions\/example\/test\/Main.hs@ does with @duckdb -unsigned@.
+-- See @dev\/extensions\/README.md@ in this repo.
 --
 -- The Haskell side of a small extension, from @dev\/extensions\/example\/src\/Demo.hs@:
 --
@@ -79,14 +72,12 @@
 -- - The process supports one DuckDB implementation.
 -- - The extension loads only into the DuckDB release of the pinned header, 2.0.0.
 -- - In extension mode, duckdb-ffi exposes only "Database.DuckDB.FFI.V2".
--- - A COPY TO function of an extension cannot read a VARIANT column. A replacement scan of an extension belongs to
---   the instance, not to one connection.
+-- - A replacement scan of an extension belongs to the instance, not to one connection.
 -- - The example links the GHC and package libraries dynamically. It loads only on a machine where its run paths
 --   exist.
 --
--- The complete example is in the directory @dev\/extensions\/example\/@ of the repository
--- <https://github.com/Tritlo/duckdb-haskell>. Its file @src\/Advanced.hs@ registers the other kinds of SQL objects.
--- @dev\/extensions\/README.md@ has the commands that build, package, test, and load it.
+-- The complete example is in the directory @dev\/extensions\/example\/@ of the repository.
+-- Its file @src\/Advanced.hs@ registers the other kinds of SQL objects.
 module Database.DuckDB.Simple.Extension (
   Extension,
   ExtensionEntry,
@@ -207,7 +198,9 @@ createTableFunction :: (FromRow params, TypedRow params, TypedRow row) => Extens
 createTableFunction = createTableFunctionOn . extensionTarget
 
 -- | Register an aggregate function with the loading DuckDB host. The rules of
--- 'Database.DuckDB.Simple.Function.createAggregate' apply.
+-- 'Database.DuckDB.Simple.Function.createAggregate' apply. SQL type declarations
+-- resolve on the loading host. Result encoders use an instance factory
+-- for built-in types, with no catalog lookup on the host.
 createAggregate :: (FromRow args, TypedRow args, FunctionResult result) => Extension -> Text -> Aggregate state args result -> IO ()
 createAggregate = createAggregateOn . extensionTarget
 
@@ -244,8 +237,7 @@ registerLogSink :: Extension -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
 registerLogSink = Logging.registerLogSinkOn . extensionTarget
 
 -- | Register row-oriented COPY TO callbacks with the loading DuckDB host. The
--- rules of 'Database.DuckDB.Simple.Copy.registerCopyToFunction' apply. The
--- callbacks cannot read a VARIANT column.
+-- rules of 'Database.DuckDB.Simple.Copy.registerCopyToFunction' apply.
 registerCopyToFunction
   :: Extension
   -> Text
@@ -263,7 +255,6 @@ registerCopyFromFunction = Copy.registerCopyFromFunctionOn . extensionTarget
 
 -- | Register a format with a COPY TO side and a COPY FROM side with the
 -- loading DuckDB host. The rules of
--- 'Database.DuckDB.Simple.Copy.registerCopyFunction' apply. The COPY TO side
--- cannot read a VARIANT column.
+-- 'Database.DuckDB.Simple.Copy.registerCopyFunction' apply.
 registerCopyFunction :: (TypedRow row) => Extension -> Text -> CopyTo bindState globalState -> (CopyFromInfo -> IO [row]) -> IO ()
 registerCopyFunction = Copy.registerCopyFunctionOn . extensionTarget

@@ -89,7 +89,8 @@ copyFromCallbacks bind execute = CopyFromCallbacks bind Nothing Nothing execute 
 
 -- | Register either direction or both. The library allocates the callback pointers. It gives their cleanup
 -- to DuckDB in the user data of the native object. DuckDB runs the cleanup when it releases the object. See
--- Note [Callback ownership] in "Database.DuckDB.Simple.Callback".
+-- Note [Callback ownership] in
+-- <src/Database.DuckDB.Simple.Callback.html Database.DuckDB.Simple.Callback>.
 registerCopyFunction :: Connection -> Text -> Maybe CopyToCallbacks -> Maybe CopyFromCallbacks -> IO ()
 registerCopyFunction connection name to from = do
   when (Text.null name || Text.any (== '\0') name) $ throwInvalidArgument "invalid copy function name"

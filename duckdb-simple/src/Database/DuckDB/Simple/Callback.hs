@@ -38,9 +38,8 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
 import Database.DuckDB.Simple.CallbackMark (withCallbackMark)
-import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle, withTypeCache)
+import Database.DuckDB.Simple.Internal (Connection, connectionInstance, instanceCastFactory, withConnectionHandle)
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.TypeCache (typeCacheCasts)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
@@ -64,7 +63,9 @@ withRegistrationFactory target action = case target of
 -- | The factory for the casts that the library runs in the callbacks of a
 -- target. A connection target gives the factory of its instance. An extension
 -- target gives 'Nothing', because an extension has no instance. A callback with
--- a context then reads GEOMETRY with the factory of the context. A registration
+-- a context can use the default per-row cast. Scalar and aggregate functions
+-- use a private instance. See Note [Function argument readers] in
+-- "Database.DuckDB.Simple.Typed". A registration
 -- takes the factory one time, and its callbacks keep it. The factory is valid
 -- until the instance handle is destroyed. The library destroys that handle only
 -- after it closes each child of the instance (Note [Native handle ownership] in
@@ -75,7 +76,7 @@ withRegistrationFactory target action = case target of
 -- "Database.DuckDB.Simple.Materialize".
 targetCastFactory :: RegistrationTarget -> IO (Maybe DuckDBV2FactoryHandle)
 targetCastFactory target = case target of
-  ConnectionTarget connection -> Just <$> withTypeCache connection (pure . typeCacheCasts)
+  ConnectionTarget connection -> withConnectionHandle connection \_ -> Just <$> instanceCastFactory (connectionInstance connection)
   ExtensionTarget _ _ -> pure Nothing
 
 -- | Check the query thread count of a connection or extension registration.

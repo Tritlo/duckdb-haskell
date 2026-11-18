@@ -10,6 +10,7 @@
 -- Description : Lossless VARIANT decoding through public V2 values and SQL type metadata.
 module Database.DuckDB.Simple.VariantCodec (
   VariantState,
+  variantConnection,
   newVariantState,
   destroyVariantState,
   prepareVariantDecoder,
@@ -82,8 +83,8 @@ one open result for each connection, and it rejects a second execution. Thus
 the queries of the decoder run on a helper connection, so that the decode does
 not interrupt the stream. See Note [Connection lock] in
 "Database.DuckDB.Simple.Internal". A materialized result closes before its rows
-are decoded, but it uses the same reader. The helper connection has the
-settings of the database, not the SESSION settings of the caller. The
+are decoded, but it uses the same reader. A helper connection on the host
+instance has its GLOBAL settings, not the caller's SESSION settings. The
 metadata query needs an expression depth of 11 when it is prepared. A GLOBAL
 max_expression_depth below 11 fails its preparation with a Binder Error.
 
@@ -91,14 +92,18 @@ VariantState holds the helper connection, the prepared metadata statement, the
 parsed extraction statement of the last key count, and the cast types. The
 owner of the helper connection destroys the state before the connection.
 
-- A caller connection (CacheState and withVariantState). The type cache of the
-  connection opens the helper connection and the state at the first VARIANT
-  read, and keeps them until the cache closes. The calls run in sequence.
+- Each caller connection reuses its own decoder. See Note [Concurrent VARIANT
+  decoding] in "Database.DuckDB.Simple.Internal".
 
-- COPY TO (withVariantReader). The reader opens a helper connection of the
-  database for each vector, and keeps the state for one decode. An extension
-  target has no instance handle, so its reader raises an error for each
-  VARIANT row.
+- A connection's COPY TO reader uses a helper connection of that instance
+  for each vector. An extension's COPY TO reader and typed argument readers
+  use a private instance. Scalar and aggregate functions reuse that instance
+  across vectors. See Note [VARIANT reads inside callbacks] in
+  "Database.DuckDB.Simple.Materialize".
+
+TODO: When V2 exposes VARIANT tags and children directly, use those accessors
+to replace the metadata and object extraction queries. Preserve exact scalar
+types and object keys, including empty keys and keys containing NUL.
 
 The decoder casts with the factory of the instance (variantCasts). It decodes
 each value that contains no VARIANT, such as a cast result, with the same
@@ -114,6 +119,7 @@ factory. See Note [User casts and the casts of the library] in
 -- the state from one thread at a time. See Note [VARIANT decoding].
 data VariantState = VariantState
   { variantConnection :: DuckDBV2ConnectionHandle
+  -- ^ The helper on which the decoder runs its queries.
   , variantCasts :: DuckDBV2FactoryHandle
   -- ^ The factory of the instance of the helper connection. The decoder casts
   --     with it.

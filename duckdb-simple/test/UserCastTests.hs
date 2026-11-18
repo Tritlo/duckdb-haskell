@@ -114,6 +114,8 @@ userCastTests =
     , testCase "a cast from VARIANT to BIGINT does not change a BIGINT payload of a VARIANT result" $
         withConnection ":memory:" \conn -> do
           calls <- nullCast conn (R.TypeExpression "VARIANT") (R.TypeExpression "BIGINT")
+          createFunction conn "user_cast_variant_arg" ((== Variant (FieldInt64 42)) :: Variant -> Bool)
+          query_ conn "SELECT user_cast_variant_arg(42::BIGINT::VARIANT)" >>= (@?= [Only True])
           query_ conn "SELECT 42::BIGINT::VARIANT" >>= (@?= [Only (Variant (FieldInt64 42))])
           query_ conn "SELECT {'n': 42::BIGINT}::VARIANT" >>= (@?= [Only (Variant (variantObject [("n", FieldInt64 42)]))])
           query_ conn "SELECT [1, 2]::BIGINT[]::VARIANT" >>= (@?= [Only (Variant (FieldList [FieldInt64 1, FieldInt64 2]))])
@@ -144,16 +146,15 @@ userCastTests =
           void (execute_ conn "COPY (SELECT 42::BIGINT::VARIANT AS v) TO 'unused' (FORMAT user_cast_variant_copy)")
           (map (map fieldValue) <$> readIORef rows) >>= (@?= [[FieldInt64 42]])
           readIORef calls >>= (@?= 0)
-    , testCase "a cast from VARCHAR to GEOMETRY does not run when a connection with a custom CRS opens" $
+    , testCase "a cast from VARCHAR to GEOMETRY does not run when a custom CRS binds" $
         withEnvironment \environment -> withInstance environment [] \instance' -> withConnectionOn instance' \conn -> do
           calls <- nullCast conn (R.TypeExpression "VARCHAR") (R.TypeExpression "GEOMETRY")
-          -- The open reads the GEOMETRY type of the custom CRS with a query.
-          other <- connectWithOptions instance' defaultConnectionOptions{connectionGeometryCRS = ["local grid"]}
-          readIORef calls >>= (@?= 0)
-          let grid = point{rawGeometryCRS = Just "local grid"}
-              struct = oneField "g" (LogicalTypeGeometry (Just "local grid")) (FieldGeometry grid)
-          query other "SELECT ?" (Only struct) >>= (@?= [Only struct])
-          close other
+          -- The bind resolves the custom CRS without a VARCHAR cast.
+          withConnectionOn instance' \other -> do
+            let grid = point{rawGeometryCRS = Just "local grid"}
+                struct = oneField "g" (LogicalTypeGeometry (Just "local grid")) (FieldGeometry grid)
+            query other "SELECT ?" (Only struct) >>= (@?= [Only struct])
+            readIORef calls >>= (@?= 0)
     , testCase "a cast from BLOB to GEOMETRY does not change a bound raw geometry" $ withConnection ":memory:" \conn -> do
         calls <- nullCast conn (R.TypeExpression "BLOB") (R.TypeExpression "GEOMETRY")
         let struct = oneField "g" (LogicalTypeGeometry Nothing) (FieldGeometry point)
@@ -222,7 +223,7 @@ geometryArgumentTests =
         query_ conn "SELECT hs_placed_x({'name': 'a', 'shape': 'POINT (1 2)'::GEOMETRY})" >>= (@?= [Only (1 :: Double)])
         query_ conn "SELECT sum(hs_point_x(('POINT (' || i || ' 0)')::GEOMETRY)) FROM range(5000) t(i)" >>= (@?= [Only (12497500 :: Double)])
         readIORef calls >>= (@?= 0)
-        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["local grid"]} \grid -> do
+        withConnection ":memory:" \grid -> do
           createFunction grid "hs_point_x" pointX
           query grid "SELECT hs_point_x(ST_SetCRS(ST_GeomFromWKB(?), 'local grid'))" (Only pointWKB) >>= (@?= [Only (1 :: Double)])
     , testCase "a scalar function reads its arguments through a selection and from a constant vector" $ withConnection ":memory:" \conn -> do
@@ -240,7 +241,7 @@ geometryArgumentTests =
         -- A constant argument over FROM gives the function a CONSTANT vector.
         query_ conn "SELECT hs_point_x('POINT (7 8)'::GEOMETRY) FROM range(3)" >>= (@?= replicate 3 (Only (7 :: Double)))
     , testCase "a registration cannot declare a custom CRS of the connection" $
-        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["local grid"]} \grid -> do
+        withConnection ":memory:" \grid -> do
           try
             ( R.registerCast grid (R.StructuredType (LogicalTypeGeometry (Just "local grid"))) (R.TypeExpression "BLOB") Nothing \info _ -> writeNullRows info
             )

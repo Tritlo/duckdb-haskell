@@ -28,27 +28,24 @@ import Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
   ReadFactory (..),
   prepareGeometryReader,
-  prepareVariantReader,
   prepareVectorReaderWith,
  )
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.TypeCache (typeCacheCasts, withVariantState)
 import Database.DuckDB.Simple.TypeScope (TypeScope, closeTypeScope, newTypeScope, scopedTypeRep)
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (peek)
 
--- | Fold rows from one statement and release its result on every exit path.
+-- | Fold rows from a statement owned by the enclosing @withStatement@.
 foldStatementWith :: ResultMode -> RowParser row -> Statement -> a -> (a -> row -> IO a) -> IO a
-foldStatementWith mode parser stmt initial step =
-  let loop acc = do
-        nextVal <- nextRowWith mode parser stmt
-        case nextVal of
-          Nothing -> pure acc
-          Just row -> do
-            acc' <- step acc row
-            acc' `seq` loop acc'
-  in  loop initial `finally` resetStatementStream stmt
+foldStatementWith mode parser stmt initial step = loop initial
+  where
+    loop acc =
+      nextRowWith mode parser stmt >>= \case
+        Nothing -> pure acc
+        Just row -> do
+          acc' <- step acc row
+          acc' `seq` loop acc'
 
 -- | Read one row. The first fetch selects execution until the cursor resets.
 -- See Note [Statement cursor] in "Database.DuckDB.Simple.Internal".
@@ -142,7 +139,7 @@ startResultStream mode conn result = mask_ do
         release
         pure Nothing
       else do
-        columns <- collectResultColumns types (withTypeCache conn (pure . typeCacheCasts)) result
+        columns <- collectResultColumns types (withConnectionHandle conn \_ -> instanceCastFactory (connectionInstance conn)) result
         case mode of
           MaterializedResult -> do
             gather
@@ -187,13 +184,13 @@ fetchChunk ref conn queryText stream = withQueryError queryText $ mask \restore 
 -- use the result schema. See Note [Type trees] in
 -- "Database.DuckDB.Simple.Materialize".
 prepareChunkReaders :: Connection -> DuckDBV2DataChunkHandle -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
-prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> do
+prepareChunkReaders conn chunk columns = do
+  casts <- instanceCastFactory (connectionInstance conn)
   -- See Note [VARIANT decoding] in "Database.DuckDB.Simple.VariantCodec" and
   -- Note [User casts and the casts of the library] in
   -- "Database.DuckDB.Simple.Materialize".
-  let readVariant vector = withVariantState cache (`prepareVariantReader` vector)
-      readType = logicalTypeToRep (typeCacheCasts cache)
-      readers = FallbackReaders readType readVariant (prepareGeometryReader (InstanceFactory (typeCacheCasts cache)))
+  let readType = logicalTypeToRep casts
+      readers = FallbackReaders readType (readConnectionVariant conn) (prepareGeometryReader (InstanceFactory casts))
   forM columns \StatementStreamColumn{statementStreamColumnIndex, statementStreamColumnTree, statementStreamColumnLabels} -> do
     vector <- output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex))
     let tree =

@@ -12,12 +12,14 @@ module Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
   rejectRows,
   prepareVariantReader,
+  readCallbackVariant,
+  readInstanceVariant,
+  createHelperInstance,
   ReadFactory (..),
   callbackReadFactory,
   readFactoryHandle,
   prepareGeometryReader,
   materializeValue,
-  prepareValueReader,
   prepareVectorReader,
   TypeTree,
   EnumLabels,
@@ -108,6 +110,42 @@ prepareVariantReader =
     )
   where
     noVariant = rejectRows (throwInternalError (Text.pack "expected a value without VARIANT"))
+
+{- Note [VARIANT reads inside callbacks]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The VARIANT decoder runs SQL. A callback cannot run it on the executing
+connection. Even a new connection to the host instance can need a lock that
+the caller holds, for example during SET GLOBAL. An extension has no host
+instance handle at all.
+
+The decoder uses an instance with only built-in types, casts and system
+functions. A scalar or aggregate registration opens its instance on demand.
+Each vector uses a separate connection on that instance. Other typed
+callbacks, including extension COPY TO, open a private instance for each
+VARIANT vector. The decoder copies the rows before it closes the connection.
+See Note [Function argument readers] in "Database.DuckDB.Simple.Typed"
+and Note [VARIANT decoding] in "Database.DuckDB.Simple.VariantCodec".
+-}
+
+-- | Decode a callback's VARIANT vector independently of the invoking database.
+readCallbackVariant :: VectorReader
+readCallbackVariant vector =
+  bracket (output c_duckdb_v2_environment_create) (destroy c_duckdb_v2_environment_destroy) \env ->
+    bracket (createHelperInstance env) (destroy c_duckdb_v2_instance_destroy) (`readInstanceVariant` vector)
+
+-- | Copy a VARIANT vector through a temporary connection on the supplied instance.
+readInstanceVariant :: DuckDBV2InstanceHandle -> VectorReader
+readInstanceVariant instance_ vector =
+  bracket (output (c_duckdb_v2_connection_create instance_)) (destroy c_duckdb_v2_connection_destroy) \helper ->
+    withInstanceFactory instance_ \factory ->
+      bracket (VariantCodec.newVariantState helper factory) VariantCodec.destroyVariantState (`prepareVariantReader` vector)
+
+-- | Create an instance for synchronous metadata work, without background workers.
+createHelperInstance :: DuckDBV2EnvironmentHandle -> IO DuckDBV2InstanceHandle
+createHelperInstance env =
+  withTextArray (map Text.pack ["threads", "async_threads"]) \names ->
+    withTextArray (map Text.pack ["1", "0"]) \values ->
+      output (c_duckdb_v2_instance_create_with_options env (ConstPtr names) (ConstPtr values) 2)
 
 -- | The factory of a read, and its kind. The kind decides how
 -- 'prepareGeometryReader' casts GEOMETRY to BLOB. See
@@ -388,51 +426,38 @@ their result:
 - Reads. prepareGeometryReader casts a GEOMETRY vector to BLOB. A result, the
   value of an option (getConfigValue), and the default value of an option
   (getConfigDefaultValue) read a GEOMETRY value with the factory of the
-  instance, and so does queryMetrics. The type cache of the connection keeps
-  that factory (typeCacheCasts in "Database.DuckDB.Simple.TypeCache"). The
-  callbacks of a registration on a connection read a GEOMETRY value with the
-  same factory: the value of an option
-  update, the arguments of a pragma, a scalar function, a typed aggregate, or a
-  table function, and the rows of a COPY TO function. The
-  registration takes the factory (targetCastFactory in
-  "Database.DuckDB.Simple.Callback"). An extension target has no instance, so
-  the same callbacks of an extension read with the factory of the callback
-  context (ContextFactory). The casts of that factory include the user casts.
-  Thus prepareGeometryReader does not cast the vector with it. It writes each
-  row to a BLOB vector with the default cast (withDefaultCastVector in
-  "Database.DuckDB.Simple.Native"), as the values below do. Without this rule,
-  a cast from GEOMETRY to BLOB whose callback reads its argument with the
-  library would run the same cast again to read the argument. This recursion
-  would not end. The update callback of an aggregate function has no context
-  and thus no factory, so a typed aggregate of an extension refuses a GEOMETRY
-  argument at registration.
+  instance, and so does queryMetrics. Callbacks registered on a connection
+  use the same instance factory.
+  A scalar or aggregate function registered by a loadable extension uses
+  its private instance factory. See Note [Function argument readers] in
+  "Database.DuckDB.Simple.Typed". Both paths cast the whole vector.
+  Other extension callbacks have a context factory, which includes user
+  casts. For those callbacks, withDefaultCastVector writes each row to a
+  BLOB vector with the default cast ("Database.DuckDB.Simple.Native").
+  This prevents a user cast from GEOMETRY to BLOB from calling itself when
+  its callback reads a GEOMETRY argument.
+  TODO: When V2 exposes WKB directly, copy it from the input vector and
+  remove the intermediate BLOB cast.
 - withObjectChildren and withCast cast VARIANT values to the types of their
   payloads ("Database.DuckDB.Simple.VariantCodec"). The codec also reads a
   GEOMETRY payload. It uses the factory of the instance of its helper
   connection (variantCasts).
-- Values. rawGeometryDuckValue casts a BLOB value to GEOMETRY, the ToDuckValue
-  instance of Geometry casts a VARCHAR value to GEOMETRY, enumDuckValue casts a
-  VARCHAR value to an ENUM type, and variantDuckValue casts a value to VARIANT
-  ("Database.DuckDB.Simple.ToField"). Each of them writes the value to a vector
-  of the target type with one row, and reads the row (defaultCast). The header
-  says that duckdb_v2_vector_set_value casts "through the non-strict default
-  cast". Thus the cast does not depend on the factory. The factory still makes
-  the target type, and only the factory of a connection or of a callback
-  context can make a GEOMETRY type with a CRS. See Note [Raw GEOMETRY
-  parameters] in "Database.DuckDB.Simple.ToField".
-- The type query of a connection with a custom CRS (readNativeTypes in
-  "Database.DuckDB.Simple.TypeCache") binds the empty point as a BLOB value. Its
-  statement has no cast.
-
-Why a vector for the values. For GEOMETRY and VARIANT, the header calls
-duckdb_v2_vector_set_value "the only way to write a cell". For an ENUM, the
-header calls a cast of a VARCHAR to an enum type with duckdb_v2_value_cast "the
-sanctioned way to build UNION and ENUM values", and that cast includes
-"registered custom casts". enumDuckValue does not use that cast, on purpose.
-The library builds an ENUM value from the label of a FieldEnum, and a user
-cast from VARCHAR to the ENUM type must not change that value. A UNION value
-is built through a vector for another reason. See Note [UNION values] in
-"Database.DuckDB.Simple.ToField".
+- Values. rawGeometryDuckValue casts BLOB to GEOMETRY, the ToDuckValue instance
+  of Geometry casts VARCHAR to GEOMETRY, enumDuckValue casts VARCHAR to ENUM,
+  and variantDuckValue casts its payload to VARIANT
+  ("Database.DuckDB.Simple.ToField"). defaultCast writes each value to a
+  one-row vector of the target type and reads it back. vector_set_value uses
+  "the non-strict default cast". This is the documented cell writer for
+  GEOMETRY and VARIANT, which have no committed view layout. For ENUM, it avoids
+  value_cast, which includes registered casts. A VARCHAR-to-ENUM user cast
+  must not change the label of a FieldEnum. The factory resolves the target
+  type. Only a connection or callback factory can construct a GEOMETRY
+  type with a CRS. See Note [Raw GEOMETRY parameters] in
+  "Database.DuckDB.Simple.ToField". UNION values use a vector to preserve the
+  explicit member tag. See Note [UNION values] in that module.
+- The bind-time CRS query passes a BLOB literal to ST_GeomFromWKB and binds
+  the label as VARCHAR. It needs no user cast. See Note [Bind-time CRS types] in
+  "Database.DuckDB.Simple.V2.LogicalRep".
 
 These casts still use the cast functions of the session, so a user cast for
 the same pair changes their result:

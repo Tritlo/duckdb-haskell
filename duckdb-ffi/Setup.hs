@@ -124,7 +124,7 @@ installNativeLibrary flags = do
       fail
         ( "DuckDB installation requires these programs on PATH: "
             <> intercalate ", " missing
-            <> ". Install them, or supply DuckDB with -fsystemlib and --extra-lib-dirs. See README.md for details."
+            <> ". Install them, or supply DuckDB with -fsystemlib and --extra-lib-dirs=/absolute/path/to/duckdb."
         )
     createDirectoryIfMissing True root
     withTempDirectory root ".download-" $ \staging -> do

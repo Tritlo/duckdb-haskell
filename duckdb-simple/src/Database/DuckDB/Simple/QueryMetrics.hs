@@ -16,10 +16,9 @@ import Control.Exception (bracket)
 import Control.Monad (forM, when)
 import Data.Text (Text)
 import Database.DuckDB.Simple.FromField (FieldValue)
-import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle, withTypeCache)
+import Database.DuckDB.Simple.Internal (Connection, connectionInstance, instanceCastFactory, withConnectionHandle)
 import Database.DuckDB.Simple.Materialize (ReadFactory (..), materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.TypeCache (typeCacheCasts)
 
 -- | One query or operator node. Metric order is unspecified. Any metric or
 -- operator can be absent. Native V2 reports numeric metrics only.
@@ -50,10 +49,10 @@ enableProfiling connection enabled = withConnectionHandle connection \native -> 
 -- releases all native snapshot and value handles before it returns.
 queryMetrics :: Connection -> IO QueryMetrics
 queryMetrics connection = withConnectionHandle connection \native ->
-  bracket (output (c_duckdb_v2_connection_get_query_metrics native)) (destroy c_duckdb_v2_query_metrics_destroy) \snapshot ->
-    withTypeCache connection \cache -> do
-      root <- output (c_duckdb_v2_query_metrics_get_root snapshot)
-      copyNode (materializeValue unexpectedVariant (InstanceFactory (typeCacheCasts cache))) root
+  bracket (output (c_duckdb_v2_connection_get_query_metrics native)) (destroy c_duckdb_v2_query_metrics_destroy) \snapshot -> do
+    casts <- instanceCastFactory (connectionInstance connection)
+    root <- output (c_duckdb_v2_query_metrics_get_root snapshot)
+    copyNode (materializeValue unexpectedVariant (InstanceFactory casts)) root
   where
     unexpectedVariant = rejectRows (throwInternalError "query metrics must be numeric")
     copyNode readValue node = do

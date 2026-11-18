@@ -62,16 +62,12 @@ for the upgrade instructions.
   (see the README). An exception in the callback of `registerCast` gives an
   `SQLError` of the type `ErrorTypeMismatch`, and `TRY(CAST(...))` raises the
   error. The section Errors of the README tells why.
-- `createAggregate` registers an aggregate function as a fold over Haskell
-  values. The record `Aggregate` has the initial state and the step, combine,
-  and result functions. DuckDB gives the finalize callback no factory, so the
-  result type must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT,
-  DOUBLE, or VARCHAR.
-- Add `V2.Registration.registerAggregateFunctionWithCleanup` for cleanup
-  owned by an aggregate's native callback resources. A typed extension
-  aggregate creates a metadata helper only when needed. It shares the helper
-  across queries until the last native callback owner releases it. The helper
-  has no background worker pool.
+- `createAggregate` registers a Haskell fold with initial state, step,
+  combine, and result functions. Its result needs a static SQL declaration
+  and a `ToDuckValue` encoder that works with an instance factory. Examples
+  include nullable GEOMETRY, VARIANT, and records through `ViaDuckDB`.
+- `V2.Registration.registerAggregateFunctionWithCleanup` runs a cleanup
+  action when DuckDB releases the last reference to the aggregate's callbacks.
 - `createTableFunction` registers a Haskell function that gives the rows of a
   table function as a list. DuckDB reads the list one chunk at a time. It reads
   only the columns that the query uses, and the first column for a query such
@@ -101,15 +97,8 @@ for the upgrade instructions.
   ARRAY parameter does.
 - An argument of `createFunction` can have each type with `FromField` and
   `DuckDBColumnType`, for example a record through `ViaDuckDB`, a list, a `Map`,
-  or a newtype with its own column type name. `FunctionArg` is gone. An
-  argument type that is or contains VARIANT raises an `SQLError` of the type
-  `ErrorInputInvalid` at registration, because no argument reader reads VARIANT,
-  also for `createAggregate`, for a parameter of `createTableFunction` and of
-  `registerPragmaFunction`, and for a custom option with an update function. A
-  pragma parameter of the type ANY can get a VARIANT value, and that call fails.
-  A GEOMETRY argument reads, also in `createAggregate`. An aggregate function of
-  an extension refuses a GEOMETRY argument at registration, because its update
-  callback has no factory to read the value.
+  or a newtype with its own column type name. `FunctionArg` is gone.
+  Arguments use the same conversion as query results, including nested values.
 - A result of `createFunction` can have each type with `ToDuckValue`. Its SQL
   type is the `duckdbTypeDeclaration` of the type: an `Int16` result is
   SMALLINT, a `Word16` result is USMALLINT, and a `Float` result is FLOAT, in
@@ -138,8 +127,7 @@ for the upgrade instructions.
   `registerReplacementScan`, `registerCustomType`,
   `registerMultiFileFunction`, `registerCopyToFunction`,
   `registerCopyFromFunction`, `registerCopyFunction`,
-  `registerPragmaFunction`, and `registerCustomOption`. A COPY TO function of
-  an extension cannot read a VARIANT column.
+  `registerPragmaFunction`, and `registerCustomOption`.
 - A typed registration has more overhead for each row than raw vector access.
   Use the V2 modules for speed, projection and filter pushdown,
   parallel table scans, and scalar functions with a bind callback or variadic
@@ -263,38 +251,12 @@ for the upgrade instructions.
   factory valid throughout the conversion. The returned `LogicalTypeRep` is
   pure and remains valid after the factory closes. The function does not
   destroy the logical type handle. See MIGRATION.md.
-- Decoders return `Conversion a`. `FromField.fromField` returns `Conversion a`,
-  `FieldParser a` is `Field -> Conversion a`, and `parseRow` returns `Conversion a`.
-  `runConversion :: Conversion a -> IO (Ok a)` runs a standalone decoder.
-  Query and callback APIs run conversions for you. Use `pure` for success,
-  `returnError` for a field error, and `liftConversion` for IO. IO exceptions,
-  including cancellation, propagate to the caller. Sequential and applicative
-  conversions stop at the first conversion failure. `Alternative` combines
-  the diagnostics when both branches fail.
-- `Field.fieldType` has the type `Conversion LogicalTypeRep`. It reads the
-  SQL type of the column, element, key, or value, with each alias. A decoder
-  can check a DECIMAL scale, a TIMESTAMP unit, an ARRAY size, or JSON. A query
-  result or callback owns the native metadata. A cursor keeps it until
-  exhaustion, reset, or statement closure. Callback metadata expires when
-  that invocation returns. An escaped native action raises `SQLError` with
-  the message `duckdb-simple: field type scope is closed`, including after a
-  cached read. Read a pure `LogicalTypeRep` snapshot inside the scope to keep
-  it after closure. `Field` has no `Eq` or `Show` instance.
-- Metadata scopes cache successful reads only. An interrupted read permits a
-  retry while the scope remains open. Closure releases native types and
-  clears the cache. Metadata uses no finalizers. Statement and connection
-  finalizers are unchanged. Type conversion runs in explicit IO.
-- `returnError` defers diagnostic metadata until the final conversion fails.
-  A successful `Alternative` branch discards the other branch's diagnostics
-  without reading its type or ENUM dictionary. A completed `ResultError` is
-  pure. Query and callback decoders resolve diagnostics inside their scope.
-- Generic decoding also returns `Conversion a`. Update `DuckValue` methods
-  `duckFromField` and `duckFromTypedField`, and calls to `typedFromField` and
-  `genericFromFieldValue`, that returned `Either String a`. Encoding and type
-  declarations remain pure. `duckFromTypedField` defaults to `duckFromField`.
-  Set it to `typedFromField` to give a record field's SQL type to its
-  `FromField` instance. Generic STRUCT and UNION decoders give each field its
-  type. A value in a VARIANT has the type VARIANT.
+- Decoders and field metadata use `Conversion a` with explicit IO. `Field`
+  loses its `Eq` and `Show` instances. Native field metadata expires with its
+  query result or callback scope. See the
+  [source migration](https://github.com/Tritlo/duckdb-haskell/blob/main/MIGRATION.md#duckdb-simple-03-to-10)
+  for changed signatures and instances, and
+  [Decoding rows](https://github.com/Tritlo/duckdb-haskell/blob/main/duckdb-simple/README.md#decoding-rows) for conversion and metadata rules.
 - Read errors name the type of the column with `logicalTypeSQL`, the type
   text of DuckDB, for example DECIMAL(18,2), TIMESTAMP_NS, ENUM('a', 'b'), or
   JSON. For a VARIANT column, they name the type of the stored value in the
@@ -328,8 +290,8 @@ for the upgrade instructions.
 - Read GEOMETRY results through a native cast to BLOB. DuckDB 2.0 rejects WKB
   with mixed Z/M member layouts.
 - `ToDuckValue.toDuckValue`, `logicalTypeFromRep`, and `logicalTypeFromRepWith`
-  take a V2 factory. Composite parameters keep GEOMETRY CRS metadata. A CRS
-  that DuckDB does not recognize raises `SQLError` instead of being dropped.
+  take a V2 factory. Composite parameters keep GEOMETRY CRS metadata, including
+  unknown custom labels resolved through SQL on a helper connection.
 - `logicalTypeFromRep` creates a VARIANT type, and a GEOMETRY type with a CRS
   that DuckDB recognizes. Version 0.3 raised an error for VARIANT and created
   GEOMETRY without the CRS.
@@ -338,11 +300,17 @@ for the upgrade instructions.
   `SQLError`. For example, a STRUCT parameter with a MAP field that has a NULL
   key raises an `SQLError` with the type `ErrorInputInvalid`. Version 0.3
   raised an `IOException`.
-- A connection constructs each name of `connectionGeometryCRS` directly when it
-  opens. It queries a SQL-derived type only for a name that DuckDB does not keep,
-  on the new connection, so the default list runs no query. The connection keeps
-  each type, and a bind copies it. A name that DuckDB drops, for example a blank
-  name, fails the open.
+- Remove `connectionGeometryCRS` from `ConnectionOptions` and `withTypeCache`
+  from `Database.DuckDB.Simple.Internal`. Remove the field
+  from record construction and updates, or its argument from positional
+  construction and patterns. Parameters construct recognized CRS names and full
+  definitions directly. Unknown custom labels use a helper SQL query on demand,
+  including in nested types, typed NULLs, empty collections, and inactive UNION
+  members. The library does not keep a permanent cache of custom CRS types.
+  Blank labels and labels with NUL fail when used by a parameter, not when the
+  connection opens. Query reads retain custom labels. Typed registrations and
+  direct `logicalTypeFromRep` calls still require a recognized CRS or a full
+  definition.
 - The library builds a UNION parameter in a one-row UNION vector, because the
   V2 API has no UNION value constructor. This requires flat child vectors.
   DuckDB 2.0.0 supplies them in a new vector, but its header does not guarantee
@@ -398,9 +366,8 @@ for the upgrade instructions.
   `Int64`, a bad `ConnectionOptions` field, SQL text with no statement or with
   more than one statement, a parameter index out of bounds, a column index of
   `columnName` out of bounds, a bad name or argument of a registration, a
-  catalog lookup, a configuration option, or a log sink, the column count of a
-  COPY FROM table, and a VARIANT argument of a typed function, a table function,
-  a pragma, a COPY function, or a custom option. An error about a statement has
+  catalog lookup, a configuration option, or a log sink, and the column count of a
+  COPY FROM table. An error about a statement has
   the query of the statement, and each other error has no query. A value outside
   the range of its SQL type raises `SQLError` with the type
   `ErrorTypeConversion` when it binds, the type of the "Conversion Error" that
@@ -420,7 +387,7 @@ for the upgrade instructions.
   the wrong shape or type keeps `ErrorInputInvalid`, also where DuckDB gives
   another type for the same input, for example a UNION tag that is not a member,
   a leaf built from another type, a STRUCT field that does not match its type,
-  or an unknown CRS. A parameter count or a parameter name that does not match
+  or a blank GEOMETRY CRS label. A parameter count or a parameter name that does not match
   the query keeps its `FormatError`. A check in a callback fails the outer
   statement with the type of the check: such a value as the result of a typed
   function or a row of a typed table function gives `ErrorTypeConversion` and
@@ -436,7 +403,7 @@ for the upgrade instructions.
   with an `SQLError` of the type `ErrorInputInvalid` and the text "Invalid Input
   Error: duckdb-simple: ...", because a callback does not pass the type
   `ErrorRuntimeInternal` (a cast gives `ErrorTypeMismatch`). The use of a closed
-  environment, instance, connection, statement, or type cache, a DuckDB library
+  environment, instance, connection, or statement, a DuckDB library
   of another version, and a callback state read with the wrong type are not
   internal checks; they raise an `SQLError` with no type. Version 0.3 raised an
   `IOException` (a `userError`) or an `ErrorCall` for the internal checks, for
@@ -605,12 +572,15 @@ for the upgrade instructions.
   an incompatible column. Earlier versions wrapped the value, which DuckDB's cast
   to VARIANT changes. A type that is or contains JSON, at any depth, also raises
   that error, because DuckDB casts JSON to VARIANT by parsing the text.
+- Preserve the previous set of bindings when positional or named parameter
+  validation or conversion fails.
 - Allow session variables to supply omitted named parameters. Too few named
   parameters no longer raise `FormatError`. Too many named parameters still
   raise it.
 - Reject duplicate named parameters with DuckDB's ASCII case rules. Keep
   distinct non-ASCII names separate. Preserve sparse numeric parameter names
-  such as `$3`.
+  such as `$3` and distinguish quoted parameter names that start with
+  `$`, `:`, or `@`.
 - Resolve configuration names and aliases case-insensitively. Use DuckDB's
   ASCII identifier rules for catalog names and top-level schemas.
 - `deleteFunction` reports the error from DuckDB. DuckDB does not permit

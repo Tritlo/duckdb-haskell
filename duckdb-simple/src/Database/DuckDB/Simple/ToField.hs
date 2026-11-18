@@ -46,9 +46,9 @@ import Data.Fixed (Pico)
 import qualified Data.Geometry as G
 import qualified Data.Geometry.WKT as WKT
 import Data.Int (Int16, Int32, Int64, Int8)
-import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Proxy (Proxy (..))
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time.Calendar (Day, diffDays, fromGregorian)
@@ -70,11 +70,13 @@ import Database.DuckDB.Simple.FromField (
 import Database.DuckDB.Simple.Geometry (RawGeometry (..))
 import Database.DuckDB.Simple.Internal (
   Statement (..),
+  connectionInstance,
   duckDBTypeFromName,
   duckDBTypeToName,
   preparedParameterType,
   storeBoundValue,
-  withTypeCache,
+  withConnectionHandle,
+  withInstanceHandle,
  )
 import Database.DuckDB.Simple.LogicalRep (
   LogicalTypeRep (..),
@@ -92,9 +94,14 @@ import Database.DuckDB.Simple.LogicalRep (
  )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
-import Database.DuckDB.Simple.TypeCache (cachedLogicalType, typeCacheConnection)
 import Database.DuckDB.Simple.Types (Null (..))
-import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep, logicalTypeToBaseRep, logicalTypeToRep)
+import Database.DuckDB.Simple.V2.LogicalRep (
+  bindingLogicalType,
+  logicalTypeFromRep,
+  logicalTypeToBaseRep,
+  logicalTypeToRep,
+  valuesHaveType,
+ )
 import Database.DuckDB.Simple.Variant (Variant (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CDouble (..), CFloat (..))
@@ -122,8 +129,8 @@ data FieldBinding = FieldBinding
   }
 
 -- | A factory and a type constructor of the same scope. The builder of a
--- statement resolves the configured CRS types of its connection. See
--- Note [CRS types of a connection] in "Database.DuckDB.Simple.TypeCache".
+-- statement resolves CRS types when it binds a parameter. See
+-- Note [Bind-time CRS types] in "Database.DuckDB.Simple.V2.LogicalRep".
 data ValueBuilder = ValueBuilder
   { builderFactory :: !DuckDBV2FactoryHandle
   , builderType :: !(LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle)
@@ -142,8 +149,8 @@ class (DuckDBColumnType a) => ToDuckValue a where
   --     header gives no rule for a value after the owner of its factory ends.
   --     A value with a GEOMETRY type that has a CRS needs the factory of a
   --     connection or of a callback context, because the factory of an
-  --     instance cannot make that type. Use 'ToField' to resolve arbitrary CRS
-  --     labels from connection options.
+  --     instance cannot make that type. Use 'ToField' to resolve a custom CRS
+  --     label when binding a parameter.
   toDuckValue :: ValueFactory -> a -> IO NativeValue
 
 valueBinding :: String -> (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle) -> FieldBinding
@@ -522,12 +529,13 @@ duckdbColumnType :: forall a. (DuckDBColumnType a) => Proxy a -> Text
 duckdbColumnType = duckdbColumnTypeFor
 
 -- | Apply a @FieldBinding@ to the given statement/index. The builder takes its
--- factory and its CRS types from the type cache of the statement's connection.
--- See Note [CRS types of a connection] in "Database.DuckDB.Simple.TypeCache".
+-- factory from the statement's connection. See Note [Bind-time CRS types]
+-- in "Database.DuckDB.Simple.V2.LogicalRep".
 bindFieldBinding :: Statement -> DuckDBIdx -> FieldBinding -> IO ()
 bindFieldBinding stmt idx FieldBinding{fieldBindingValue} =
-  withTypeCache (statementConnection stmt) \cache -> withConnectionFactory (typeCacheConnection cache) \factory ->
-    bindDuckValue stmt idx (fieldBindingValue (ValueBuilder factory (cachedLogicalType cache)) (preparedParameterType stmt idx))
+  withConnectionHandle (statementConnection stmt) \connection -> withConnectionFactory connection \factory ->
+    let makeType rep = withInstanceHandle (connectionInstance (statementConnection stmt)) \inst -> bindingLogicalType factory inst rep
+    in  bindDuckValue stmt idx (fieldBindingValue (ValueBuilder factory makeType) (preparedParameterType stmt idx))
 
 -- | Render a bound parameter for error reporting.
 renderFieldBinding :: FieldBinding -> String
@@ -606,10 +614,9 @@ integerBinding binds an Integer or a Natural parameter with this rule:
     in SELECT ?, binds as a BIGNUM. A cast that DuckDB adds later can still
     have the defects above.
   - A BigNum always binds as a BIGNUM.
-  - A SizedArray or a list of Integer values for a target with no known type, or
-    for a target with an element type that is not an integer type or a DECIMAL
-    type, has BIGNUM elements. A cast that DuckDB adds later can still have
-    the defects above.
+
+  Collection values infer their common type as described below and in
+  Note [Element types of a list].
 
 - toDuckValue. ToDuckValue Integer and ToDuckValue Natural use the same range
   rule (hugeIntInRange): a value from -2^127 to 2^127 - 1 gives a HUGEINT
@@ -780,7 +787,7 @@ instance ToField RawGeometry where
       ("<geometry length=" <> show (BS.length rawGeometryWKB) <> ">")
       \builder -> rawGeometryDuckValue builder rawGeometryCRS raw
 
--- | Bind the payload as a VARIANT with the type cache of the connection.
+-- | Bind the payload as a VARIANT.
 instance ToField Variant where
   toField value =
     builderValueBinding (show value) \builder -> variantDuckValue builder (variantPayload value)
@@ -1407,15 +1414,22 @@ constructor:
   filter compares each NULL type with one temporary unaliased SQLNULL type.
   Native equality distinguishes aliases, including the alias "NULL". When
   each remaining element has the type of the first one, that type is the
-  element type. The check uses native equality to keep aliases,
-  and base type trees to distinguish collations that native equality ignores.
+  element type. The check uses native equality to keep aliases and ENUM dictionaries.
+  valuesHaveType checks the metadata that equality omits. In DuckDB 2.0.0,
+  VARCHAR equality ignores collations. STRUCT and UNION names compare without
+  ASCII case. GEOMETRY CRS definitions can compare equal through a shared
+  identifier. The metadata check keeps exact names, collations, and definitions.
+  It reads the first comparison key once, then checks each remaining value.
+  It visits child types but reads no ENUM labels.
 - When the types are different, but timestampTypeForTarget gives each of them
   the same nanosecond type for the target, that type is the element type. For
   example, a FieldTime with digits below a microsecond binds as a TIME_NS for a
   TIME_NS[] parameter, and one with no such digits binds as a TIME. DuckDB has
   no common type for TIME and TIME_NS, or for TIMESTAMPTZ and TIMESTAMPTZ_NS.
-  This check reads full type trees only when a promotion changes a base type.
-  The promoted trees must also agree on aliases on unchanged leaves.
+  This check reads complete type trees only after the equality check fails
+  and the target contains a nanosecond temporal type. The promoted trees must
+  agree, including aliases on unchanged leaves. At least one type must change.
+  The promotion loop releases each native type before its next iteration.
 - When these types are different, the library names no element type. The
   native constructor then gives the type of a SQL list literal of the elements
   (duckdb_v2.h: "The child type is the common type of the elements, resolved by
@@ -1524,44 +1538,33 @@ withValueType ValueBuilder{builderFactory = factory, builderType = makeType} tar
     bracket (makeType (LogicalTypeScalar LogicalTypeIdSQLNull)) destroyLogicalType \plainNull ->
       reverse <$> foldM (keep plainNull) [] values
   case present of
+    [value] -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType action
     value : rest -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \logical -> do
-      -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
-      expected <- logicalTypeToBaseRep logical
-      let promoted = timestampTypeForTarget target expected
-          sameTypes (same, samePromoted, changed) element =
-            bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType \elementType -> do
-              actual <- logicalTypeToBaseRep elementType
-              sameNative <-
-                if same && actual == expected
-                  then (/= 0) <$> output (c_duckdb_v2_logical_type_is_equal logical elementType)
-                  else pure False
-              let actualPromoted = timestampTypeForTarget target actual
-                  samePromoted' = samePromoted && actualPromoted == promoted
-                  changed' = changed || actualPromoted /= actual
-              sameNative `seq` samePromoted' `seq` changed' `seq` pure (sameNative, samePromoted', changed')
-          promotedType native = timestampTypeForTarget target <$> logicalTypeToRep factory native
-      (same, samePromoted, changed) <- foldM sameTypes (True, True, promoted /= expected) rest
-      case (same, samePromoted, changed) of
-        (True, _, _) -> action logical
-        (False, True, True) -> do
-          -- Preserve aliases on leaves that the promotion does not change.
-          -- See Note [Element types of a list].
-          fullPromoted <- promotedType logical
-          sameFull <-
-            foldM
-              ( \matches element ->
-                  if matches
-                    then
-                      bracket
-                        (output (c_duckdb_v2_value_get_logical_type element))
-                        destroyLogicalType
-                        (fmap (== fullPromoted) . promotedType)
-                    else pure False
-              )
-              True
-              rest
-          if sameFull then bracket (makeType fullPromoted) destroyLogicalType action else action nullHandle
-        _ -> action nullHandle
+      same <- valuesHaveType logical rest
+      let nanoseconds (LogicalTypeScalar dtype) = dtype `elem` [LogicalTypeIdTimeNs, LogicalTypeIdTimestampNs, LogicalTypeIdTimestampTzNs]
+          nanoseconds _ = False
+      if same
+        then action logical
+        else
+          if not (maybe False (containsType nanoseconds) target)
+            then action nullHandle
+            else do
+              original <- logicalTypeToRep factory logical
+              let promoted = timestampTypeForTarget target original
+                  agree changed [] = pure (if changed then Just promoted else Nothing)
+                  agree changed (element : remaining) = do
+                    -- Release this type before the next iteration.
+                    actual <- bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType (logicalTypeToRep factory)
+                    let updated = timestampTypeForTarget target actual
+                    if updated /= promoted
+                      then pure Nothing
+                      else do
+                        let changed' = changed || updated /= actual
+                        changed' `seq` agree changed' remaining
+              common <- agree (promoted /= original) rest
+              case common of
+                Just rep -> bracket (makeType rep) destroyLogicalType action
+                Nothing -> action nullHandle
     -- See Note [Element types of a list].
     [] -> case target of
       Just rep -> bracket (makeType rep) destroyLogicalType action
@@ -1609,10 +1612,7 @@ declaredCompositeValue
   -> IO DuckDBV2ValueHandle
 declaredCompositeValue _ rep create | not (needsDeclaredType rep) = create
 declaredCompositeValue ValueBuilder{builderFactory = factory, builderType = makeType} rep create = bracket create destroyValue \value ->
-  bracket (makeType rep) destroyLogicalType \logical -> withOwnedVector factory logical \vector -> do
-    checked (c_duckdb_v2_vector_set_size vector 1)
-    checked (c_duckdb_v2_vector_set_value vector 0 value)
-    output (c_duckdb_v2_vector_get_value vector 0)
+  bracket (makeType rep) destroyLogicalType (defaultCast factory value)
 
 -- | Test whether a type tree contains a VARCHAR collation or an alias.
 needsDeclaredType :: LogicalTypeRep -> Bool
@@ -1623,52 +1623,31 @@ needsDeclaredType = containsType declared
     declared _ = False
 
 {- Note [UNION values]
-~~~~~~~~~~~~~~~~~~~~~~
-unionValueDuckValue builds a UNION value through a vector with one row (route
-(a) below). It writes the tag and the member into the child vectors, and reads
-the row as a value. The header documents the layout and the write: the children
-of a UNION vector are "[0] = the tag with [1..N] = the members", and a write of
-a value to a vector uses "the non-strict default cast". The write needs FLAT
-child vectors. In DuckDB 2.0.0 the children of a new vector are FLAT, but the
-header does not say this. See Note [Vector flatten] in
-"Database.DuckDB.Simple.Materialize".
+~~~~~~~~~~~~~~~~~~~~~
+V2 has no constructor for a UNION value. unionValueDuckValue writes the tag
+and active member into a one-row UNION vector, sets the inactive members to
+NULL, and reads the row as a value. The header specifies child 0 as the tag
+and children 1 to N as the members. vector_set_value uses the non-strict
+default cast, so a user cast cannot change the payload. See Note [User casts
+and the casts of the library] in "Database.DuckDB.Simple.Materialize".
 
-V2 has no constructor for a UNION value. A run with DuckDB 2.0.0 tried four
-routes in eight cases: two BIGINT members with the tag of the first member, and
-with the tag of the second member; a NULL payload of two BIGINT members; 255
-INTEGER members; a member that is a UNION with a member name of the outer UNION;
-a STRUCT member with a UTINYINT field and a VARCHAR field with the name of the
-member; a collated VARCHAR member; and a GEOMETRY('OGC:CRS84') member.
+The header recommends casting a member value to the UNION type, but that cast
+selects the member by type. It is ambiguous for two BIGINT members or a nested
+UNION with a member name of the outer UNION. An intermediate UNION with only
+the active member still fails for the nested UNION and for a STRUCT that
+DuckDB interprets as the STRUCT form of a UNION. Casting a STRUCT with a
+UTINYINT tag and one field per member is another alternative, but the header
+does not document that cast.
 
-- (a) The vector route. It gives the correct value in each of the eight cases,
-  and it runs no cast that a user registers.
-- (b) The cast of a STRUCT with a UTINYINT tag field and one field for each
-  member, written to a one-row vector of the UNION type with the default cast,
-  as defaultCast does. It gives the correct value in each of the eight cases,
-  and it runs no cast that a user registers. The header does not document this
-  cast.
-- (c) The cast of the member value to the UNION type. The header calls it "the
-  sanctioned way to build UNION and ENUM values". DuckDB chooses the member by
-  the type of the value. Thus the cast is ambiguous when two members have the
-  same type, as in a generic sum type whose constructors have equal fields, and
-  for a member that is a UNION with a member name of the outer UNION. It fails
-  in the first five cases. With the factory of a connection or of a callback
-  context, the cast also runs the casts that a user registers.
-- (c1) The cast of the member value to a UNION with only that member, and then
-  the cast of that UNION to the full UNION. It gives the correct value for two
-  members of one type. It fails for a member that is a UNION with a member name
-  of the outer UNION ("The cast is ambiguous"), and for the STRUCT member, which
-  DuckDB reads as the STRUCT form of the UNION.
-
-Thus (a) is correct in each case and uses the layout and the write that the
-header documents. DuckDB does not document two
-facts: that the children of a new vector are FLAT, which (a) needs, and the cast
-of a STRUCT to a UNION, which (b) needs. If a later DuckDB gives a new vector
-other children, (a) can write a wrong value or fail. These cases bind a UNION
-value and compare the value that DuckDB gives back, so they show such a change:
-"a UNION value binds the member of its tag up to the member limit of DuckDB" and
-"UNION NULL payload retains its member type" in ValueRegressionTests.hs, and
-"round-trips struct and union parameters" in Spec.hs.
+The vector construction uses the documented layout and writes. It requires
+FLAT child vectors. DuckDB 2.0.0 supplies them in a new vector, but the header
+does not guarantee this for the children. A change can make the writes fail
+or give a wrong value. See Note [Vector flatten] in
+"Database.DuckDB.Simple.Materialize". Regression cases check the selected
+member at the 255-member limit and a NULL payload in ValueRegressionTests.hs
+("a UNION value binds the member of its tag up to the member limit of DuckDB"
+and "UNION NULL payload retains its member type"). Spec.hs also checks
+"round-trips struct and union parameters".
 -}
 
 -- | Build one UNION row through its tag and member vectors. See
@@ -1899,80 +1878,53 @@ quotedCRS :: Text -> Text
 quotedCRS crs = "'" <> crs <> "'"
 
 {- Note [Raw GEOMETRY parameters]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-A raw geometry is a RawGeometry: WKB bytes and an optional CRS. A result
-gives a raw geometry for a GEOMETRY value, and a FieldGeometry value for a
-GEOMETRY value in a STRUCT, a TUPLE, a UNION, a LIST, an ARRAY, a MAP, or a
-VARIANT. A user can also construct a raw geometry.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+RawGeometry holds WKB bytes and an optional CRS. GEOMETRY results use this
+representation, including FieldGeometry values inside composite values.
+rawGeometryDuckValue casts a BLOB of the bytes to the declared GEOMETRY type.
+It uses the default cast, so a user cast cannot change the value. See
+Note [User casts and the casts of the library] in
+"Database.DuckDB.Simple.Materialize".
 
-A top-level RawGeometry parameter (ToField RawGeometry) binds as a GEOMETRY
-value with the CRS of the raw geometry. It uses rawGeometryDuckValue with
-that CRS as the declared CRS, so the CRS check below always passes. DuckDB
-then casts the value to the type of the parameter, as it casts a GEOMETRY
-value in SQL text:
+A top-level RawGeometry parameter declares its own CRS. DuckDB then applies
+the casts of SQL text to the parameter's target type:
 
-- A value without a CRS takes the CRS of a target that has a CRS.
-- A target without a CRS removes the CRS of the value. No error occurs.
+- A value without a CRS takes the CRS of a target that has one.
+- A target without a CRS removes the CRS without an error.
 - A target with another CRS raises "Binder Error: Cannot cast GEOMETRY with
   CRS ... to GEOMETRY with different CRS ...". A comparison with = has the
   same rule.
 
-RawGeometry has no DuckDBColumnType instance and no ToDuckValue instance.
-Thus a SizedArray or a list of raw geometries and a typed row cannot hold one. Their
-declared element type or column type would be GEOMETRY without a CRS, and
-DuckDB would remove the CRS of each value.
+In a STRUCT, TUPLE, or UNION, the CRS of each raw geometry must equal its
+declared CRS, including when both have no CRS. A mismatch raises SQLError
+with ErrorInputInvalid. The BLOB cast assigns the declared CRS without
+checking the original label, so omitting this check could change or remove
+the label silently. The statement builder resolves CRS types at bind time.
+See Note [Bind-time CRS types] in "Database.DuckDB.Simple.V2.LogicalRep".
+A plain GEOMETRY declaration has no CRS and uses the factory's plain builder.
 
-A STRUCT, TUPLE, UNION, or Variant parameter binds each raw geometry that it
-contains with this rule:
+A VARIANT accepts raw geometry only without a CRS. DuckDB silently removes
+CRS metadata when it casts GEOMETRY to VARIANT, so the binding rejects a
+CRS-tagged payload with ErrorInputInvalid. RawGeometry has no
+DuckDBColumnType or ToDuckValue instance. A list or SizedArray of RawGeometry,
+or a typed row containing it, would declare GEOMETRY without a CRS and lose
+the labels.
 
-- The CRS of the value must be equal to the CRS of the declared GEOMETRY
-  type. A value without a CRS agrees only with a type without a CRS. If
-  the two are different, rawGeometryDuckValue raises an SQLError with the
-  type ErrorInputInvalid.
-- rawGeometryDuckValue makes a BLOB value from the WKB bytes. Then it casts
-  the BLOB value to the declared GEOMETRY type with the default cast of
-  DuckDB (defaultCast).
-  The builder of the statement supplies a type with a configured CRS. See
-  Note [CRS types of a connection] in "Database.DuckDB.Simple.TypeCache".
-- A declared type that is only the type id GEOMETRY has no CRS. The binding
-  uses the plain builder of the factory for it.
-- A VARIANT accepts a raw geometry without a CRS. The payload is a GEOMETRY
-  without a CRS. A raw geometry with a CRS in a VARIANT raises an SQLError
-  with the type ErrorInputInvalid.
-- The factory of an instance cannot construct a GEOMETRY type with a CRS.
-  DuckDB raises "Binder Error: Cannot create GEOMETRY type with coordinate
-  system without a connection". Thus toDuckValue with the factory of an
-  instance raises this error for a raw geometry with a CRS. It also raises
-  this error for a typed NULL with a CRS. The factory of a connection does
-  not have this limit.
+An instance factory cannot construct a GEOMETRY type with a CRS. It raises
+"Binder Error: Cannot create GEOMETRY type with coordinate system without a
+connection". This limits toDuckValue for composite values with CRS-tagged
+geometry leaves, including typed NULLs. A connection factory has no such
+limit.
 
-- Why the bytes do not change. DuckDB 2.0.0 stores a GEOMETRY value as WKB.
-  The cast from BLOB to GEOMETRY reads the bytes with Geometry::FromBinary.
-  ST_GeomFromWKB uses the same function (src/function/cast/geo_casts.cpp and
-  src/function/scalar/geometry/geometry_functions.cpp). The cast from
-  GEOMETRY to BLOB copies the stored bytes (Geometry::ToBinary in
-  src/common/types/geometry.cpp). The result reader uses that cast
-  (prepareGeometryReader in "Database.DuckDB.Simple.Materialize"). Thus the
-  bytes of a result bind again with no change. The cast changes bytes that
-  DuckDB does not write: it writes big-endian WKB and EWKB as little-endian
-  ISO WKB. The cast rejects WKB that DuckDB cannot store, for example a
-  collection with members of different Z/M layouts.
-
-- Why a CRS mismatch is an error. A BLOB value has no CRS. The cast gives
-  the CRS of the declared type to the value. Without the check, a value
-  could get a different CRS or lose its CRS, and no error would occur.
-
-- Why a top-level parameter has no such check. Its declared type is the type
-  of its own CRS. The casts after the bind are the casts of SQL text, and the
-  library adds no rule to them.
-
-- Why a VARIANT accepts only a value without a CRS. A VARIANT keeps a
-  GEOMETRY without its CRS. DuckDB removes the CRS when it casts a GEOMETRY
-  with a CRS to VARIANT, and it gives no error.
-
-- Why earlier versions raised an error. DuckDB 1.5 does not have a cast from
-  BLOB to GEOMETRY. Thus duckdb-simple 0.3 raised an error for each raw
-  geometry parameter.
+DuckDB 2.0.0 stores GEOMETRY as WKB. The BLOB cast and ST_GeomFromWKB both use
+Geometry::FromBinary (src/function/cast/geo_casts.cpp and
+src/function/scalar/geometry/geometry_functions.cpp). The result reader casts
+GEOMETRY to BLOB with Geometry::ToBinary, which copies the stored bytes
+(src/common/types/geometry.cpp). Thus a result binds again with the same
+bytes. Import can normalize other input: big-endian WKB and EWKB become
+little-endian ISO WKB. It rejects collections with different Z/M member
+layouts. GeometryRegressionTests.hs covers result rebinding, top-level CRS
+casts, composite CRS mismatches, and nested typed NULLs.
 -}
 
 -- | Cast the payload to VARIANT with the default cast of DuckDB. See
@@ -1993,7 +1945,7 @@ utcTimestampNsDuckValue factory value =
 
 -- | Cast the WKT text of the shape to GEOMETRY with the default cast of DuckDB.
 -- See Note [User casts and the casts of the library] in
--- "Database.DuckDB.Simple.Materialize".
+-- <src/Database.DuckDB.Simple.Materialize.html Database.DuckDB.Simple.Materialize>.
 instance ToDuckValue G.Geometry where
   toDuckValue factory geometry = do
     wkt <- either (throwInvalidArgument . Text.pack) pure (WKT.encodeWKT geometry)
@@ -2053,9 +2005,9 @@ variantPayloadType value = case value of
   FieldTuple TupleValue{tupleValueFields} -> pure (LogicalTypeList variant, FieldList (elems tupleValueFields))
   FieldStruct structValue@StructValue{structValueTypes} -> do
     let names = map structFieldName (elems structValueTypes)
-    when (length names /= length (List.nub names)) $
+    when (Set.size (Set.fromList names) /= length names) $
       throwInvalidArgument "VARIANT objects need unique keys"
-    when (not (null names) && all Text.null names) $
+    when (names == [Text.empty]) $
       throwInvalidArgument "DuckDB's C API cannot construct a VARIANT object with only an empty key"
     let types = fmap (\field -> field{structFieldValue = variant}) structValueTypes
     pure (LogicalTypeStruct types, FieldStruct structValue{structValueTypes = types})

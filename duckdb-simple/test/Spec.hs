@@ -18,6 +18,7 @@ module Main (main) where
 import ArrowTests (arrowTests)
 import CancellationTests (callbackLockTests, cancellationTests)
 import Control.Applicative ((<|>))
+import Control.Concurrent (forkFinally, newEmptyMVar, putMVar, readMVar)
 import Control.Exception (ErrorCall, Exception, SomeException, bracket, displayException, fromException, throwIO, try)
 import Control.Monad (forM_, replicateM_, void, when)
 import CopyTests (copyTests)
@@ -81,7 +82,7 @@ import Database.DuckDB.Simple.LogicalRep (
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
-import Database.DuckDB.Simple.Variant (Variant)
+import Database.DuckDB.Simple.Variant (Variant (..), variantObject)
 import ExtensionRegressionTests (extensionRegressionTests)
 import GHC.Generics (Generic)
 import qualified GeometryRegressionTests
@@ -93,6 +94,7 @@ import qualified SqlFeatureTests
 import StreamingTests (nativeStreamingTests)
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, Timeout (..), adjustOption, defaultMain, mkTimeout, testGroup)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
@@ -160,6 +162,11 @@ data ViaShape
   | ViaSquare Double
   deriving stock (Eq, Show, Generic)
   deriving (DuckDBColumnType, ToDuckValue, ToField, FromField) via (ViaDuckDB ViaShape)
+
+-- | A UNION with a STRUCT payload that contains a VARIANT.
+data VariantChoice = Payload Variant | NoPayload
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB VariantChoice)
 
 -- Edge case test types
 data TwoFieldStruct = TwoFieldStruct Int Text.Text
@@ -1550,21 +1557,50 @@ functionsTests =
             (Text.isInfixOf "Overflow in subtraction of UINT16" . sqlErrorMessage)
           query_ conn "SELECT hs_small(30000)::INTEGER * hs_small(30000), hs_unsigned(1)::INTEGER - hs_unsigned(2)"
             >>= (@?= [(900000000 :: Int64, -1 :: Int64)])
-    , testCase "rejects an argument type with no declaration or with VARIANT at registration" $
+    , testCase "rejects an argument or result type with no declaration" $
         withConnection ":memory:" \conn -> do
           let rejects expected action = assertThrows action (Text.isInfixOf expected . sqlErrorMessage)
           rejects "hs_bad_struct: argument arg0: StructValue has no static field types" $
             createFunction conn "hs_bad_struct" (\(_ :: StructValue FieldValue) -> True)
-          rejects "hs_bad_variant: argument arg0: the library cannot read a VARIANT value in a callback" $
-            createFunction conn "hs_bad_variant" (\(_ :: Variant) -> True)
-          rejects "hs_bad_variants: argument arg1: the library cannot read a VARIANT value in a callback" $
-            createFunction conn "hs_bad_variants" (\(_ :: Int64) (_ :: [Maybe Variant]) -> True)
-          -- The check visits the value type of a MAP, not only the element type of a LIST.
-          rejects "hs_bad_map: argument arg0: the library cannot read a VARIANT value in a callback" $
-            createFunction conn "hs_bad_map" (\(_ :: Map.Map Text.Text Variant) -> True)
           rejects "hs_bad_result: result: StructValue has no static field types" $
             createFunction conn "hs_bad_result" (\(_ :: Int64) -> (undefined :: StructValue FieldValue))
           query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'hs\\_bad\\_%' ESCAPE '\\'" >>= (@?= [Only (0 :: Int64)])
+    , testCase "scalar callbacks read nested VARIANTs after the registering connection closes" $
+        withEnvironment \environment -> withInstance environment [] \instance' -> do
+          let payload = Variant (variantObject [("numbers", FieldList [FieldInt64 42, FieldNull])])
+              values = Map.singleton "a" [Just payload, Nothing]
+          withConnectionOn instance' \conn -> do
+            createFunction conn "hs_nested_variant" ((== values) :: Map.Map Text.Text [Maybe Variant] -> Bool)
+            createFunction conn "hs_variant_union" ((== Payload payload) :: VariantChoice -> Bool)
+            createFunctionWithState conn "hs_stateful_variant" (pure payload) (\expected (value :: Maybe Variant) -> Just expected == value)
+          withConnectionOn instance' \conn ->
+            query
+              conn
+              "SELECT hs_nested_variant(?), hs_variant_union(?), hs_variant_union(?), hs_stateful_variant(?), hs_stateful_variant(NULL)"
+              (values, Payload payload, NoPayload, payload)
+              >>= (@?= [(True, True, False, True, False)])
+    , testCase "two connections run the same VARIANT callback concurrently" $
+        withEnvironment \environment -> withInstance environment [("threads", "1")] \instance' ->
+          withConnectionOn instance' \first -> withConnectionOn instance' \second -> do
+            enteredFirst <- newEmptyMVar
+            enteredSecond <- newEmptyMVar
+            let meet entered other = do
+                  putMVar entered ()
+                  ready <- timeout 30000000 (readMVar other)
+                  when (ready == Nothing) (fail "the other VARIANT callback did not enter")
+            createFunction first "hs_variant_read" \case
+              Variant (FieldInt64 number) -> do
+                when (number == 0) (meet enteredFirst enteredSecond)
+                when (number == 5000) (meet enteredSecond enteredFirst)
+                pure number :: IO Int64
+              other -> fail ("unexpected VARIANT: " <> show other)
+            let run conn offset =
+                  query conn "SELECT sum(hs_variant_read((i + ?::BIGINT)::VARIANT))::BIGINT FROM range(5000) t(i)" (Only offset)
+                    >>= (@?= [Only (12497500 + 5000 * offset :: Int64)])
+            completed <- newEmptyMVar
+            bracket (forkFinally (run second 5000) (putMVar completed)) (const (void (readMVar completed))) \_ -> do
+              run first 0
+              readMVar completed >>= either throwIO pure
     , testCase "rejects an empty name or a name with NUL at registration" $
         withConnection ":memory:" \conn ->
           forM_ ["", "hs_bad\0name"] \name ->

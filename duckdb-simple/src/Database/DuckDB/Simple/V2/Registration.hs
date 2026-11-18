@@ -10,7 +10,7 @@
 --
 -- The library allocates the callback pointers. It gives their cleanup to DuckDB in the user data of the
 -- native object. DuckDB runs the cleanup when it releases the object. See Note [Callback ownership] in
--- "Database.DuckDB.Simple.Callback".
+-- <src/Database.DuckDB.Simple.Callback.html Database.DuckDB.Simple.Callback>.
 -- Callback info and context handles are borrowed and must
 -- not escape the callback. Use @Database.DuckDB.FFI.V2@ operations with 'checked'
 -- and 'output' in callbacks.
@@ -868,7 +868,7 @@ registerInstanceReplacementScan instance' callback = withInstanceHandle instance
 -- Transfer a value at most once to each native state slot. In DuckDB 2.0.0, a
 -- setter for init data, batch data, global state, or local state does not release
 -- a pointer that it replaces. See Note [Callback ownership] in
--- "Database.DuckDB.Simple.Callback". Store an @IORef@ or another mutable state
+-- <src/Database.DuckDB.Simple.Callback.html Database.DuckDB.Simple.Callback>. Store an @IORef@ or another mutable state
 -- cell when the callback must change its state.
 --
 -- > R.setCallbackState (c_duckdb_v2_function_bind_set_bind_data input) (amount :: Int64)

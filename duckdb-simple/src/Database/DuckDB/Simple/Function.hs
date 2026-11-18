@@ -110,19 +110,13 @@ import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 -- t'Database.DuckDB.Simple.ToField.DuckDBColumnType' instances. The SQL type of
 -- an argument is the 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of
 -- its type. An argument type with no declaration raises an @SQLError@ at
--- registration. A type that is or contains VARIANT is an error at
--- registration, because the library cannot read a VARIANT value in a callback
--- (see the section /Typed registration/ of the README). A GEOMETRY argument
--- reads as a GEOMETRY result does, also inside a list or a STRUCT, for example
--- as a @Geometry@.
+-- registration. Arguments use the same conversion as query results, including
+-- nested values.
 createFunction :: (Function f) => Connection -> Text -> f -> IO ()
 createFunction conn = createFunctionOn (ConnectionTarget conn)
 
 -- | Register a scalar function with per-worker thread-local state. The
--- arguments have the rules of 'createFunction'. A type that is or contains
--- VARIANT is an error at registration, because the library cannot read a
--- VARIANT value in a callback (see the section /Typed registration/ of the
--- README).
+-- arguments have the rules of 'createFunction'.
 createFunctionWithState :: (Function f) => Connection -> Text -> IO s -> (s -> f) -> IO ()
 createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 
@@ -135,9 +129,6 @@ createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 -- or a sum type with 'Database.DuckDB.Simple.Generic.ViaDuckDB' instances is a
 -- STRUCT or a UNION column. A type with no declaration, for example
 -- 'Database.DuckDB.Simple.LogicalRep.StructValue', is an error at registration.
--- A parameter type that is or contains VARIANT is an error at registration,
--- because the library cannot read a VARIANT value in a callback (see the
--- section /Typed registration/ of the README). A GEOMETRY parameter works.
 --
 -- 'TypedRow' of @params@ gives the parameter types. Use @()@ for no parameter.
 -- The parameters are positional only. DuckDB casts each argument to its
@@ -188,26 +179,24 @@ createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 -- type of each argument is the
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of its column in
 -- 'TypedRow'. A type with no declaration is an error at registration, as for
--- 'createTableFunction'. A type that is or contains VARIANT is an error at
--- registration, because the library cannot read a VARIANT value in a callback
--- (see the section /Typed registration/ of the README). A GEOMETRY argument reads
--- as for 'createFunction', also when DuckDB runs the update callback on several
--- threads. An aggregate function of an extension refuses a GEOMETRY argument
--- at registration, because its update callback has no factory to read the
--- value. The SQL return type is the
+-- 'createTableFunction'. Arguments use the same conversion as query results,
+-- also when DuckDB runs the update callback on several threads. The SQL return
+-- type is the
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of the result type,
 -- for example SMALLINT for 'Data.Int.Int16' and FLOAT for 'Float'. A 'Maybe'
 -- result has the SQL type of its value, and 'Nothing' gives NULL.
 --
--- The result type must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT,
--- FLOAT, DOUBLE, or VARCHAR: 'Bool', 'Int', 'Data.Int.Int8' to
--- 'Data.Int.Int64', 'Word', 'Data.Word.Word8' to 'Data.Word.Word64', 'Float',
--- 'Double', 'Text', 'String', or 'Maybe' of one of them. A newtype over one of
--- them gets its writer with @deriving newtype (FunctionResult)@. Another result
--- type is an error at registration. The finalize callback of DuckDB has no
--- factory, so it cannot make a value of another type. The library writes these
--- types to the memory of the result vector. It does not use the size of the
--- vector: in an ordered window, DuckDB gives a result vector of the size 0.
+-- The result needs a static SQL type declaration. Lists, maps, and records
+-- through 'Database.DuckDB.Simple.Generic.ViaDuckDB' can supply one.
+-- DuckDB resolves the declaration on the database that registers the function.
+--
+-- 'Bool', 8- to 64-bit integers, 'Float', 'Double', 'Text', 'String', and
+-- 'Maybe' of these types write directly into the result vector. A newtype
+-- can inherit that writer with @deriving newtype (FunctionResult)@.
+-- For other results, 'Database.DuckDB.Simple.ToField.toDuckValue' receives
+-- an instance factory that can construct built-in types. For a catalog type,
+-- the encoder can return its underlying value. DuckDB casts that value to
+-- the declared result type.
 --
 -- An exception in a function fails the query. DuckDB can run the functions on
 -- more than one thread at one time, but not on the same state. The aggregate

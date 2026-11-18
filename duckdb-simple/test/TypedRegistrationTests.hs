@@ -17,6 +17,7 @@ module TypedRegistrationTests (typedRegistrationTests) where
 import Control.Exception (SomeException, bracket, displayException, throwIO, try)
 import Control.Monad (forM, forM_, void, when)
 import Data.Array (listArray)
+import qualified Data.Geometry as G
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64)
 import qualified Data.Map.Strict as Map
@@ -73,7 +74,7 @@ import Database.DuckDB.Simple.Registration (
  )
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import qualified Database.DuckDB.Simple.V2.Registration as R
-import Database.DuckDB.Simple.Variant (Variant)
+import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
@@ -105,7 +106,7 @@ typedRegistrationTests =
     , testCase "pragma row has the order of the declaration" testPragmaRow
     , testCase "exec pragma counts its calls" testPragmaExec
     , testCase "pragma argument rows that do not decode" testPragmaDecodeErrors
-    , testCase "pragma parameters whose types contain VARIANT fail at registration" testPragmaVariantParameters
+    , testCase "pragma parameters read VARIANT in declared and ANY arguments" testPragmaVariantParameters
     , testCase "pragma exceptions become SQL errors" testPragmaExceptions
     , testCase "pragma registration checks the name before the state of a closed connection" testPragmaClosedName
     , testCase "an SQL error in each callback kind keeps its type and one prefix" testCallbackErrorTypes
@@ -148,7 +149,9 @@ typedRegistrationTests =
     , testCase "aggregate arguments, states, and result types" testAggregateTypes
     , testCase "aggregate exceptions fail the query only" testAggregateErrors
     , testCase "aggregate as a window function and with modifiers" testAggregateModifiers
-    , testCase "aggregate SMALLINT and FLOAT results, and the limit of the result types" testAggregateResultTypes
+    , testCase "aggregate result types and custom result encoders" testAggregateResultTypes
+    , testCase "aggregate native results preserve nullable values in groups and windows" testAggregateNativeResults
+    , testCase "aggregate decodes VARIANT list elements across chunks" testAggregateVariant
     , testCase "aggregate states are released" testAggregateRelease
     , testGroup
         "the callback closure of each registration kind is released when its database closes"
@@ -233,41 +236,28 @@ testPragmaDecodeErrors = withConnection ":memory:" \conn -> do
   assertSqlError "cannot decode the arguments of pragma typed_size" (query_ conn "PRAGMA typed_size(1)" :: IO [Only Int64])
   registerPragmaFunction conn "typed_strict" [amount] (ExecPragma \(Only (_ :: Int64)) -> pure ())
   assertSqlError "cannot decode the arguments of pragma typed_strict: column amount is NULL" (execute_ conn "PRAGMA typed_strict(NULL)")
-  assertInputError
-    "typed_variant: parameter value: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
-    ( registerPragmaFunction
-        conn
-        "typed_variant"
-        [parameter "value" (TypeExpression "VARIANT")]
-        (QueryPragma \(Only (_ :: Variant)) -> pure "SELECT 1")
-    )
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
--- | Reject a pragma parameter whose type is or contains VARIANT at
--- registration, because the argument reader reads no VARIANT. A GEOMETRY
--- parameter registers, because the reader reads GEOMETRY. A parameter of the
--- type ANY registers, and a VARIANT value fails the call.
+-- | Compare pragma arguments with the same expressions read by SELECT.
 testPragmaVariantParameters :: Assertion
 testPragmaVariantParameters = withConnection ":memory:" \conn -> do
-  let register name declaration =
-        registerPragmaFunction conn name [parameter "value" (TypeExpression declaration)] $
-          QueryPragma \(Only (_ :: FieldValue)) -> pure "SELECT 1"
-  forM_ [("typed_variant_scalar", "VARIANT"), ("typed_variant_list", "VARIANT[]"), ("typed_variant_struct", "STRUCT(v VARIANT)")] \(name, declaration) ->
-    assertInputError
-      ( name
-          <> ": parameter value: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
-      )
-      (register name declaration)
-  register "typed_geometry_parameter" "GEOMETRY"
-  query_ conn "PRAGMA typed_geometry_parameter('POINT (1 2)'::GEOMETRY)" >>= (@?= [Only (1 :: Int64)])
-  -- The check sees only the declared type. A parameter of the type ANY
-  -- registers, and a VARIANT value fails the call.
-  registerPragmaFunction conn "typed_any_parameter" [parameter "value" (StructuredType (LogicalTypeScalar LogicalTypeIdAny))] $
-    QueryPragma \(Only (_ :: FieldValue)) -> pure "SELECT 1"
-  query_ conn "PRAGMA typed_any_parameter(1)" >>= (@?= [Only (1 :: Int64)])
-  assertSqlError
-    "typed_any_parameter: parameter value: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
-    (query_ conn "PRAGMA typed_any_parameter(1::VARIANT)" :: IO [Only Int64])
+  seen <- newIORef Nothing
+  let check (name, declaration, expression) = do
+        registerPragmaFunction conn name [parameter "value" declaration] $
+          QueryPragma \(Only value) -> writeIORef seen (Just value) >> pure "SELECT 1"
+        [Only expected] <- query_ conn (Query ("SELECT " <> expression)) :: IO [Only FieldValue]
+        query_ conn (Query ("PRAGMA " <> name <> "(" <> expression <> ")")) >>= (@?= [Only (1 :: Int64)])
+        readIORef seen >>= (@?= Just expected)
+  mapM_
+    check
+    [ ("typed_variant_scalar", TypeExpression "VARIANT", "42::VARIANT")
+    , ("typed_variant_list", TypeExpression "VARIANT[]", "[1::VARIANT, NULL]")
+    , ("typed_variant_struct", TypeExpression "STRUCT(v VARIANT)", "{'v': [2,3]::VARIANT}")
+    , ("typed_variant_map", TypeExpression "MAP(VARCHAR, VARIANT)", "map(['n'], [4::VARIANT])")
+    , ("typed_variant_union", TypeExpression "UNION(v VARIANT)", "union_value(v := 5::VARIANT)")
+    , ("typed_any_parameter", StructuredType (LogicalTypeScalar LogicalTypeIdAny), "{'a': 6}::VARIANT")
+    , ("typed_geometry_parameter", TypeExpression "GEOMETRY", "'POINT (1 2)'::GEOMETRY")
+    ]
 
 -- | Raise the input error of an empty pragma name, also on a closed
 -- connection. The name check comes before the read of the state of the
@@ -666,13 +656,13 @@ testAggregateConnectionRelease :: Assertion
 testAggregateConnectionRelease = withEnvironment \environment -> withInstance environment [] \instance' -> do
   weak <- do
     conn <- connect instance'
-    createAggregate conn "typed_dropped_sum" sumAggregate
+    createAggregate conn "typed_dropped_sum" sumAggregate{aggregateResult = pure . Variant . FieldInt64}
     mkWeakIORef (connectionState conn) (pure ())
   performMajorGC
   performMajorGC
   deRefWeak weak >>= assertBool "the aggregate keeps the connection that registered it" . isNothing
   withConnectionOn instance' \other ->
-    query_ other "SELECT typed_dropped_sum(i) FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
+    query_ other "SELECT typed_dropped_sum(i)::BIGINT FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
 
 -- | Skip the rows with NULL. A group without other rows gives the initial result.
 testAggregateNulls :: Assertion
@@ -851,7 +841,7 @@ testAggregateErrors = withConnection ":memory:" \conn -> do
 
 -- | Declare the true type of a SMALLINT and a FLOAT result. Write them also in
 -- an ordered window, where the result vector of a finalize call has the size 0.
--- Reject a result type that is not raw at registration.
+-- Use the native value encoder for results without a raw writer.
 testAggregateResultTypes :: Assertion
 testAggregateResultTypes = withConnection ":memory:" \conn -> do
   createAggregate
@@ -897,44 +887,92 @@ testAggregateResultTypes = withConnection ":memory:" \conn -> do
     >>= (@?= [("SMALLINT" :: Text, Age 9)])
   createFunction conn "typed_age" (Age 5)
   query_ conn "SELECT typeof(typed_age()), typed_age()" >>= (@?= [("SMALLINT" :: Text, Age 5)])
-  assertSqlError
-    "typed_years: result: the result type of an aggregate function must be BOOLEAN"
-    (createAggregate conn "typed_years" sumAggregate{aggregateResult = pure . Years . fromIntegral})
-  assertSqlError
-    "For a newtype over one of these types, derive FunctionResult with deriving newtype."
-    (createAggregate conn "typed_years" sumAggregate{aggregateResult = pure . Years . fromIntegral})
-  -- The argument reader does not read VARIANT.
-  let unreadable =
-        "argument arg0: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
-  assertSqlError
-    ("typed_variant_count: " <> unreadable)
-    (createAggregate conn "typed_variant_count" countAggregate{aggregateStep = \count (Only (_ :: Variant)) -> pure (count + 1)})
-  assertSqlError
-    ("typed_variants_count: " <> unreadable)
-    (createAggregate conn "typed_variants_count" countAggregate{aggregateStep = \count (Only (_ :: [Maybe Variant])) -> pure (count + 1)})
-  query_
-    conn
-    "SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('typed_years', 'typed_variant_count', 'typed_variants_count')"
-    >>= (@?= [Only (0 :: Int64)])
-  let limit = "result: the result type of an aggregate function must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT, DOUBLE, or VARCHAR"
-  assertSqlError
-    ("typed_peak_result: " <> limit)
-    (createAggregate conn "typed_peak_result" sumAggregate{aggregateResult = \total -> pure (Peak "total" (fromIntegral total) "")})
-  assertSqlError
-    ("typed_integer_result: " <> limit)
-    (createAggregate conn "typed_integer_result" sumAggregate{aggregateResult = pure . toInteger})
-  query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('typed_peak_result', 'typed_integer_result')"
-    >>= (@?= [Only (0 :: Int64)])
+  createAggregate conn "typed_years" sumAggregate{aggregateResult = pure . Years . fromIntegral}
+  query_ conn "SELECT typeof(typed_years(i)), typed_years(i) FROM range(10) t(i)"
+    >>= (@?= [("SMALLINT" :: Text, 45 :: Int16)])
+  createAggregate conn "typed_peak_result" sumAggregate{aggregateResult = \total -> pure (Peak "total" (fromIntegral total) "")}
+  query_ conn "SELECT typed_peak_result(i) FROM range(10) t(i)"
+    >>= (@?= [Only (Peak "total" 45 "")])
+  createAggregate conn "typed_integer_result" sumAggregate{aggregateResult = pure . toInteger}
+  query_ conn "SELECT typed_integer_result(i) FROM range(10) t(i)"
+    >>= (@?= [Only (45 :: Integer)])
+  registerCustomType conn "aggregate_total" (TypeExpression "BIGINT")
+  createAggregate conn "typed_alias_result" sumAggregate{aggregateResult = pure . AggregateTotal}
+  query_ conn "SELECT typeof(typed_alias_result(i)), typed_alias_result(i)::BIGINT FROM range(10) t(i)"
+    >>= (@?= [("aggregate_total" :: Text, 45 :: Int64)])
+  createAggregate conn "typed_catalog_encoder" sumAggregate{aggregateResult = pure . CatalogTotal}
+  outcome <- try (query_ conn "SELECT typed_catalog_encoder(i) FROM range(10) t(i)" :: IO [Only Int64])
+  case outcome of
+    Left (err :: SQLError) ->
+      assertBool (show err) ("aggregate_total" `Text.isInfixOf` Text.toLower (sqlErrorMessage err))
+    Right rows -> assertFailure ("catalog lookup in an aggregate encoder succeeded: " <> show rows)
+  query_ conn "SELECT typed_alias_result(i)::BIGINT FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
   assertSqlError
     "typed_struct_result: result: StructValue has no static field types"
     (createAggregate conn "typed_struct_result" sumAggregate{aggregateResult = \_ -> pure (undefined :: StructValue FieldValue)})
   assertInputErrorContaining "aggregate function name must be nonempty" (createAggregate conn "" sumAggregate)
-  -- The result check comes before the state of the connection.
-  closed <- open ":memory:"
-  close closed
-  assertSqlError
-    ("typed_closed_result: " <> limit)
-    (createAggregate closed "typed_closed_result" sumAggregate{aggregateResult = pure . toInteger})
+
+-- | Check native values across chunks and finalize calls with result offsets.
+-- Compare geometry bytes in SQL so that output conversion cannot hide changes.
+testAggregateNativeResults :: Assertion
+testAggregateNativeResults = withConnection ":memory:" \conn -> do
+  let nullable n value = if n `mod` 7 == 0 then Nothing else Just value
+  createAggregate conn "typed_native_variant" countAggregate{aggregateResult = \n -> pure (nullable n (Variant (FieldInt64 n)))}
+  createAggregate
+    conn
+    "typed_native_geometry"
+    countAggregate{aggregateResult = \n -> pure (nullable n (G.PointGeometry (G.PointXY (G.XY (fromIntegral n) 0))))}
+  createAggregate conn "typed_native_nested" countAggregate{aggregateResult = \n -> pure [Just (Variant (FieldInt64 n)), Nothing]}
+  forM_
+    [ ("typed_native_variant", "q::BIGINT IS DISTINCT FROM e")
+    , ("typed_native_geometry", "q::BLOB IS DISTINCT FROM (('POINT (' || e || ' 0)')::GEOMETRY)::BLOB")
+    ]
+    \(name, differs) ->
+      forM_
+        [ (name <> "(i)", "GROUP BY i % 3001", "count(*)", 3001)
+        , (name <> "(i ORDER BY i DESC)", "GROUP BY i % 13", "count(*)", 13)
+        , (name <> "(i) OVER w", "WINDOW w AS (PARTITION BY i % 3 ORDER BY i ROWS BETWEEN 9 PRECEDING AND CURRENT ROW)", "count(*) OVER w", 8192)
+        ]
+        \(call, suffix, expected, rows) -> do
+          let sql =
+                "SELECT count(*)::BIGINT, count(*) FILTER (WHERE "
+                  <> differs
+                  <> ")::BIGINT FROM (SELECT q, CASE WHEN n % 7 <> 0 THEN n END AS e FROM (SELECT "
+                  <> call
+                  <> " AS q, "
+                  <> expected
+                  <> " AS n FROM range(8192) t(i) "
+                  <> suffix
+                  <> "))"
+          query_ conn (Query sql) >>= (@?= [(rows :: Int64, 0 :: Int64)])
+  query_ conn "SELECT typed_native_nested(i) FROM range(10) t(i)"
+    >>= (@?= [Only [Just (Variant (FieldInt64 10)), Nothing]])
+  query_ conn "SELECT typed_native_variant(i) FROM range(0) t(i)"
+    >>= (@?= [Only (Nothing :: Maybe Variant)])
+  createAggregate
+    conn
+    "typed_native_order"
+    Aggregate
+      { aggregateInitial = []
+      , aggregateStep = \seen (Only (value :: Int64)) -> pure (value : seen)
+      , aggregateCombine = \a b -> pure (b <> a)
+      , aggregateResult = pure . reverse
+      }
+  query_
+    conn
+    "SELECT bool_and(actual = expected) FROM (SELECT typed_native_order(i ORDER BY i DESC) AS actual, list(i ORDER BY i DESC) AS expected FROM range(8192) t(i) GROUP BY i % 13)"
+    >>= (@?= [Only True])
+
+-- | Read each BIGINT and NULL from a VARIANT list in aggregate update.
+testAggregateVariant :: Assertion
+testAggregateVariant = withEnvironment \environment -> withInstance environment [("threads", "4")] \instance' -> do
+  let step total (Only values) = case values of
+        [Just (Variant (FieldInt64 number)), Nothing] -> pure (total + number)
+        _ -> fail ("unexpected VARIANT list: " <> show values)
+  withConnectionOn instance' \registering -> createAggregate registering "variant_sum" countAggregate{aggregateStep = step}
+  withConnectionOn instance' \other ->
+    query_ other "SELECT variant_sum([i::VARIANT, NULL::VARIANT]), sum(i)::BIGINT FROM range(5000) t(i)"
+      >>= (@?= [(12497500 :: Int64, 12497500 :: Int64)])
 
 -- | An aggregate that counts its rows. Change 'aggregateStep' for another
 -- argument type.
@@ -1006,7 +1044,11 @@ testAggregateRelease = withConnection ":memory:" \conn -> do
         failIn "combine"
         totals <- mapM readIORef [cell | Just cell <- [a, b]]
         if null totals then pure Nothing else newCell (sum totals)
-      result state = failIn "result" >> maybe (pure 0) readIORef state
+      result state = do
+        failIn "result"
+        value <- maybe (pure 0) readIORef state
+        phase <- readIORef failure
+        pure (EncodedTotal value (phase == "encode" && value == 3))
       run phase sql = do
         writeIORef failure phase
         outcome <- try (query_ conn sql :: IO [Only Int64])
@@ -1023,7 +1065,7 @@ testAggregateRelease = withConnection ":memory:" \conn -> do
       { aggregateInitial = Nothing
       , aggregateStep = step
       , aggregateCombine = combine
-      , aggregateResult = result :: Maybe (IORef Int64) -> IO Int64
+      , aggregateResult = result :: Maybe (IORef Int64) -> IO EncodedTotal
       }
   run "" "SELECT typed_release(i) FROM range(5000) t(i) GROUP BY i % 50"
   run "" "SELECT typed_release(i) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM range(100) t(i)"
@@ -1041,6 +1083,9 @@ testAggregateRelease = withConnection ":memory:" \conn -> do
   -- DuckDB does not destroy these states. The release of the bind data releases them.
   run "result" "SELECT typed_release(i) FROM range(20000) t(i) GROUP BY i % 10000"
   run "result" "SELECT typed_release(i) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM range(100) t(i)"
+  -- Earlier rows have already been written when DuckDB fails to cast row 3.
+  run "encode" "SELECT typed_release(i) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM range(10) t(i)"
+  run "" "SELECT typed_release(i) FROM range(10) t(i)"
   void (execute_ conn "SET threads = 4")
   void (execute_ conn "CREATE TABLE typed_numbers AS SELECT i FROM range(300000) t(i)")
   run "" "SELECT typed_release(i) FROM range(20000) t(i) GROUP BY i % 10000 LIMIT 1"
@@ -1070,16 +1115,6 @@ assertSqlError expected action = do
       assertBool (Text.unpack message) (not (any (`Text.isInfixOf` message) ["user error", "SQLError {"]))
     Right _ -> assertFailure "expected an SQL error"
 
--- | Require an 'SQLError' of the type 'ErrorInputInvalid' with a message that
--- contains the text: the error of an input check of the library.
-assertInputError :: Text -> IO a -> Assertion
-assertInputError expected action =
-  try action >>= \case
-    Left (err :: SQLError) -> do
-      sqlErrorType err @?= Just ErrorInputInvalid
-      assertBool (Text.unpack (sqlErrorMessage err)) (expected `Text.isInfixOf` sqlErrorMessage err)
-    Right _ -> assertFailure ("expected an SQL error with " <> Text.unpack expected)
-
 -- | Read one column, both columns, and more than one chunk of the example.
 testTableSquares :: Assertion
 testTableSquares = withConnection ":memory:" \conn -> do
@@ -1107,6 +1142,10 @@ testTableParameters = withConnection ":memory:" \conn -> do
   createTableFunction conn "typed_optional" ["value"] \(Only (value :: Maybe Int64)) -> pure [Only value]
   query_ conn "SELECT value FROM typed_optional(NULL)" >>= (@?= [Only (Nothing :: Maybe Int64)])
   query_ conn "SELECT value FROM typed_optional(4)" >>= (@?= [Only (Just 4 :: Maybe Int64)])
+  createTableFunction conn "typed_variant" ["value"] \(Only (value :: Maybe Variant)) -> pure [Only value]
+  query_ conn "SELECT value FROM typed_variant(NULL)" >>= (@?= [Only (Nothing :: Maybe Variant)])
+  expected <- query_ conn "SELECT {'a': [1,2]}::VARIANT" :: IO [Only Variant]
+  query_ conn "SELECT value FROM typed_variant({'a': [1,2]}::VARIANT)" >>= (@?= expected)
 
 -- | A row type with a 'Generic' instance.
 data Reading = Reading
@@ -1271,6 +1310,34 @@ newtype Age = Age Int16
 -- | A newtype over a raw result type, with the catch-all 'FunctionResult'.
 newtype Years = Years Int16
   deriving newtype (DuckDBColumnType, ToDuckValue)
+
+-- | Produce an uncastable value to exercise cleanup after a native write fails.
+data EncodedTotal = EncodedTotal Int64 Bool
+
+instance DuckDBColumnType EncodedTotal where
+  duckdbColumnTypeFor _ = "BIGINT"
+
+instance ToDuckValue EncodedTotal where
+  toDuckValue factory (EncodedTotal value failing)
+    | failing = toDuckValue factory ("typed_release: encode" :: Text)
+    | otherwise = toDuckValue factory value
+
+-- | A catalog type whose encoder needs only the built-in BIGINT factory.
+newtype AggregateTotal = AggregateTotal Int64
+  deriving newtype (ToDuckValue)
+
+instance DuckDBColumnType AggregateTotal where
+  duckdbColumnTypeFor _ = "aggregate_total"
+
+-- | An encoder that requires catalog lookup from its factory.
+newtype CatalogTotal = CatalogTotal Int64
+
+instance DuckDBColumnType CatalogTotal where
+  duckdbColumnTypeFor _ = "aggregate_total"
+
+instance ToDuckValue CatalogTotal where
+  toDuckValue factory (CatalogTotal value) =
+    R.withTypeDeclaration factory (TypeExpression "aggregate_total") \_ -> toDuckValue factory value
 
 -- | A newtype with its own type text.
 newtype Price = Price Double
@@ -1581,14 +1648,6 @@ testTableArgumentErrors = withConnection ":memory:" \conn -> do
   query_ conn "SELECT n FROM typed_natural(7)" >>= (@?= [Only (7 :: Int64)])
   assertSqlError "No function matches" (query_ conn "SELECT n FROM typed_natural(-7)" :: IO [Only Int64])
   assertSqlError "typed_natural: argument arg0 is NULL" (query_ conn "SELECT n FROM typed_natural(NULL)" :: IO [Only Int64])
-  -- The argument reader reads no VARIANT, so the registration of such a
-  -- parameter type fails.
-  assertInputError
-    "typed_variant: parameter arg0: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
-    (createTableFunction conn "typed_variant" ["n"] \(Only (_ :: Variant)) -> pure [Only (1 :: Int64)])
-  assertInputError
-    "typed_maybe_variant: parameter arg0: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
-    (createTableFunction conn "typed_maybe_variant" ["missing"] \(Only (value :: Maybe Variant)) -> pure [Only (isNothing value)])
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Fail a query with an exception in the function and in a row of the second chunk.

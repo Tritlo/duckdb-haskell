@@ -23,27 +23,24 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (attachOpaque, readCallbackState, targetCastFactory, transferCallbackState)
 import Database.DuckDB.Simple.Conversion (runConversion)
-import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
-import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory, materializeValue, readFactoryHandle, rejectRows)
+import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.TypeScope (TypeScope, scopedTypeRep, withTypeScope)
+import Database.DuckDB.Simple.TypeScope (TypeScope, withTypeScope)
 import Database.DuckDB.Simple.Typed (
   ColumnValue (..),
   TypedRow (..),
   argumentName,
-  checkArgumentType,
   conversionMessage,
+  positionalSignature,
+  readBoundField,
   rowDeclarations,
  )
 import Database.DuckDB.Simple.V2.Registration (
-  FunctionParameter (..),
-  FunctionSignature (..),
   RegistrationTarget,
   TableCallbacks (..),
   configureFunctionSignature,
-  parameter,
   registerTableFunctionWith,
   tableCallbacks,
   withRegistrationFactory,
@@ -114,12 +111,7 @@ createTableFunctionOn target name columns function = do
     rowDeclarations name ["parameter " <> argumentName index | index <- [0 ..]] (rowColumnDeclarations (Proxy @params))
   columnTypes <- rowDeclarations name (map ("column " <>) columns) columnDeclarations
   casts <- targetCastFactory target
-  let signature =
-        FunctionSignature
-          [ (parameter (argumentName index) dtype){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
-          | (index, dtype) <- zip [0 ..] parameterTypes
-          ]
-          Nothing
+  let signature = positionalSignature parameterTypes Nothing
       configure factory tableFunction = do
         withIdentifier name (checked . c_duckdb_v2_table_function_set_name tableFunction)
         output (c_duckdb_v2_table_function_get_signature tableFunction) >>= configureFunctionSignature factory signature
@@ -129,11 +121,7 @@ createTableFunctionOn target name columns function = do
           withTypeDeclaration factory dtype \logical ->
             withIdentifier column \identifier -> checked (c_duckdb_v2_table_function_bind_add_result_column result identifier logical)
         transferCallbackState (attachOpaque (c_duckdb_v2_function_bind_set_bind_data input)) (function params)
-  withRegistrationFactory target \factory -> do
-    -- The argument reader reads no VARIANT. Thus reject such a type before the
-    -- registration.
-    forM_ (zip [0 ..] parameterTypes) \(index, dtype) ->
-      withTypeDeclaration factory dtype (checkArgumentType True name ("parameter " <> argumentName index))
+  withRegistrationFactory target \factory ->
     registerTableFunctionWith
       target
       (configure factory)
@@ -225,14 +213,8 @@ splitRows = go []
 readArguments :: (FromRow params) => TypeScope -> Text -> Int -> ReadFactory -> DuckDBV2FunctionBindInfoHandle -> IO params
 readArguments scope name count factory input = do
   fields <- forM (take count [0 ..]) \index ->
-    bracket (output (c_duckdb_v2_function_bind_get_arg_value input (fromIntegral index))) destroyValue \value ->
-      -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
-      Field (argumentName index) index
-        <$> materializeValue unexpectedVariant factory value
-        <*> scopedTypeRep scope (pure (readFactoryHandle factory)) (output (c_duckdb_v2_value_get_logical_type value))
+    readBoundField scope factory input (argumentName index) (fromIntegral index)
   converted <- runConversion (parseRow fromRow fields)
   case converted of
     Ok params -> pure params
     Errors failures -> throwIO (userError ("duckdb-simple: " <> Text.unpack name <> ": " <> conversionMessage failures))
-  where
-    unexpectedVariant = rejectRows (throwInvalidArgument "the type of a table function argument cannot be or contain VARIANT")

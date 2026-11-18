@@ -159,7 +159,7 @@ instance Exception SQLError
 -- "Database.DuckDB.Simple.ToField"). A callback that waits too long for a
 -- connection lock gets 'ErrorResourceInUse'.
 -- These errors of duckdb-simple have no error type: the use of a closed
--- environment, instance, connection, statement, or type cache, a loaded DuckDB
+-- environment, instance, connection, or statement, a loaded DuckDB
 -- library of another version, a callback state read with the wrong type, and a
 -- result value that does not convert to its Haskell type.
 --
@@ -377,8 +377,7 @@ the list is short in practice or the operation is rare:
 - The row loop of executeScalarFunction in
   "Database.DuckDB.Simple.Function.Internal", for the same readers.
 
-- withParsedStatements, which nests one bracket for each statement of a script,
-  and cleanupAll, for a connection with many open statements, in
+- cleanupAll, for a connection with many open statements, in
   "Database.DuckDB.Simple.Internal".
 
 - The option loop in "Database.DuckDB.Simple.Config".
@@ -434,7 +433,7 @@ withOwnedVector factory logicalType action =
 -- duckdb_v2_vector_set_value writes the value to the row. The header says that
 -- this call casts "through the non-strict default cast". Then the action reads
 -- the vector. See Note [User casts and the casts of the library] in
--- "Database.DuckDB.Simple.Materialize".
+-- <src/Database.DuckDB.Simple.Materialize.html Database.DuckDB.Simple.Materialize>.
 withDefaultCastVector
   :: DuckDBV2FactoryHandle
   -> DuckDBV2LogicalTypeHandle
@@ -521,9 +520,8 @@ Thus a value of a user cannot change the statement. These are the statements:
   column from constants. The catalog name, the schema name, and the entry name
   are parameters.
 
-- readNativeTypes in "Database.DuckDB.Simple.TypeCache": a SELECT with two
-  placeholders for each CRS name of the connection, for the WKB of an empty
-  point and for the name. Each value is a parameter.
+- queryGeometryType in "Database.DuckDB.Simple.V2.LogicalRep": a constant
+  SELECT with a fixed WKB literal and one parameter for the CRS name.
 
 - metadataStatement in "Database.DuckDB.Simple.VariantCodec": a constant
   SELECT. The list of VARIANT values is a parameter.

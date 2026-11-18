@@ -7,18 +7,15 @@
 -- Description : Regression tests for GEOMETRY construction, metadata, nesting, and streaming.
 module GeometryRegressionTests (tests) where
 
-import Control.Concurrent (threadDelay)
 import Control.Exception (bracket, try)
-import Control.Monad (forM, forM_, when)
+import Control.Monad (forM, forM_)
 import Data.Array (elems, listArray)
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
 import qualified Data.Geometry.WKB as WKB
 import qualified Data.Geometry.WKT as WKT
-import Data.IORef (mkWeakIORef, newIORef, readIORef)
 import Data.Int (Int64)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
@@ -33,7 +30,6 @@ import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFrom
 import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Float (castWord64ToDouble)
 import System.Mem (performMajorGC)
-import System.Mem.Weak (deRefWeak)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
 import TestUtils (assertFailureIO, assertSqlErrorType, sized)
@@ -426,19 +422,22 @@ tests =
           (query conn "SELECT ?" (Only value) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value])
           _ <- execute conn "INSERT INTO nested VALUES (?)" (Only value)
           (query_ conn "SELECT v FROM nested" :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value, Only value])
-    , testCase "configured custom CRS and recognized definitions retain metadata" $ do
+    , testCase "custom CRS and recognized definitions retain metadata with extension autoload disabled" $ do
         let crs = "local' íslenska λ"
-        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} \conn -> do
+        withConnectionWithConfig ":memory:" [("autoload_known_extensions", "false")] \conn -> do
+          [Only point] <- query_ conn "SELECT 'POINT (1 2)'::GEOMETRY" :: IO [Only RawGeometry]
+          let annotated = point{rawGeometryCRS = Just crs}
+          (query conn "SELECT ?" (Only annotated)) >>= (@?= [Only annotated])
           [Only typed] <- query conn "SELECT typeof(?)" (Only (nullShape crs)) :: IO [Only Text]
           assertBool (Text.unpack typed) ("íslenska λ" `Text.isInfixOf` typed)
           (query conn "SELECT ?" (Only (nullShape crs))) >>= (@?= [Only (nullShape crs)])
           (query conn "SELECT typeof(?)" (Only (nullShape "OGC:CRS84")) :: IO [Only Text]) >>= (@?= [Only "STRUCT(shape GEOMETRY('OGC:CRS84'))"])
           (query conn "SELECT ?" (Only (nullShape "OGC:CRS84"))) >>= (@?= [Only (nullShape "OGC:CRS84")])
-    , testCase "configured CRS survives nested parameter types and prepared rebinding" $ do
+    , testCase "custom CRS survives nested parameter types and prepared rebinding" $ do
         let crs = "local' íslenska λ"
             value = nestedNullShapes crs
             array = sized [value] :: SizedArray 1 (StructValue FieldValue)
-        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs, crs]} \conn -> do
+        withConnection ":memory:" \conn -> do
           (query conn "SELECT ?" (Only value)) >>= (@?= [Only value])
           (queryNamed conn "SELECT $shape" ["shape" := value]) >>= (@?= [Only value])
           (query conn "SELECT ?" (Only array)) >>= (@?= [Only array])
@@ -447,9 +446,9 @@ tests =
             nextRow stmt >>= (@?= Just (Only value))
             bind stmt [toField value]
             nextRow stmt >>= (@?= Just (Only value))
-    , testCase "a configured CRS bind leaves an active caller stream usable" $ do
+    , testCase "a custom CRS bind leaves an active caller stream usable" $ do
         let crs = "local' íslenska λ"
-        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} \conn ->
+        withConnection ":memory:" \conn ->
           withStatement conn "SELECT ?" \parameter -> do
             withStatement conn "SELECT i::BIGINT FROM range(3) t(i)" \stmt -> do
               Streaming.nextRow stmt >>= (@?= Just (Only (0 :: Int64)))
@@ -457,22 +456,23 @@ tests =
               performMajorGC
               Streaming.nextRow stmt >>= (@?= Just (Only (1 :: Int64)))
             nextRow parameter >>= (@?= Just (Only (nullShape crs)))
-    , testCase "unknown CRS cannot silently drop metadata" $
+    , testCase "ignore_unknown_crs cannot silently drop parameter metadata" $
         withConnectionWithConfig ":memory:" [("ignore_unknown_crs", "true")] \conn -> do
-          result <- try (query conn "SELECT ?" (Only (nullShape "local grid"))) :: IO (Either SQLError [Only (StructValue FieldValue)])
-          case result of
-            Left err -> do
-              sqlErrorType err @?= Just ErrorInputInvalid
-              assertBool (show err) ("duckdb-simple: DuckDB did not preserve the requested GEOMETRY CRS" `Text.isInfixOf` sqlErrorMessage err)
-            Right _ -> assertFailure "expected the unknown CRS to fail"
-    , testCase "connection options validate CRS definitions and pass configuration flags" $ do
-        forM_ ["", "OGC:CRS84\0bad", " "] \crs -> do
-          result <- try (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} (const (pure ())))
-          case result of
-            Left err -> sqlErrorType err @?= Just ErrorInputInvalid
-            Right () -> assertFailure ("expected the open to fail for " <> show crs)
-        let options = defaultConnectionOptions{connectionConfig = [("threads", "1")], connectionGeometryCRS = ["local grid", "OGC:CRS84", "OGC:CRS84"]}
-        withConnectionWithOptions ":memory:" options \conn ->
+          let value = nullShape "local grid"
+          (query conn "SELECT ?" (Only value)) >>= (@?= [Only value])
+    , testCase "invalid CRS definitions fail during binding" $
+        withConnection ":memory:" \conn ->
+          forM_ ["", "OGC:CRS84\0bad", " "] \crs -> do
+            result <- try (query conn "SELECT ?" (Only (nullShape crs))) :: IO (Either SQLError [Only (StructValue FieldValue)])
+            case result of
+              Left err -> do
+                sqlErrorType err @?= Just ErrorInputInvalid
+                sqlErrorMessage err @?= "duckdb-simple: a GEOMETRY CRS must be nonblank and must not contain NUL"
+                sqlErrorBody err @?= Nothing
+              Right _ -> assertFailure ("expected binding to reject " <> show crs)
+            (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "connection options pass configuration flags" $
+        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionConfig = [("threads", "1")]} \conn ->
           (query_ conn "SELECT current_setting('threads')" :: IO [Only Int64]) >>= (@?= [Only 1])
     , testCase "logical type construction preserves CRS" $
         withConnection ":memory:" \conn -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
@@ -495,56 +495,34 @@ tests =
             ErrorInputInvalid
             (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (BS.pack [1, 1, 0, 0, 0])) :: IO [Only RawGeometry])
           (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
-    , testCase "configured recognized, custom, and complete CRS names bind with their CRS" $ do
+    , testCase "recognized, custom, and complete CRS names bind with their CRS" $ do
         let names = ["OGC:CRS84", "local' íslenska λ", localGridWKT2]
-        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = names} \conn ->
+        withConnection ":memory:" \conn ->
           forM_ names \crs -> (query conn "SELECT ?" (Only (nullShape crs))) >>= (@?= [Only (nullShape crs)])
     , testCase "a default connection runs no CRS query, also for a VARIANT read" $
         withLoggedInstance \inst countQueries -> withConnectionOn inst \conn -> do
+          countQueries crsQuery >>= (@?= 0)
+          countQueries "variant_typeof" >>= (@?= 0)
           (query conn "SELECT ?" (Only (nullShape "OGC:CRS84"))) >>= (@?= [Only (nullShape "OGC:CRS84")])
           (query_ conn "SELECT 42::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (FieldInt32 42))])
           countQueries crsQuery >>= (@?= 0)
           -- The log records metadata preparation and execution on the helper connection.
           countQueries "variant_typeof" >>= (@?= 2)
-    , testCase "a custom CRS runs one CRS query when the connection opens, and a VARIANT read runs none" $
-        withLoggedInstance \inst countQueries ->
-          bracket (connectWithOptions inst defaultConnectionOptions{connectionGeometryCRS = ["local grid"]}) close \conn -> do
-            countQueries crsQuery >>= (@?= 1)
-            (query conn "SELECT ?" (Only (nullShape "local grid"))) >>= (@?= [Only (nullShape "local grid")])
-            (query_ conn "SELECT 42::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (FieldInt32 42))])
-            countQueries crsQuery >>= (@?= 1)
-            countQueries "variant_typeof" >>= (@?= 2)
-    , testCase "a configured recognized CRS binds in either spelling" $
-        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["ogc:crs84"]} \conn ->
+    , testCase "a custom CRS resolves at bind time and a VARIANT read runs no CRS query" $
+        withLoggedInstance \inst countQueries -> withConnectionOn inst \conn -> do
+          countQueries crsQuery >>= (@?= 0)
+          let value = nullShape "local grid"
+          (query conn "SELECT ?" (Only value)) >>= (@?= [Only value])
+          resolved <- countQueries crsQuery
+          assertBool "the custom CRS uses the fallback query" (resolved > 0)
+          (query_ conn "SELECT 42::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (FieldInt32 42))])
+          countQueries crsQuery >>= (@?= resolved)
+    , testCase "a recognized CRS binds in either spelling" $
+        withConnection ":memory:" \conn ->
           forM_ ["ogc:crs84", "OGC:CRS84"] \crs -> (query conn "SELECT ?" (Only (nullShape crs))) >>= (@?= [Only (nullShape "OGC:CRS84")])
-    , testCase "a configured CRS that DuckDB drops fails the open and releases its connection" $
-        withEnvironment \env -> do
-          inst <- createInstance env []
-          -- The database keeps the function, and the function keeps the token.
-          weak <- withConnectionOn inst \conn -> do
-            token <- newIORef (42 :: Int64)
-            createFunction conn "crs_token" (readIORef token)
-            mkWeakIORef token (pure ())
-          -- The open keeps the type of the first name before the second name fails.
-          result <- try (connectWithOptions inst defaultConnectionOptions{connectionGeometryCRS = ["OGC:CRS84", " "]})
-          case result of
-            Left err -> do
-              sqlErrorType err @?= Just ErrorInputInvalid
-              assertBool (Text.unpack (sqlErrorMessage err)) ("did not preserve a configured GEOMETRY CRS" `Text.isInfixOf` sqlErrorMessage err)
-            Right conn -> close conn >> assertFailure "expected the open to fail"
-          -- DuckDB destroys the instance and the function after the last native
-          -- connection. A connection that the failed open kept would keep the token.
-          closeInstance inst
-          waitForRelease weak (500 :: Int)
     ]
   where
-    crsQuery = "system.main.ST_SetCRS(system.main.ST_GeomFromWKB("
-    waitForRelease weak attempts
-      | attempts == 0 = assertFailure "the failed open kept a native connection"
-      | otherwise = do
-          performMajorGC
-          alive <- isJust <$> deRefWeak weak
-          when alive (threadDelay 10000 >> waitForRelease weak (attempts - 1))
+    crsQuery = "system.main.ST_SetCRS("
 
 -- | Run an action on an instance that logs each query. The second argument
 -- counts the logged queries whose text contains a part. The count query binds

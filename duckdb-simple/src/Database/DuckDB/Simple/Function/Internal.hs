@@ -26,7 +26,7 @@ module Database.DuckDB.Simple.Function.Internal (
   Function (..),
   createFunctionOn,
   createFunctionWithStateOn,
-  prepareResultWriter,
+  prepareAggregateResultWriter,
 ) where
 
 import Control.Exception (
@@ -51,9 +51,8 @@ import Database.DuckDB.Simple.Callback (
   install,
   installAll,
   runCallback,
-  targetCastFactory,
   transferCallbackState,
-  withCallbackResources,
+  withCallbackResourcesFinally,
   withRegistrationFactory,
   withTarget,
  )
@@ -64,13 +63,19 @@ import Database.DuckDB.Simple.FromField (
   FromField (..),
  )
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), TypeDeclaration, logicalTypeSQL)
-import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory, readFactoryHandle)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
-import Database.DuckDB.Simple.TypeScope (TypeScope, withTypeScope)
-import Database.DuckDB.Simple.Typed (argumentName, checkArgumentType, conversionMessage, prepareArgumentReader, rowDeclarations)
-import Database.DuckDB.Simple.V2.Registration (withTypeDeclaration)
+import Database.DuckDB.Simple.TypeScope (withTypeScope)
+import Database.DuckDB.Simple.Typed (
+  ArgumentReader,
+  argumentName,
+  conversionMessage,
+  newArgumentReader,
+  positionalSignature,
+  rowDeclarations,
+ )
+import Database.DuckDB.Simple.V2.Registration (configureFunctionSignature)
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 import Foreign.Marshal.Utils (copyBytes, fillBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
@@ -81,31 +86,28 @@ import HsBindgen.Runtime.Marshal (staticSizeOf)
 
 {- Note [Result writers]
 ~~~~~~~~~~~~~~~~~~~~~~~~
-A scalar function and a typed aggregate function write their results with
-writeScalarValue. The FunctionResult instance of the result type selects one of
-two paths.
+The FunctionResult instance of a scalar or aggregate result type selects one
+of two paths.
 
 - A raw result (rawResult gives Just): Bool, Int, Int8 to Int64, Word, Word8 to
   Word64, Float, Double, Text, String, and Maybe of one of them. The writer
   writes the value to the memory of the vector, with no native call. A VARCHAR
   value of more than 12 bytes needs 2 native calls for the arena of the vector
   (writeArenaText).
-- A result of each other type (rawResult gives Nothing). toDuckValue makes a
-  native value with the factory of the callback context, and
-  vector_set_value writes it. DuckDB casts the value to the type of the
-  vector. Each such row needs at least 3 native calls: the value, the write,
-  and the destroy. The writer borrows the factory one time for each call, only
-  when a row needs it.
+- For other results, toDuckValue constructs an owned value and vector_set_value
+  copies it into the output vector. DuckDB casts it to the declared result
+  type. A scalar callback uses its context factory. An aggregate finalize
+  callback has no context and borrows the registration's instance factory.
+  This factory resolves built-in types. The registration declares the SQL
+  result type on the host, where catalog types are visible.
 
-The writer reads the logical type of the vector one time for each call
-(prepareResultWriter), with 3 native calls. Each raw value must have the type
-of the vector, else the writer raises an error. Thus a raw write has the width
-of the vector. The writer does not read the size of the vector: in an ordered
-window, the result vector of a finalize call has the size 0.
-
-The finalize callback of an aggregate function has no context, so it has no
-factory. Thus an aggregate result must be a raw result. createAggregateOn in
-"Database.DuckDB.Simple.Typed.Aggregate" checks this at registration.
+A raw writer checks the logical type before writing a value so the width of
+the write matches the vector. It writes at the offset supplied by DuckDB.
+An ordered window can supply a result vector with logical size zero, even
+when there are rows to finalize. vector_set_value checks this size. Before
+writing native values, grow the vector to cover offset + count. Keep the
+existing size when it is larger, since other groups can occupy later rows.
+The native writer borrows no data or validity pointer across a resize.
 -}
 
 -- | The value of one result row. See Note [Result writers].
@@ -255,22 +257,22 @@ instance {-# OVERLAPPABLE #-} (FromField a, DuckDBColumnType a, Function r) => F
 -- | Register a typed function on a connection or a loading extension.
 createFunctionOn :: forall f. (Function f) => RegistrationTarget -> Text -> f -> IO ()
 createFunctionOn target name fn =
-  registerScalarFunction target name (Proxy @f) \casts allocate function ->
+  registerScalarFunction target name (Proxy @f) \readArgument allocate function ->
     [ install
         allocate
         DuckDBV2ScalarFunctionExecCallbackFn
-        (DuckDBV2ScalarFunctionExecCallbackFn_Aux (scalarFunctionHandler casts fn))
+        (DuckDBV2ScalarFunctionExecCallbackFn_Aux (scalarFunctionHandler readArgument fn))
         (c_duckdb_v2_scalar_function_set_exec_callback function)
     ]
 
 -- | Register a typed function with per-worker state on a connection or extension.
 createFunctionWithStateOn :: forall s f. (Function f) => RegistrationTarget -> Text -> IO s -> (s -> f) -> IO ()
 createFunctionWithStateOn target name initState mkFn =
-  registerScalarFunction target name (Proxy @f) \casts allocate function ->
+  registerScalarFunction target name (Proxy @f) \readArgument allocate function ->
     [ install
         allocate
         DuckDBV2ScalarFunctionExecCallbackFn
-        (DuckDBV2ScalarFunctionExecCallbackFn_Aux (scalarFunctionHandlerWithState casts mkFn))
+        (DuckDBV2ScalarFunctionExecCallbackFn_Aux (scalarFunctionHandlerWithState readArgument mkFn))
         (c_duckdb_v2_scalar_function_set_exec_callback function)
     , install
         allocate
@@ -280,21 +282,18 @@ createFunctionWithStateOn target name initState mkFn =
     ]
 
 -- | Configure a scalar function and transfer its callbacks to DuckDB. An
--- argument type or a result type with no declaration, or an argument type that
--- is or contains VARIANT, raises an error at registration. The check of the
+-- argument type or a result type with no declaration raises an error at registration. The check of the
 -- name and the declarations of the arguments and the result come before the
 -- read of the state of the target, so their input errors win over a closed
--- connection. The VARIANT check ('checkArgumentType') needs the resolved type
--- of the argument, so it comes after the read of the state, and a closed
--- connection wins over it. The last argument gives the install actions of the
--- callbacks for the builder, from the factory of 'targetCastFactory'. Their
+-- connection. The last argument gives the install actions of the
+-- callbacks for the builder, with the reader for this registration. Their
 -- setters run after the properties. See 'installAll'.
 registerScalarFunction
   :: (Function f)
   => RegistrationTarget
   -> Text
   -> Proxy f
-  -> (Maybe DuckDBV2FactoryHandle -> Allocator -> DuckDBV2ScalarFunctionHandle -> [IO (IO ())])
+  -> (ArgumentReader -> Allocator -> DuckDBV2ScalarFunctionHandle -> [IO (IO ())])
   -> IO ()
 registerScalarFunction target name proxy installers = do
   when (Text.null name || Text.any (== '\0') name) $
@@ -302,7 +301,7 @@ registerScalarFunction target name proxy installers = do
   -- See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
   parameters <- rowDeclarations name ["argument " <> argumentName index | index <- [0 ..]] (argumentTypes proxy)
   [result] <- rowDeclarations name ["result"] [returnType proxy]
-  casts <- targetCastFactory target
+  (readArgument, _, closeReader) <- newArgumentReader target
   -- withTarget keeps its factory private. Borrow another one for the signature types.
   withRegistrationFactory target \factory ->
     withTarget
@@ -312,19 +311,15 @@ registerScalarFunction target name proxy installers = do
       c_duckdb_v2_connection_register_scalar_function
       c_duckdb_v2_extension_register_scalar_function
       \scalarFun register ->
-        withCallbackResources
+        withCallbackResourcesFinally
           (checkTargetThreads target)
-          (\allocate -> installAll (installers casts allocate scalarFun))
+          closeReader
+          (\allocate -> installAll (installers readArgument allocate scalarFun))
           (attachOpaque (c_duckdb_v2_scalar_function_set_user_data scalarFun))
           \installCallbacks -> do
             withIdentifier name $ checked . c_duckdb_v2_scalar_function_set_name scalarFun
             signature <- output (c_duckdb_v2_scalar_function_get_signature scalarFun)
-            forM_ (zip [0 :: Int ..] parameters) \(index, dtype) ->
-              withTypeDeclaration factory dtype \logical -> do
-                checkArgumentType True name ("argument " <> argumentName index) logical
-                withIdentifier (argumentName index) \argument ->
-                  checked (c_duckdb_v2_function_signature_add_parameter signature argument logical nullHandle DuckDBV2FunctionParameterKindPositionalOnly)
-            withTypeDeclaration factory result $ checked . c_duckdb_v2_function_signature_set_return_type signature
+            configureFunctionSignature factory (positionalSignature parameters (Just result)) signature
             when (isVolatile proxy) $
               checked (c_duckdb_v2_scalar_function_set_property scalarFun DuckDBV2FunctionPropertyStability DuckDBV2FunctionPropertyStabilityVolatile)
             checked
@@ -336,13 +331,13 @@ registerScalarFunction target name proxy installers = do
 scalarFunctionHandler
   :: forall f
    . (Function f)
-  => Maybe DuckDBV2FactoryHandle -> f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
-scalarFunctionHandler casts fn info context err = runCallback err (executeScalarFunction casts fn info context)
+  => ArgumentReader -> f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+scalarFunctionHandler readArgument fn info context err = runCallback err (executeScalarFunction readArgument fn info context)
 
 -- | Run one call of a scalar function.
 executeScalarFunction
-  :: forall f. (Function f) => Maybe DuckDBV2FactoryHandle -> f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()
-executeScalarFunction casts fn info context = withTypeScope \scope -> withContextFactory context \contextFactory -> do
+  :: forall f. (Function f) => ArgumentReader -> f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()
+executeScalarFunction readArgument fn info context = withTypeScope \scope -> do
   let expected = length (argumentTypes (Proxy @f))
   columnCount <- allocaArray 4 $ \counts -> do
     checked (c_duckdb_v2_scalar_function_exec_get_arg_count info counts (advancePtr counts 1) (advancePtr counts 2) (advancePtr counts 3))
@@ -351,7 +346,8 @@ executeScalarFunction casts fn info context = withTypeScope \scope -> withContex
     throwInternalError (Text.pack ("function expected " <> show expected <> " arguments but received " <> show columnCount))
   rawRowCount <- output (c_duckdb_v2_scalar_function_exec_get_row_count info)
   let rowCount = fromIntegral rawRowCount :: Int
-  readers <- mapM (makeColumnReader scope (callbackReadFactory casts contextFactory) info) [0 .. expected - 1]
+  readers <- forM [0 .. expected - 1] \index ->
+    output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral index)) >>= readArgument scope index
   rows <- forM [0 .. rowCount - 1] $ \row -> forM readers ($ row)
   results <- mapM (`applyFunction` fn) rows
   outVec <- output (c_duckdb_v2_scalar_function_exec_get_result info)
@@ -360,13 +356,13 @@ executeScalarFunction casts fn info context = withTypeScope \scope -> withContex
 scalarFunctionHandlerWithState
   :: forall s f
    . (Function f)
-  => Maybe DuckDBV2FactoryHandle
+  => ArgumentReader
   -> (s -> f)
   -> DuckDBV2ScalarFunctionExecInfoHandle
   -> DuckDBV2ContextHandle
   -> Ptr DuckDBV2ErrorInfoHandle
   -> IO ()
-scalarFunctionHandlerWithState casts mkFn info context err = runCallback err do
+scalarFunctionHandlerWithState readArgument mkFn info context err = runCallback err do
   statePtr <- output (c_duckdb_v2_scalar_function_exec_get_init_data info)
   when (statePtr == nullPtr) $
     throwInternalError "scalar function state was not initialised"
@@ -374,19 +370,12 @@ scalarFunctionHandlerWithState casts mkFn info context err = runCallback err do
   -- one signature for initState :: IO s and mkFn :: s -> f. Thus the init
   -- callback stores a StablePtr of the same type s that this cast gives.
   state <- deRefStablePtr (castPtrToStablePtr (castPtr statePtr) :: StablePtr s)
-  executeScalarFunction casts (mkFn state) info context
+  executeScalarFunction readArgument (mkFn state) info context
 
 scalarFunctionInitHandler :: IO s -> DuckDBV2ScalarFunctionInitInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
 scalarFunctionInitHandler initState info _context err = runCallback err do
   state <- initState
   transferCallbackState (attachOpaque (c_duckdb_v2_scalar_function_init_set_init_data info)) state
-
--- | Prepare the reader of one argument. A GEOMETRY value reads with the
--- factory, at each depth of the type.
-makeColumnReader :: TypeScope -> ReadFactory -> DuckDBV2ScalarFunctionExecInfoHandle -> Int -> IO (Int -> IO Field)
-makeColumnReader scope factory info columnIndex =
-  output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex))
-    >>= prepareArgumentReader scope (pure (readFactoryHandle factory)) (Just factory) columnIndex
 
 -- | Write the results of one call to the result vector. Set the size, then
 -- flatten, then read the pointers. A row of a result that is not raw borrows
@@ -405,6 +394,24 @@ writeResults context values outVec = do
   withFactory \factory -> do
     write <- prepareResultWriter factory outVec
     forM_ (zip [0 ..] values) (uncurry write)
+
+-- | Write aggregate results into a borrowed vector. The end is the exclusive
+-- upper bound of this finalize call. See Note [Result writers].
+prepareAggregateResultWriter
+  :: (FunctionResult a) => IO DuckDBV2FactoryHandle -> DuckDBV2VectorHandle -> DuckDBIdx -> IO (Int -> a -> IO ())
+prepareAggregateResultWriter acquireFactory vector end = case rawResult of
+  Just raw -> do
+    write <- prepareResultWriter Nothing vector
+    pure (\row -> write row . raw)
+  Nothing -> do
+    size <- output (c_duckdb_v2_vector_get_size vector)
+    when (size < end) (checked (c_duckdb_v2_vector_set_size vector end))
+    factory <- acquireFactory
+    pure (\row -> writeNativeResult vector row . toDuckValue factory)
+
+-- | Copy an owned value into a result row, then release it even if the cast fails.
+writeNativeResult :: DuckDBV2VectorHandle -> Int -> IO DuckDBV2ValueHandle -> IO ()
+writeNativeResult vector row create = bracket create destroyValue (checked . c_duckdb_v2_vector_set_value vector (fromIntegral row))
 
 -- | Prepare a writer for the rows of a flat result vector. The writer does not
 -- change the size of the vector. It reads the logical type of the vector one
@@ -447,7 +454,7 @@ writeScalarValue factory vector vectorType dataPtr validityPtr idx = \case
     markValid validityPtr idx
     writeArenaText vector dataPtr idx text
   ScalarNative make -> case factory of
-    Just valueFactory -> bracket (make valueFactory) destroyValue (checked . c_duckdb_v2_vector_set_value vector (fromIntegral idx))
+    Just valueFactory -> writeNativeResult vector idx (make valueFactory)
     Nothing -> throwInternalError "the result writer has no factory for a value of this result type"
   where
     raw :: (Storable s) => DuckDBV2LogicalTypeId -> s -> IO ()

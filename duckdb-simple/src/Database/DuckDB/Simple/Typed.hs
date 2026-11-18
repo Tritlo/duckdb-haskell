@@ -20,38 +20,46 @@ module Database.DuckDB.Simple.Typed (
   ColumnValue (..),
   argumentName,
   rowDeclarations,
-  checkArgumentType,
-  variantArgumentReason,
-  prepareArgumentReader,
+  positionalSignature,
+  readBoundField,
+  ArgumentReader,
+  newArgumentReader,
   conversionMessage,
   Replacement (..),
   replacementScanCallback,
 ) where
 
-import Control.Exception (SomeException, bracket, fromException)
-import Control.Monad (forM, when)
+import Control.Concurrent.MVar (modifyMVarMasked, newMVar)
+import Control.Exception (SomeException, bracket, bracketOnError, finally, fromException, mask_)
+import Control.Monad (forM, forM_)
 import Data.List (intercalate)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.DuckDB.Simple.Element (containsType)
+import Database.DuckDB.Simple.Callback (RegistrationTarget, targetCastFactory)
 import Database.DuckDB.Simple.FromField (Field (..), ResultError (..))
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
-  ReadFactory,
+  ReadFactory (InstanceFactory),
+  createHelperInstance,
+  materializeValue,
   prepareGeometryReader,
   prepareVectorReader,
-  rejectRows,
+  readCallbackVariant,
+  readFactoryHandle,
+  readInstanceVariant,
  )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
 import Database.DuckDB.Simple.TypeScope (TypeScope, scopedTypeRep)
 import Database.DuckDB.Simple.Types (Only (..))
-import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToBaseRep, logicalTypeToRep)
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Database.DuckDB.Simple.V2.Registration (
   ContextCallback,
+  FunctionParameter (parameterKind),
+  FunctionSignature (..),
   TypeDeclaration,
+  parameter,
  )
 import GHC.Generics
 
@@ -134,57 +142,74 @@ rowDeclarations name places declarations =
   forM (zip places declarations) \(place, declaration) ->
     either (\reason -> throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, place, reason])) pure declaration
 
--- | The reason in the error for a VARIANT argument. It names the limit and
--- what a user can write in its place. 'checkArgumentType' and the reader of a
--- pragma argument of the type ANY use it.
-variantArgumentReason :: Text
-variantArgumentReason =
-  Text.pack
-    "the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
+-- | Declare the positional arguments of a typed function. A table function
+-- declares its result columns during bind and supplies no return type here.
+positionalSignature :: [TypeDeclaration] -> Maybe TypeDeclaration -> FunctionSignature
+positionalSignature types =
+  FunctionSignature
+    [ (parameter (argumentName index) dtype){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
+    | (index, dtype) <- zip [0 ..] types
+    ]
 
--- | Raise an error before a registration when the resolved type of an
--- argument is or contains VARIANT. A callback has no connection, so no argument
--- reader of a callback reads VARIANT ('prepareArgumentReader', and the readers
--- of a table function, a pragma, and the update function of a custom option).
--- Without this check the registration succeeds, a NULL value works, and each
--- value that is not NULL fails the query. When the first argument is False,
--- also raise the error for a type that is or contains GEOMETRY: the callbacks
--- of an aggregate function of an extension have no factory to read it. The
--- error names the registration and the place of the argument.
-checkArgumentType :: Bool -> Text -> Text -> DuckDBV2LogicalTypeHandle -> IO ()
-checkArgumentType readsGeometry name place logical = do
-  rep <- logicalTypeToBaseRep logical
-  let refuse reason = throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, place, reason])
-  when (containsType isVariant rep) $
-    refuse variantArgumentReason
-  when (not readsGeometry && containsType isGeometry rep) $
-    refuse (Text.pack "the type of an argument of an aggregate function of an extension cannot be or contain GEOMETRY")
-  where
-    isVariant = (== LogicalTypeScalar LogicalTypeIdVariant)
-    isGeometry = \case
-      LogicalTypeGeometry _ -> True
-      _ -> False
+-- | Copy one argument of a table function or pragma. Acquire its logical
+-- type within the value's lifetime. The type scope owns it during conversion.
+readBoundField :: TypeScope -> ReadFactory -> DuckDBV2FunctionBindInfoHandle -> Text -> DuckDBIdx -> IO Field
+readBoundField scope factory info name index =
+  bracket (output (c_duckdb_v2_function_bind_get_arg_value info index)) destroyValue \value ->
+    Field name (fromIntegral index)
+      <$> materializeValue readCallbackVariant factory value
+      <*> scopedTypeRep scope (pure (readFactoryHandle factory)) (output (c_duckdb_v2_value_get_logical_type value))
 
--- | Prepare a reader for the rows of an argument vector in a type scope.
--- The index of the argument starts at 0. The reader gives the field of a row, with
--- the name from 'argumentName'. A NULL row gives
--- 'Database.DuckDB.Simple.FromField.FieldNull', also a NULL VARIANT or GEOMETRY
--- row. A row that holds a VARIANT value raises an error. A GEOMETRY value reads
--- with the supplied factory, at each depth of the type. Without a
--- factory, a row that holds a GEOMETRY value raises an error. See
--- Note [User casts and the casts of the library] in
--- "Database.DuckDB.Simple.Materialize". The reader must not outlive the vector.
--- Type actions expire when the scope closes. See Note [Scoped field types] in
--- "Database.DuckDB.Simple.TypeScope".
-prepareArgumentReader :: TypeScope -> IO DuckDBV2FactoryHandle -> Maybe ReadFactory -> Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
-prepareArgumentReader scope acquireFactory casts index vector = do
-  let noVariant = rejectRows (throwInvalidArgument (Text.pack "the type of a typed argument cannot be or contain VARIANT"))
-      noGeometry = rejectRows (throwInvalidArgument (Text.pack "a typed argument of this callback cannot be or contain GEOMETRY"))
-      readType logical = acquireFactory >>= \factory -> logicalTypeToRep factory logical
-  readValue <- prepareVectorReader (FallbackReaders readType noVariant (maybe noGeometry prepareGeometryReader casts)) vector
-  -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
-  argumentType <- scopedTypeRep scope acquireFactory (output (c_duckdb_v2_vector_get_logical_type vector))
-  pure \row -> (\value -> Field (argumentName index) index value argumentType) <$> readValue row
+{- Note [Function argument readers]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A scalar or aggregate function belongs to the catalog. Its callbacks can
+run after the registering connection closes. An extension has no managed
+connection, and an aggregate update has no callback context.
+
+A registration takes the host instance factory when available. An extension
+opens a private instance on the first argument read or aggregate result
+write that needs a factory. GEOMETRY inputs use its built-in cast to BLOB.
+A VARIANT read always needs the private instance because its metadata query
+can run while the caller holds a host instance lock. See Note [VARIANT reads inside callbacks]
+in "Database.DuckDB.Simple.Materialize".
+
+An MVar protects instance creation. Each VARIANT vector gets its own
+connection and decoder state, so concurrent calls can decode independently.
+The native callback owner releases the instance and its environment after
+the last bound or executing function releases the callbacks.
+-}
+
+-- | Prepare a vector's fields within the current callback's type scope.
+type ArgumentReader = TypeScope -> Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
+
+-- | Create the argument reader, the action to borrow its instance factory,
+-- and the cleanup for one registration.
+-- Native resources are acquired on demand. See Note [Function argument readers].
+newArgumentReader :: RegistrationTarget -> IO (ArgumentReader, IO DuckDBV2FactoryHandle, IO ())
+newArgumentReader target = do
+  hostFactory <- targetCastFactory target
+  cache <- newMVar Nothing
+  let helper = modifyMVarMasked cache \case
+        Just owned@(_, instance_) -> pure (Just owned, instance_)
+        Nothing -> bracketOnError (output c_duckdb_v2_environment_create) (destroy c_duckdb_v2_environment_destroy) \env -> do
+          instance_ <- createHelperInstance env
+          pure (Just (env, instance_), instance_)
+      close = mask_ do
+        owned <- modifyMVarMasked cache (\state -> pure (Nothing, state))
+        forM_ owned \(env, instance_) ->
+          destroy c_duckdb_v2_instance_destroy instance_ `finally` destroy c_duckdb_v2_environment_destroy env
+      factory = maybe (helper >>= output . c_duckdb_v2_instance_get_factory) pure hostFactory
+      readers =
+        FallbackReaders
+          (\logical -> factory >>= \f -> logicalTypeToRep f logical)
+          (\vector -> helper >>= \instance_ -> readInstanceVariant instance_ vector)
+          (\vector -> factory >>= \f -> prepareGeometryReader (InstanceFactory f) vector)
+      readArgument scope index vector = do
+        readValue <- prepareVectorReader readers vector
+        -- See Note [Scoped field types] in "Database.DuckDB.Simple.TypeScope".
+        argumentType <- scopedTypeRep scope factory (output (c_duckdb_v2_vector_get_logical_type vector))
+        pure \row -> (\value -> Field (argumentName index) index value argumentType) <$> readValue row
+  pure (readArgument, factory, close)
 
 -- | Describe the arguments that 'Database.DuckDB.Simple.FromField.FromField' or
 -- @FromRow@ cannot convert. The text names each argument with the name of its

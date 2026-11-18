@@ -116,10 +116,11 @@ nativeStreamingTests =
           Streaming.nextRowWith ((+) <$> field <*> field) stmt >>= (@?= Just (42 :: Int64))
     , testGroup "decoder cursor ownership" $
         map (uncurry decoderCursorTests) [("materialized", nextRowWith), ("streaming", Streaming.nextRowWith)]
-    , testCase "eager decoder cannot read uncached native metadata after connection close" $ withDb \conn -> do
-        let parser = fieldWith \column -> liftConversion (close conn) >> fieldType column
-        err <- expectSqlError (queryWith_ parser conn "SELECT 42")
-        assertBool "expected closed connection" ("connection is closed" `Text.isInfixOf` sqlErrorMessage err)
+    , testCase "eager decoder cannot read uncached native metadata after connection close" $
+        withEnvironment \env -> withInstance env [] \inst -> withConnectionOn inst \conn -> do
+          let parser = fieldWith \column -> liftConversion (close conn) >> fieldType column
+          err <- expectSqlError (queryWith_ parser conn "SELECT 42")
+          assertBool "expected closed connection" ("connection is closed" `Text.isInfixOf` sqlErrorMessage err)
     , testCase "a fetch failure follows an already delivered batch" $ withDb \conn -> do
         void $ execute_ conn "SET streaming_buffer_size = '64KB'"
         failNext <- newIORef False

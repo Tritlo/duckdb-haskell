@@ -12,20 +12,25 @@
 module Database.DuckDB.Simple.V2.LogicalRep (
   logicalTypeToRep,
   logicalTypeToBaseRep,
+  valuesHaveType,
   logicalTypeFromRep,
   logicalTypeFromRepWith,
+  bindingLogicalType,
   destroyLogicalType,
 ) where
 
-import Control.Exception (bracket, mask_, onException)
+import Control.Exception (bracket, mask_, onException, tryJust)
 import Control.Monad (foldM, forM, when)
 import Data.Array (elems, listArray)
+import Data.Char (isSpace)
+import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
 import Database.DuckDB.Simple.Native
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
+import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek)
 
@@ -36,7 +41,7 @@ import Foreign.Storable (peek)
 --
 -- > bracket (R.output (c_duckdb_v2_vector_get_logical_type vector)) destroyLogicalType (logicalTypeToRep factory)
 logicalTypeToRep :: DuckDBV2FactoryHandle -> DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
-logicalTypeToRep factory = convertLogicalType (Just factory)
+logicalTypeToRep factory = convertLogicalType (Just factory) ReadEnumDictionary
 
 -- | Copy a native logical type into a Haskell type tree with no alias, at each
 -- depth. Use it when decoding or binding needs only base types. The function
@@ -44,19 +49,41 @@ logicalTypeToRep factory = convertLogicalType (Just factory)
 -- "Database.DuckDB.Simple.LogicalRep". The function does not destroy the
 -- handle.
 logicalTypeToBaseRep :: DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
-logicalTypeToBaseRep = convertLogicalType Nothing
+logicalTypeToBaseRep = convertLogicalType Nothing ReadEnumDictionary
+
+-- | Check the types of borrowed values against a borrowed logical type,
+-- including exact field names, collations, and CRS definitions. Each temporary
+-- value type is released before the next value is checked. See
+-- Note [Element types of a list] in "Database.DuckDB.Simple.ToField".
+valuesHaveType :: DuckDBV2LogicalTypeHandle -> [DuckDBV2ValueHandle] -> IO Bool
+valuesHaveType logical values = do
+  expected <- key logical
+  let check [] = pure True
+      check (value : remaining) = do
+        matches <- bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \actual -> do
+          equal <- output (c_duckdb_v2_logical_type_is_equal logical actual)
+          if equal == 0 then pure False else (== expected) <$> key actual
+        if matches then check remaining else pure False
+  check values
+  where
+    -- Native equality checks aliases and ENUM dictionaries. The partial trees
+    -- are comparison keys only. They do not leave this function.
+    key = convertLogicalType Nothing OmitEnumDictionary
+
+-- | Select complete dictionaries or private comparison keys.
+data EnumDictionary = ReadEnumDictionary | OmitEnumDictionary
 
 -- | Copy a native logical type into a Haskell type tree. With a factory, keep
 -- each alias. Without a factory, read no type name.
-convertLogicalType :: Maybe DuckDBV2FactoryHandle -> DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
-convertLogicalType factory logical = do
+convertLogicalType :: Maybe DuckDBV2FactoryHandle -> EnumDictionary -> DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
+convertLogicalType factory dictionary logical = do
   dtype <- output (c_duckdb_v2_logical_type_get_id logical)
   let parameter index action = alloca \nameSlot ->
         bracket (output (c_duckdb_v2_logical_type_get_param logical index nameSlot)) (destroy c_duckdb_v2_value_destroy) \value -> do
           name <- peek nameSlot >>= readIdentifier
           action name value
       child index = parameter index \_ value ->
-        bracket (output (c_duckdb_v2_value_get_type value)) destroyLogicalType (convertLogicalType factory)
+        bracket (output (c_duckdb_v2_value_get_type value)) destroyLogicalType (convertLogicalType factory dictionary)
       string index = parameter index \_ value -> output (c_duckdb_v2_value_get_varchar value) >>= readText
       count = output (c_duckdb_v2_logical_type_get_param_count logical) >>= word64ToInt
       fields make = do
@@ -65,7 +92,7 @@ convertLogicalType factory logical = do
           <$> forM
             [0 .. size - 1]
             ( \index -> parameter (fromIntegral index) \name value -> do
-                rep <- bracket (output (c_duckdb_v2_value_get_type value)) destroyLogicalType (convertLogicalType factory)
+                rep <- bracket (output (c_duckdb_v2_value_get_type value)) destroyLogicalType (convertLogicalType factory dictionary)
                 pure (make name rep)
             )
   base <- case dtype of
@@ -88,13 +115,15 @@ convertLogicalType factory logical = do
       LogicalTypeDecimal
         <$> parameter 0 (\_ value -> output (c_duckdb_v2_value_get_utinyint value))
         <*> parameter 1 (\_ value -> output (c_duckdb_v2_value_get_utinyint value))
-    DuckDBV2LogicalTypeIdEnum -> do
-      size <- count
-      -- A dictionary can have many entries, and each entry makes native
-      -- calls. The fold keeps a constant stack. See
-      -- Note [Constant stack at safe calls] in "Database.DuckDB.Simple.Native".
-      LogicalTypeEnum . listArray (0, size - 1) . reverse
-        <$> foldM (\entries index -> (: entries) <$> string (fromIntegral index)) [] [0 .. size - 1]
+    DuckDBV2LogicalTypeIdEnum -> case dictionary of
+      OmitEnumDictionary -> pure (LogicalTypeEnum (listArray (0, -1) []))
+      ReadEnumDictionary -> do
+        size <- count
+        -- A dictionary can have many entries, and each entry makes native
+        -- calls. The fold keeps a constant stack. See
+        -- Note [Constant stack at safe calls] in "Database.DuckDB.Simple.Native".
+        LogicalTypeEnum . listArray (0, size - 1) . reverse
+          <$> foldM (\entries index -> (: entries) <$> string (fromIntegral index)) [] [0 .. size - 1]
     _ -> LogicalTypeScalar <$> logicalTypeIdFromNative dtype
   case factory of
     Nothing -> pure base
@@ -143,9 +172,7 @@ logicalTypeFromRepWith factory resolve = create
             then output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr nullPtr) (ConstPtr valuePtr) (fromIntegral (length values)))
             else withIdentifierArray names \namePtr ->
               output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values)))
-    -- The type cache of a connection gives a resolver for configured CRS
-    -- types. See Note [CRS types of a connection] in
-    -- "Database.DuckDB.Simple.TypeCache".
+    -- The binding resolver supplies CRS leaves. See Note [Bind-time CRS types].
     create rep = resolve rep >>= maybe (constructRep rep) pure
     constructRep = \case
       LogicalTypeScalar LogicalTypeIdVariant -> fromName (Text.pack "VARIANT")
@@ -154,14 +181,13 @@ logicalTypeFromRepWith factory resolve = create
       LogicalTypeScalar dtype -> construct (logicalTypeIdToNative dtype) [] []
       LogicalTypeCollatedVarchar collation -> construct DuckDBV2LogicalTypeIdVarchar [Text.pack "collation"] [text collation]
       LogicalTypeGeometry Nothing -> fromText (Text.pack "GEOMETRY")
-      LogicalTypeGeometry (Just crs) -> mask_ do
-        logical <- construct DuckDBV2LogicalTypeIdGeometry [] [text crs]
-        flip onException (destroyLogicalType logical) do
-          count <- output (c_duckdb_v2_logical_type_get_param_count logical)
-          when (count == 0) $
-            throwInvalidArgument
-              (Text.pack "DuckDB did not preserve the requested GEOMETRY CRS; use a recognized identifier or a complete CRS definition")
-          pure logical
+      LogicalTypeGeometry (Just crs) ->
+        directGeometryType factory crs
+          >>= maybe
+            ( throwInvalidArgument
+                (Text.pack "DuckDB did not preserve the requested GEOMETRY CRS; use a recognized identifier or a complete CRS definition")
+            )
+            pure
       LogicalTypeDecimal width scale -> do
         when (width < 1 || width > 38 || scale > width) $
           throwInvalidArgument (Text.pack "invalid DECIMAL width or scale")
@@ -200,3 +226,79 @@ word64ToInt :: (Integral a) => a -> IO Int
 word64ToInt value
   | toInteger value <= toInteger (maxBound :: Int) = pure (fromIntegral value)
   | otherwise = throwInternalError (Text.pack "logical type parameter count exceeds Int range")
+
+-- | Construct an owned binding type. Resolve CRS leaves at every depth.
+-- The factory must belong to a connection on the supplied instance.
+bindingLogicalType
+  :: DuckDBV2FactoryHandle
+  -> DuckDBV2InstanceHandle
+  -> LogicalTypeRep
+  -> IO DuckDBV2LogicalTypeHandle
+bindingLogicalType factory instance_ = logicalTypeFromRepWith factory resolve
+  where
+    resolve (LogicalTypeGeometry (Just crs)) = do
+      direct <- tryJust unrecognized (directGeometryType factory crs)
+      Just <$> case direct of
+        Right (Just logical) -> pure logical
+        _ -> queryGeometryType crs instance_
+    resolve _ = pure Nothing
+    unrecognized err
+      | sqlErrorType err == Just ErrorQueryBinder
+      , Just body <- sqlErrorBody err
+      , Text.pack "Encountered unrecognized coordinate system '" `Text.isPrefixOf` body =
+          Just ()
+      | otherwise = Nothing
+
+{- Note [Bind-time CRS types]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Bindings construct native types from their declarations at every depth. The
+connection factory constructs recognized CRS types directly. For an unknown
+label, DuckDB either reports its specific binder error or drops the CRS when
+ignore_unknown_crs is set. Only these two outcomes use the SQL fallback.
+Any other error from the native constructor propagates to the caller.
+
+The fallback opens a separate connection on the same instance. It cannot run
+SQL on the caller connection because the caller can have an active result.
+The query applies fully qualified built-ins to a WKB literal and the bound label.
+The SELECT has a schema before its first execution step. Copy its field type
+while the schema is live. The helper can close without fetching a row.
+Typed NULLs and empty containers use the same resolver as nonempty values.
+-}
+
+-- | Construct a CRS type directly. Return 'Nothing' if DuckDB drops its CRS.
+-- Keep native errors so the binding resolver can select the unknown CRS error.
+directGeometryType :: DuckDBV2FactoryHandle -> Text -> IO (Maybe DuckDBV2LogicalTypeHandle)
+directGeometryType factory crs = mask_ do
+  validateGeometryCRS crs
+  logical <- withText crs \text ->
+    bracket (output (c_duckdb_v2_value_create_varchar factory text)) destroyValue \value ->
+      with value \values ->
+        output (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdGeometry (ConstPtr nullPtr) (ConstPtr values) 1)
+  count <- output (c_duckdb_v2_logical_type_get_param_count logical) `onException` destroyLogicalType logical
+  if count == 0 then destroyLogicalType logical >> pure Nothing else pure (Just logical)
+
+-- | Reject CRS text that cannot identify a coordinate system.
+validateGeometryCRS :: Text -> IO ()
+validateGeometryCRS crs =
+  when (Text.all isSpace crs || Text.any (== '\0') crs) $
+    throwInvalidArgument (Text.pack "a GEOMETRY CRS must be nonblank and must not contain NUL")
+
+-- | Read one owned GEOMETRY type from a short-lived helper connection.
+queryGeometryType :: Text -> DuckDBV2InstanceHandle -> IO DuckDBV2LogicalTypeHandle
+queryGeometryType crs instance_ = mask_ $
+  bracket (output (c_duckdb_v2_connection_create instance_)) (destroy c_duckdb_v2_connection_destroy) \connection ->
+    withSQLStatement connection sql \parsed -> withConnectionFactory connection \factory ->
+      withText crs \name -> bracket (output (c_duckdb_v2_value_create_varchar factory name)) destroyValue \label ->
+        with label \param ->
+          bracket
+            (output (c_duckdb_v2_statement_execute connection parsed (ConstPtr nullPtr) (ConstPtr param) 1))
+            (destroy c_duckdb_v2_result_destroy)
+            \result ->
+              bracket (output (c_duckdb_v2_result_get_schema result)) (destroy c_duckdb_v2_schema_destroy) \schema -> alloca \nameSlot -> do
+                logical <- output (c_duckdb_v2_schema_get_field schema 0 nameSlot)
+                count <- output (c_duckdb_v2_logical_type_get_param_count logical)
+                when (count == 0) $ throwInvalidArgument (Text.pack "the type query did not preserve the GEOMETRY CRS")
+                output (c_duckdb_v2_logical_type_copy logical)
+  where
+    -- Little-endian WKB for GEOMETRYCOLLECTION EMPTY. The hex literal has type BLOB.
+    sql = Text.pack "SELECT system.main.ST_SetCRS(system.main.ST_GeomFromWKB(X'010700000000000000'), ?)"

@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -14,6 +15,7 @@ module Advanced (register) where
 
 import Control.Exception (throwIO)
 import Control.Monad (unless, when)
+import qualified Data.Geometry as G
 import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -28,12 +30,25 @@ import Database.DuckDB.Simple.Function (FunctionResult)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeId (LogicalTypeIdBigInt), LogicalTypeRep (..))
 import Database.DuckDB.Simple.Registration (Replacement (..), TypeDeclaration (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue)
+import Database.DuckDB.Simple.Variant (Variant (..))
 
 -- | Register an aggregate, a table function, a custom type, a replacement scan,
 -- a COPY format, and a multi-file reader.
 register :: Extension -> IO ()
 register extension = do
   registerSum extension
+  registerGeometryAggregates extension
+  registerCentroid extension
+  Extension.createFunction extension "haskell_variant_echo" (id :: Variant -> Variant)
+  Extension.createAggregate extension "haskell_variant_sum" $
+    Aggregate
+      { aggregateInitial = 0 :: Int64
+      , aggregateStep = \total (Only (Variant payload)) -> case payload of
+          FieldInt64 value -> addOrThrow "haskell_variant_sum" total value
+          _ -> throwIO (userError "haskell_variant_sum expects BIGINT payloads")
+      , aggregateCombine = addOrThrow "haskell_variant_sum"
+      , aggregateResult = pure
+      }
   registerArgumentTypes extension
   registerSquares extension
   Extension.registerCustomType extension "haskell_amount" (TypeExpression "BIGINT")
@@ -53,6 +68,45 @@ registerSum extension =
       , aggregateStep = \total (Only value) -> addOrThrow "haskell_sum" total value
       , aggregateCombine = addOrThrow "haskell_sum"
       , aggregateResult = pure
+      }
+
+-- | Register aggregates that add point X coordinates in GEOMETRY arguments.
+-- The list aggregate ignores NULL list elements.
+registerGeometryAggregates :: Extension -> IO ()
+registerGeometryAggregates extension = do
+  Extension.createAggregate extension "haskell_point_x_sum" $
+    Aggregate
+      { aggregateInitial = 0 :: Double
+      , aggregateStep = \total (Only geometry) -> pure (total + pointX geometry)
+      , aggregateCombine = \a b -> pure (a + b)
+      , aggregateResult = pure
+      }
+  Extension.createAggregate extension "haskell_points_x_sum" $
+    Aggregate
+      { aggregateInitial = 0 :: Double
+      , aggregateStep = \total (Only geometries) -> pure (total + sum (map (maybe 0 pointX) geometries))
+      , aggregateCombine = \a b -> pure (a + b)
+      , aggregateResult = pure
+      }
+  where
+    pointX :: G.Geometry -> Double
+    pointX (G.PointGeometry (G.PointXY (G.XY x _))) = x
+    pointX _ = 0
+
+-- | Register the centroid of coordinate pairs. Ignore pairs with NULL coordinates.
+-- Return NULL when no pair remains.
+registerCentroid :: Extension -> IO ()
+registerCentroid extension =
+  Extension.createAggregate extension "haskell_centroid" $
+    Aggregate
+      { aggregateInitial = (0 :: Double, 0 :: Double, 0 :: Int64)
+      , aggregateStep = \(!sx, !sy, !n) (x, y) -> pure (sx + x, sy + y, n + 1)
+      , aggregateCombine = \(ax, ay, an) (bx, by, bn) -> pure (ax + bx, ay + by, an + bn)
+      , aggregateResult = \(sx, sy, n) ->
+          pure $
+            if n == 0
+              then Nothing
+              else Just (G.PointGeometry (G.PointXY (G.XY (sx / fromIntegral n) (sy / fromIntegral n))))
       }
 
 -- | A BIGINT argument whose decoder reads its native metadata.
@@ -123,7 +177,8 @@ replaceMissing name = case name of
   _ -> pure Nothing
 
 -- | Register the COPY format @haskell_lines@ in both directions. A file has one
--- BIGINT value on each line. An empty line is NULL. One registration gives the two
+-- BIGINT value on each line. It can also write a VARIANT column of BIGINT
+-- values. An empty line is NULL. One registration gives the two
 -- directions, because DuckDB keeps only the first registration of a name.
 registerLines :: Extension -> IO ()
 registerLines extension = Extension.registerCopyFunction extension "haskell_lines" copyTo (readLines . Copy.copyFromPath)
@@ -131,7 +186,7 @@ registerLines extension = Extension.registerCopyFunction extension "haskell_line
     copyTo =
       Copy.CopyTo
         { Copy.copyToBind = \info ->
-            unless (Copy.copyBindColumnTypes info == [Copy.LogicalTypeIdBigInt]) $ throwIO (userError oneColumn)
+            unless (Copy.copyBindColumnTypes info `elem` [[Copy.LogicalTypeIdBigInt], [Copy.LogicalTypeIdVariant]]) $ throwIO (userError oneColumn)
         , Copy.copyToInit = \info -> writeFile (Copy.copyInitFilePath info) "" >> pure (Copy.copyInitFilePath info)
         , Copy.copyToSink = \info rows -> mapM line rows >>= appendFile (Copy.copySinkGlobalState info) . unlines
         , Copy.copyToFinalize = \_ -> pure ()
@@ -139,7 +194,7 @@ registerLines extension = Extension.registerCopyFunction extension "haskell_line
     line [Field{fieldValue = FieldInt64 value}] = pure (show value)
     line [Field{fieldValue = FieldNull}] = pure ""
     line _ = throwIO (userError oneColumn)
-    oneColumn = "haskell_lines writes exactly one BIGINT column"
+    oneColumn = "haskell_lines writes one BIGINT or VARIANT column with BIGINT or NULL values"
 
 -- | Register the table function @haskell_read_line_file(path)@. It reads one
 -- file in the format of @haskell_lines@. Then register the multi-file function

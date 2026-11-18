@@ -19,50 +19,43 @@ module Database.DuckDB.Simple.Typed.Aggregate (
   createAggregateOn,
 ) where
 
-import Control.Concurrent.MVar (MVar, modifyMVarMasked, newMVar)
-import Control.Exception (bracketOnError, evaluate, finally, mask_, onException, throwIO)
+import Control.Exception (evaluate, finally, mask_, onException, throwIO)
 import Control.Monad (forM_, unless, when)
 import Data.Array (Array, elems, listArray, (!))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.IntSet as IntSet
-import Data.Maybe (isJust)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
-import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions, targetCastFactory)
+import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions)
 import Database.DuckDB.Simple.Conversion (runConversion)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (FieldNull))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
-import Database.DuckDB.Simple.Function.Internal (FunctionResult (..), ScalarValue, prepareResultWriter)
+import Database.DuckDB.Simple.Function.Internal (FunctionResult, prepareAggregateResultWriter)
 import Database.DuckDB.Simple.Internal (Connection (..), ConnectionOptions (..), defaultAggregateStripes)
-import Database.DuckDB.Simple.Materialize (ReadFactory (..))
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..))
 import Database.DuckDB.Simple.TypeScope (withTypeScope)
 import Database.DuckDB.Simple.Typed (
+  ArgumentReader,
   TypedRow (..),
   argumentName,
-  checkArgumentType,
   conversionMessage,
-  prepareArgumentReader,
+  newArgumentReader,
+  positionalSignature,
   rowDeclarations,
  )
 import Database.DuckDB.Simple.V2.Registration (
   AggregateCallbacks (..),
   BindCallback,
-  FunctionParameter (..),
-  FunctionSignature (..),
   RegistrationTarget (..),
   aggregateCallbacks,
   configureFunctionSignature,
-  parameter,
   registerAggregateFunctionWithCleanup,
   withRegistrationFactory,
-  withTypeDeclaration,
  )
-import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, intPtrToPtr, nullPtr, ptrToIntPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (peek, peekElemOff, poke)
@@ -188,58 +181,6 @@ The destructor of the table reads all stripes (releaseStateTable).
 -- destroy. See Note [Aggregate state life cycle].
 type StateTable = Array Int (IORef IntSet.IntSet)
 
-{- Note [Aggregate metadata factory]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-An extension aggregate's update callback has no context or instance factory.
-Its bind callback has a context, but that context expires when bind returns.
-Bind argument types can also differ from update vector types because DuckDB
-casts the arguments after bind.
-
-A metadata read needs a factory to test aliases with a canonical type name.
-create_type_with_alias works through any factory and does not use a catalog.
-The first metadata read creates an empty helper instance with threads=1 and
-async_threads=0. The threads setting limits the execution pool to one thread.
-The async_threads setting disables the separate asynchronous worker pool.
-One MVar serializes creation. The registration owns its environment and
-instance, and all call sites reuse its factory. A decoder that reads no
-metadata creates no helper. A connection registration uses its existing
-instance factory instead.
-
-registerAggregateFunctionWithCleanup attaches the helper's cleanup to the
-native callback owner. DuckDB keeps that owner in the aggregate function's
-shared extra function info (CV2AggregateFunctionInfo). Bound and executing
-functions keep the function alive, including after catalog replacement or
-removal. The cleanup runs after the last owner releases the callbacks. It
-detaches the cached helper before it destroys the instance and environment.
-The helper holds no managed connection or instance from the caller.
-
-The metadata conversion destroys each temporary alias before it returns.
-Thus no temporary alias outlives its source type or the caller's database.
--}
-
--- | Acquire the factory of the helper on the first metadata demand.
--- A failed acquisition leaves the cache empty. See Note [Aggregate metadata factory].
-registrationMetadataFactory :: MVar (Maybe (DuckDBV2FactoryHandle, IO ())) -> IO DuckDBV2FactoryHandle
-registrationMetadataFactory cache = modifyMVarMasked cache \case
-  Just owned@(factory, _) -> pure (Just owned, factory)
-  Nothing ->
-    bracketOnError (output c_duckdb_v2_environment_create) (destroy c_duckdb_v2_environment_destroy) \environment ->
-      bracketOnError
-        ( withTextArray ["threads", "async_threads"] \names -> withTextArray ["1", "0"] \values ->
-            output (c_duckdb_v2_instance_create_with_options environment (ConstPtr names) (ConstPtr values) 2)
-        )
-        (destroy c_duckdb_v2_instance_destroy)
-        \instanceHandle -> do
-          factory <- output (c_duckdb_v2_instance_get_factory instanceHandle)
-          let release = destroy c_duckdb_v2_instance_destroy instanceHandle `finally` destroy c_duckdb_v2_environment_destroy environment
-          pure (Just (factory, release), factory)
-
--- | Release the metadata helper after the last callback owner is released.
-closeMetadataFactory :: MVar (Maybe (DuckDBV2FactoryHandle, IO ())) -> IO ()
-closeMetadataFactory cache = mask_ do
-  owned <- modifyMVarMasked cache (\owned -> pure (Nothing, owned))
-  maybe (pure ()) snd owned
-
 -- | The stripe that holds a key. In GHC 9.14 the key of a stable pointer is
 -- one more than its index in the stable pointer table of the runtime
 -- (@rts\/include\/rts\/StablePtr.h@). Thus consecutive keys go to different
@@ -250,20 +191,9 @@ stateStripe :: StateTable -> Int -> IORef IntSet.IntSet
 stateStripe table key = table ! (key `mod` length table)
 
 -- | Register a typed aggregate function on a connection or a loading extension.
--- An argument type or a result type with no declaration, or an argument type
--- that is or contains VARIANT, raises an error at registration. On a loading
--- extension, an argument type that is or contains GEOMETRY also raises an
--- error at registration, because the update callback has no factory to read
--- it. See Note [Type declarations] in
--- "Database.DuckDB.Simple.ToField". A result type that is not raw also raises an
--- error at registration, because the finalize callback has no factory. See
--- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal". The
--- check of the name, the declarations of the arguments and the result, and the
--- check of a raw result come before the read of the state of the target, so
--- their input errors win over a closed connection. The VARIANT and GEOMETRY
--- checks ('checkArgumentType') need the resolved type of the argument, so they
--- come after the read of the state. Thus a closed connection wins over the
--- VARIANT check. The GEOMETRY check applies only to a loading extension.
+-- Check the name and declarations before accessing the registration target.
+-- See Note [Type declarations] in "Database.DuckDB.Simple.ToField" and
+-- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal".
 createAggregateOn
   :: forall state args result
    . (FromRow args, TypedRow args, FunctionResult result) => RegistrationTarget -> Text -> Aggregate state args result -> IO ()
@@ -272,62 +202,32 @@ createAggregateOn target name aggregate = do
     throwInvalidArgument "aggregate function name must be nonempty and must not contain NUL"
   argumentTypes <- rowDeclarations name ["argument " <> argumentName index | index <- [0 ..]] columnTypes
   [resultType] <- rowDeclarations name ["result"] [duckdbTypeDeclaration (Proxy @result)]
-  toRaw <- case rawResult of
-    Just raw -> pure raw
-    Nothing ->
-      throwInvalidArgument
-        ( name
-            <> ": result: the result type of an aggregate function must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT,"
-            <> " FLOAT, DOUBLE, or VARCHAR (Bool, Int8 to Int64, Int, Word8 to Word64, Word, Float, Double, Text, String,"
-            <> " or Maybe of one of them), because the finalize callback has no factory."
-            <> " For a newtype over one of these types, derive FunctionResult with deriving newtype."
-        )
-  -- The input checks that do not need a resolved type come before the read of
-  -- the state of the target. The update callback has no context. It reads a
-  -- GEOMETRY argument with the factory of the instance, which only a
-  -- connection target gives.
-  casts <- targetCastFactory target
+  (readArgument, acquireFactory, closeReader) <- newArgumentReader target
   -- See Note [State table stripes]. Evaluate the count before the registration.
   -- An unevaluated count keeps the target, and thus the connection, reachable
   -- from the callbacks.
   stripes <- evaluate case target of
     ConnectionTarget connection -> connectionAggregateStripes (connectionOptions connection)
     ExtensionTarget{} -> defaultAggregateStripes
-  (metadataFactory, closeMetadata) <- case casts of
-    Just factory -> pure (pure factory, pure ())
-    Nothing -> do
-      cache <- newMVar Nothing
-      pure (registrationMetadataFactory cache, closeMetadataFactory cache)
-  let parameters =
-        [ (parameter (argumentName index) argumentType){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
-        | (index, argumentType) <- zip [0 ..] argumentTypes
-        ]
+  let signature = positionalSignature argumentTypes (Just resultType)
       callbacks =
         ( aggregateCallbacks
             setStateSize
             (initializeStates aggregate)
-            (updateStates metadataFactory casts name aggregate (length columnTypes))
+            (updateStates readArgument name aggregate (length columnTypes))
             (combineStates aggregate)
-            (finalizeStates aggregate toRaw)
+            (finalizeStates aggregate acquireFactory)
         )
           { aggregateBindCallback = Just (bindStateTable stripes)
           , aggregateDestroyCallback = Just destroyStates
           }
-  withRegistrationFactory target \factory -> do
-    -- The argument reader does not read VARIANT, and it reads GEOMETRY only with
-    -- a factory. Thus reject such a type before the registration.
-    forM_ (zip [0 ..] argumentTypes) \(index, argumentType) ->
-      withTypeDeclaration factory argumentType (checkArgumentType (isJust casts) name ("argument " <> argumentName index))
-    registerAggregateFunctionWithCleanup target closeMetadata (configure parameters resultType factory) callbacks
+  withRegistrationFactory target \factory ->
+    registerAggregateFunctionWithCleanup target closeReader (configure signature factory) callbacks
   where
     columnTypes = rowColumnDeclarations (Proxy @args)
-    configure parameters resultType factory function = do
+    configure signature factory function = do
       withIdentifier name (checked . c_duckdb_v2_aggregate_function_set_name function)
-      signature <- output (c_duckdb_v2_aggregate_function_get_signature function)
-      configureFunctionSignature
-        factory
-        (FunctionSignature parameters (Just resultType))
-        signature
+      output (c_duckdb_v2_aggregate_function_get_signature function) >>= configureFunctionSignature factory signature
       checked
         (c_duckdb_v2_aggregate_function_set_property function DuckDBV2FunctionPropertyNullHandling DuckDBV2FunctionPropertyNullHandlingSpecial)
 
@@ -374,25 +274,24 @@ initializeStates Aggregate{aggregateInitial} info = do
 
 -- | Add each row to its state. A row with NULL in an argument does not change
 -- its state. A row that does not convert raises an error that names the
--- aggregate function. A GEOMETRY argument reads with the factory of
--- 'targetCastFactory'. See Note [Aggregate state life cycle].
+-- aggregate function. A GEOMETRY argument reads with the instance factory.
+-- See Note [Aggregate state life cycle].
 updateStates
   :: (FromRow args)
-  => IO DuckDBV2FactoryHandle
-  -> Maybe DuckDBV2FactoryHandle
+  => ArgumentReader
   -> Text
   -> Aggregate state args result
   -> Int
   -> DuckDBV2AggregateFunctionUpdateInfoHandle
   -> IO ()
-updateStates metadataFactory casts name Aggregate{aggregateStep} columns info = withTypeScope \scope -> do
+updateStates readArgument name Aggregate{aggregateStep} columns info = withTypeScope \scope -> do
   count <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_update_get_row_count info)
   states <- output (c_duckdb_v2_aggregate_function_update_get_states info)
   readers <-
     mapM
       ( \index ->
           output (c_duckdb_v2_aggregate_function_update_get_arg info (fromIntegral index))
-            >>= prepareArgumentReader scope metadataFactory (InstanceFactory <$> casts) index
+            >>= readArgument scope index
       )
       [0 .. columns - 1]
   forM_ [0 .. count - 1] \row -> do
@@ -418,21 +317,22 @@ combineStates Aggregate{aggregateCombine} info = do
     current <- readIORef target
     aggregateCombine current source >>= evaluate >>= writeIORef target
 
--- | Write the result of each state at its row of the result vector, as a raw
--- value. DuckDB does not destroy the states of a finalize call that fails, so
--- release them here. See Note [Aggregate state life cycle] and
--- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal".
-finalizeStates :: Aggregate state args result -> (result -> ScalarValue) -> DuckDBV2AggregateFunctionFinalizeInfoHandle -> IO ()
-finalizeStates Aggregate{aggregateResult} toRaw info = do
+-- | Write each state at its offset in the result vector. DuckDB does not
+-- destroy the states when finalize fails. See Note [Aggregate state life cycle].
+finalizeStates
+  :: (FunctionResult result) => Aggregate state args result -> IO DuckDBV2FactoryHandle -> DuckDBV2AggregateFunctionFinalizeInfoHandle -> IO ()
+finalizeStates Aggregate{aggregateResult} acquireFactory info = do
   table <- readStateTable (c_duckdb_v2_aggregate_function_finalize_get_bind_data info)
-  count <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_finalize_get_state_count info)
+  count <- output (c_duckdb_v2_aggregate_function_finalize_get_state_count info)
   states <- output (c_duckdb_v2_aggregate_function_finalize_get_states info)
-  let finalize = do
-        offset <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_finalize_get_result_offset info)
-        write <- output (c_duckdb_v2_aggregate_function_finalize_get_result info) >>= prepareResultWriter Nothing
-        forM_ [0 .. count - 1] \index ->
-          peekElemOff states index >>= stateCell >>= readIORef >>= aggregateResult >>= write (offset + index) . toRaw
-  finalize `onException` forM_ [0 .. count - 1] \index -> peekElemOff states index >>= releaseState table
+  let rows = [0 .. fromIntegral count - 1]
+      finalize = when (count /= 0) do
+        offset <- output (c_duckdb_v2_aggregate_function_finalize_get_result_offset info)
+        vector <- output (c_duckdb_v2_aggregate_function_finalize_get_result info)
+        write <- prepareAggregateResultWriter acquireFactory vector (offset + count)
+        forM_ rows \index ->
+          peekElemOff states index >>= stateCell >>= readIORef >>= aggregateResult >>= write (fromIntegral offset + index)
+  finalize `onException` forM_ rows \index -> peekElemOff states index >>= releaseState table
 
 -- | Release each state. See Note [Aggregate state life cycle].
 destroyStates :: DuckDBV2AggregateFunctionDestroyInfoHandle -> IO ()

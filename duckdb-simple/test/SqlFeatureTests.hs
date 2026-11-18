@@ -13,12 +13,13 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time.LocalTime (TimeOfDay (..))
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (FieldValue (..), TimeWithZone (..))
+import Database.DuckDB.Simple.FromField (BitString (..), FieldValue (..), TimeWithZone (..))
 import Database.DuckDB.Simple.Variant (Variant (..), variantObject)
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
+import TestUtils (assertInputError)
 
 -- | Exercise the public query, binding, cursor, and fold operations.
 tests :: TestTree
@@ -75,6 +76,19 @@ tests =
             ErrorInputInvalid
             "Invalid Input Error: Values were not provided for the following parameters: session_value"
             (query_ conn "SELECT $session_value" :: IO [Only Int64])
+    , testCase "named replacement preserves old values on failure and replaces session overrides on success" $
+        withConnection ":memory:" \conn -> do
+          void (execute_ conn "SET VARIABLE a = 80; SET VARIABLE b = 90; SET VARIABLE c = 91")
+          withStatement conn "SELECT $a::BIGINT, $b::BIGINT, $c::BIGINT" \stmt -> do
+            let rejected = bindNamed stmt ["a" := (4 :: Int64), "b" := BitString 8 "x", "c" := (6 :: Int64)]
+            assertInputError rejected
+            nextRow stmt >>= (@?= Just (80 :: Int64, 90 :: Int64, 91 :: Int64))
+            bindNamed stmt ["a" := (1 :: Int64), "b" := (2 :: Int64), "c" := (3 :: Int64)]
+            nextRow stmt >>= (@?= Just (1 :: Int64, 2 :: Int64, 3 :: Int64))
+            assertInputError rejected
+            nextRow stmt >>= (@?= Just (1 :: Int64, 2 :: Int64, 3 :: Int64))
+            bindNamed stmt ["a" := (7 :: Int64)]
+            nextRow stmt >>= (@?= Just (7 :: Int64, 90 :: Int64, 91 :: Int64))
     , testCase "FETCH FIRST and OFFSET work with bound counts" $
         withConnection ":memory:" \conn ->
           query conn "SELECT i FROM range(10) t(i) ORDER BY i OFFSET ? ROWS FETCH FIRST ? ROWS ONLY" (3 :: Int64, 2 :: Int64)

@@ -101,10 +101,10 @@ valid. The direct `query_` and `execute_` paths support statements that expand
 during parsing, including dynamic PIVOT. Prepared dynamic PIVOT supports
 repeated execution with a changing schema. It does not support parameters or a
 cacheable plan. Read its schema after execution starts. VARIANT decoding uses
-SQL metadata and native casts on a helper connection. A configured custom
-GEOMETRY CRS name uses one SQL query when the connection opens. GEOMETRY results
-use a native cast to BLOB. Native GEOMETRY collections require the same Z/M
-dimensions on every member, including empty members. The standalone WKB codec
+SQL metadata and native casts on a helper connection. An unknown custom
+GEOMETRY CRS label uses a helper SQL query when a parameter needs its type.
+GEOMETRY results use a native cast to BLOB. Native GEOMETRY collections require
+the same Z/M dimensions on every member, including empty members. The standalone WKB codec
 retains mixed layouts.
 
 ## Getting started
@@ -239,6 +239,11 @@ cases:
 - You supply a name that the statement does not declare.
 - You supply one parameter two times, for example as `$amount` and `$AMOUNT`.
 - You bind named parameters to a statement with only positional placeholders.
+
+`bind` and `bindNamed` reset the statement cursor before validation. If
+validation or value conversion fails, the previous set of bindings remains.
+A successful `bindNamed` replaces the explicit bindings. Current session
+variables can supply omitted parameters when the statement executes.
 
 ### Decoding rows
 
@@ -401,7 +406,7 @@ Each row gives a Haskell type and these facts:
 | `Maybe a` | as `a`, or NULL | as `a` | NULL, or as `a` | as `a` |
 | `G.Geometry` | GEOMETRY without a CRS | | GEOMETRY | argument, result |
 | `RawGeometry` | GEOMETRY with its CRS | none (14) | GEOMETRY | none |
-| `Variant` | VARIANT | | VARIANT, and the values that a VARIANT can hold (13) | result |
+| `Variant` | VARIANT | | VARIANT, and the values that a VARIANT can hold (13) | argument, result |
 | `FieldValue` | the type of its constructor (11) | none | each type | none |
 | `Null` | `"NULL"` (12) | | NULL | argument, result (12) |
 
@@ -568,25 +573,23 @@ type applies. A value in a LIST, ARRAY, MAP, STRUCT, or UNION reads with the
 same rules, and so does a field of a `ViaDuckDB` record. A SQL type that is not
 in "Reads" raises the error of an incompatible column. See [Errors](#errors).
 
-A function registered with `createFunction` declares the "Declared" type, or
+A function registered with `createFunction` or `createAggregate` declares the "Declared" type, or
 the "Binds as" type if "Declared" is empty, for each argument and its result.
-An argument type needs `FromField` and a declaration. The registration raises
-an error for an argument type that is or contains VARIANT, and for a type with
-no declaration. A result
+An argument type needs `FromField` and a declaration. A result
 type needs `ToDuckValue` and a declaration. Some result types write each value
 directly into the data of the result vector: `Bool` (BOOLEAN), an integer of 8
 to 64 bits (TINYINT to BIGINT, UTINYINT to UBIGINT), `Float` (FLOAT), `Double`
 (DOUBLE), `Text` and `String` (VARCHAR), `Maybe` of one of them, and a newtype
 that derives `FunctionResult` from one of them
 (`deriving newtype (FunctionResult)`). Each other result type, for example a
-record or a list, requires a native value for each row. DuckDB casts such a value
-to the declared type, as a SQL `CAST` does: it rounds a value to the scale of a
-DECIMAL type text, and it raises an error for a value that does not fit. A
-result of `createAggregate` must have one of the types that write directly,
-because DuckDB gives the finalize callback no factory to make a value of another
-type, and in an ordered window its result vector has the size 0. For another
-result type, `createAggregate` raises an error at registration. See
-[User-Defined Functions](#user-defined-functions).
+record or a list, requires a native value for each row. DuckDB uses its default
+cast to convert that value to the declared type. For example, it rounds a
+DECIMAL to the declared scale and raises an error if the value does not fit.
+
+An aggregate result encoder receives an instance factory. This factory resolves
+built-in types. DuckDB resolves the result declaration on the registration
+host, so a custom encoder can return the underlying value of a catalog type.
+See [User-Defined Functions](#user-defined-functions).
 
 ## Errors
 
@@ -605,10 +608,9 @@ Inside a callback, the statement that runs the callback fails with
 the type `ErrorInputInvalid` and the text
 `Invalid Input Error: duckdb-simple: ...`, because a callback does not pass the
 type `ErrorRuntimeInternal`; a cast gives `ErrorTypeMismatch` (see the errors of
-a callback below). The following errors raise an `SQLError` with no type:
-use of a closed environment, instance, connection, statement, or type cache;
-a DuckDB library of another version; or a callback state read with the wrong
-type. These errors are not internal checks.
+a callback below). Using a closed environment, instance, connection, or
+statement raises an `SQLError` with no type. A DuckDB version mismatch and
+reading callback state with the wrong type also raise untyped `SQLError`s.
 
 `SQLError` has four fields:
 
@@ -638,7 +640,7 @@ not in the dictionary of a declared ENUM type. Each other input check gives the
 type `ErrorInputInvalid`. This includes a value of the wrong shape or type, also
 where DuckDB gives another type for the same input, for example a UNION tag that
 is not a member, a leaf built from another type, a STRUCT field that does not
-match its type, or an unknown CRS. Examples are a VARIANT object with two equal
+match its type, or a blank GEOMETRY CRS label. Examples are a VARIANT object with two equal
 keys, a registration with an argument type that the library cannot read, and a
 DECIMAL width above 38.
 
@@ -1292,14 +1294,16 @@ value and cast it in SQL, as in `?::VARIANT`.
 A `Variant` result reads only a value that a VARIANT can hold: note 13 of
 [Types](#types) gives the shapes, and the refusal of a JSON type.
 
-The library uses a separate helper connection for VARIANT decoder metadata.
+For query results the library uses a separate helper connection for VARIANT decoder metadata.
 It caches one prepared VARIANT metadata statement and the types for VARIANT
 casts. It batches VARIANT metadata queries. It constructs VARIANT types
 directly through the native factory. This preserves an explicit stream on the
 caller's connection. The helper connection has the settings of the database,
 not the caller's session settings. Metadata preparation needs an expression
 depth of 11. A GLOBAL `max_expression_depth` below 11 fails preparation with a
-Binder Error, including preparation for COPY TO. A prepared plan can remain
+Binder Error, including preparation for a connection's COPY TO. Extension COPY TO
+and typed callback arguments use an independent instance with default expression
+depth. A prepared plan on a query helper can remain
 usable after the limit is lowered. The query for unusual object keys still
 binds on each execution and can fail at a lower limit.
 
@@ -1350,25 +1354,14 @@ import Database.DuckDB.Simple.Geometry
 rows <- query conn "SELECT ?" (Only raw) :: IO [Only RawGeometry]
 ```
 
-You can also import the bytes with explicit SQL:
-
-```haskell
-rows <- (case rawGeometryCRS raw of
-    Nothing -> query conn
-        "SELECT system.main.ST_GeomFromWKB(?)"
-        (Only (rawGeometryWKB raw))
-    Just crs -> query conn
-        "SELECT system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?)"
-        (rawGeometryWKB raw, crs)
-    ) :: IO [Only RawGeometry]
-```
-
-Use `Nothing` for no CRS and omit `ST_SetCRS` in that case. Passing SQL NULL
-to `ST_SetCRS` returns a NULL geometry. CRS text can contain `OGC:CRS84`,
-a custom name, or a full WKT2/PROJJSON definition. DuckDB can reduce a known
-CRS definition to its registered identifier. It can also normalize WKB byte
-order. The qualified function names select DuckDB's built-ins even if a user
-macro has the same name.
+For explicit SQL import, use `system.main.ST_GeomFromWKB(?)` with the WKB
+bytes. To attach a CRS, use
+`system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?)` with the bytes and CRS
+text. Omit `ST_SetCRS` for no CRS: a NULL CRS argument returns NULL geometry.
+CRS text can be a recognized name, a custom label, or WKT2/PROJJSON text.
+DuckDB can normalize WKB byte order and reduce a known CRS definition to its
+registered identifier. The qualified names select the built-ins even if a
+user macro has the same name.
 
 `fromRawGeometry` decodes the shape and drops CRS metadata. `toRawGeometry`
 encodes a shape with no CRS. These helpers follow the geometry-simple contracts.
@@ -1395,22 +1388,21 @@ a field of type `GEOMETRY`. A `Variant` parameter binds a `FieldGeometry`
 without a CRS as a `GEOMETRY` payload. A VARIANT does not keep the CRS of a
 GEOMETRY, so a `FieldGeometry` with a CRS in a `Variant` raises `SQLError`.
 
-`LogicalTypeGeometry` describes CRS metadata. Composite parameters retain CRS
-metadata for typed NULLs, empty collections, and inactive UNION members.
-Set `connectionGeometryCRS` in `ConnectionOptions` to preserve arbitrary custom
-CRS names in these parameters. The list defaults to `OGC:CRS84`. When a
-connection opens, DuckDB constructs a recognized name, such as `OGC:CRS84`, and
-a complete definition directly. For each other name, the library reads the
-type through SQL on the new connection. The connection caches each type, and a
-bind copies it. A name that DuckDB drops, for example a blank name, fails the
-open. For a custom CRS in a typed registration, see the Haddock of
-`connectionGeometryCRS`.
+`LogicalTypeGeometry` describes CRS metadata. Composite parameters retain it.
+Recognized names, such as `OGC:CRS84`, and full WKT2/PROJJSON definitions use
+direct V2 type construction. For an unknown custom label, parameter binding
+reads a SQL-derived type with `ST_SetCRS` on a helper connection. This happens
+on demand, including for nested types, typed NULLs, empty collections, and
+inactive UNION members. Binding the same custom label again repeats the lookup.
+A blank label or a label with NUL raises `SQLError` at bind time.
 
-CRS definitions outside the configured list use direct V2 type construction.
-This requires a recognized identifier or a complete WKT2/PROJJSON definition.
-An unconfigured custom name raises an error. The binding rejects construction
-that silently drops CRS metadata under `ignore_unknown_crs`. Direct low-level
-`logicalTypeFromRep` calls use the same native construction rules.
+Query results retain a custom CRS label. Typed registrations and direct
+low-level `logicalTypeFromRep` calls use native type construction. They require
+a recognized name or a full definition. A custom label in a declared argument,
+result, cast source or target, pragma parameter, or table-function column fails
+at registration. DuckDB casts a plain `GEOMETRY` argument to its declared type,
+which removes the CRS. Direct type construction raises an error if DuckDB
+drops the CRS under `ignore_unknown_crs`.
 
 The CRS in a cast must be a constant. DuckDB rejects a parameter as a type
 modifier, so `?::GEOMETRY(?)` is not valid. To use a CRS that is known only at
@@ -1461,15 +1453,9 @@ run an `IO` action.
 An argument type needs `FromField` and `DuckDBColumnType` instances. Its SQL
 type is the `duckdbTypeDeclaration` of the type, as for a column of a typed row.
 A newtype with its own column type name (`duckdbColumnTypeFor`), for example
-`DECIMAL(18,3)`, gives that text. An argument type that is or contains VARIANT
-raises an error at registration, because the argument reader does not read
-VARIANT. Scalar and aggregate functions registered on a connection can read a
-GEOMETRY argument, including inside a list or a STRUCT. They read it as a
-GEOMETRY result, so a registered cast does not change it. A scalar function
-registered by an extension reads it in the same way. An aggregate function
-registered by an extension rejects a GEOMETRY argument at registration, because
-its update callback has no factory to read the value. See
-[Typed registration](#typed-registration).
+`DECIMAL(18,3)`, gives that text. Arguments use the same conversion as query
+results, including nested values. Registered casts do not change how the
+library reads GEOMETRY arguments. See [Typed registration](#typed-registration).
 
 The SQL type of the result is the `duckdbTypeDeclaration` of the result type:
 an `Int16` result is SMALLINT, and a `Float` result is FLOAT. DuckDB computes
@@ -1624,9 +1610,13 @@ value that a query gives or that a callback reads. Of the casts that the library
 performs itself, only `setConfigValue` and `setConfigOption` use registered
 casts. DuckDB casts the value to the type of the option, as SQL `SET` does.
 
-`createAggregate` registers an aggregate function as a fold. Its result type
-must be one of the types that write directly into the result vector:
-[Types](#types) gives them and the reason.
+`createAggregate` registers an aggregate function as a fold. Its result needs
+`ToDuckValue` and a static `duckdbTypeDeclaration`, as a scalar function result
+does. Lists, maps, and records or sum types through `ViaDuckDB` can be results.
+A `Maybe a` result declares the type of `a`, and `Nothing` gives NULL. Types
+with no static declaration, such as `StructValue`, are errors at registration.
+See [Types](#types) for the encoding rules. Aggregates support `GROUP BY`,
+`DISTINCT`, `FILTER`, `ORDER BY`, and window functions.
 
 ```haskell
 aggregateExample :: Connection -> IO [Only Int64]
@@ -1646,11 +1636,14 @@ DuckDB threads wait for each other only when they change the same stripe.
 for each aggregate that `createAggregate` registers through the connection.
 The default is `defaultAggregateStripes`, 64. No result depends on the number.
 
-A typed aggregate in a loadable extension creates a helper instance on its
-first metadata read. The registration shares that instance across queries
-until the last native callback owner releases it. The helper uses `threads=1`
-and `async_threads=0`, with no background worker pool. A connection aggregate
-uses its existing instance.
+Scalar and aggregate registrations create a private helper instance when an
+argument needs VARIANT decoding. In a loadable extension, this helper also
+supplies the factory for type metadata, GEOMETRY reads, and aggregate result
+encoders. The registration shares the instance
+across queries until the last native callback owner releases it. Each VARIANT
+vector uses a separate connection and decoder state. The helper uses
+`threads=1` and `async_threads=0`, with no background worker pool. A registration
+on a connection uses its existing instance for type metadata and GEOMETRY reads.
 
 `createTableFunction` registers a table function that gives its rows as a
 list. DuckDB reads only the columns that the query uses, also in `WHERE` and
@@ -1671,19 +1664,13 @@ tableExample conn = do
 The type of a column, a parameter, or an aggregate argument comes from
 `duckdbTypeDeclaration`: notes 8, 9, and 10 of [Types](#types) give the rule
 for a `SizedArray`, records, sum types, and `StructValue`, `TupleValue`, and
-`UnionValue`. An aggregate argument has the VARIANT and GEOMETRY rules of
-[User-Defined Functions](#user-defined-functions).
+`UnionValue`. Arguments use the same conversion as query results.
 
-Each typed registration rejects an argument type that its argument reader cannot
-read, with an `SQLError` of the type `ErrorInputInvalid` at registration. A
-callback has no connection, so no argument reader reads VARIANT. Thus a type
-that is or contains VARIANT cannot be an argument of `createFunction` or
-`createAggregate`, a parameter of `createTableFunction` or
-`registerPragmaFunction`, or the type of a custom option with an update
-function. A later release may read a VARIANT argument. The check sees only the
-declared type: a pragma parameter of the type ANY can get a VARIANT value, and
-that call fails. A custom option without an update function can have such a
-type, and `getConfigValue` reads its value.
+The decoder uses SQL to inspect VARIANT values. For callback arguments it
+copies the rows into a private DuckDB instance. The helper has no access to
+the host's catalog, settings, or registered casts. A concrete SQL argument type
+avoids this work when all rows have a known type. A decoding error fails the
+calling statement under the usual callback error rules.
 
 `registerReplacementScan` gives the parts of an unknown table name to the
 function. The function can give a SELECT statement that DuckDB reads instead.
@@ -1746,10 +1733,9 @@ filter pushdown.
 
 `Database.DuckDB.Simple.Extension` registers the typed functions of this package
 from a loadable DuckDB extension. Build the extension with the `extension` flag
-of `duckdb-ffi` and of `duckdb-simple`. The Haddock of the module explains how
-to write, build, package, and load an extension. The directory `dev/extensions/`
-of the [repository](https://github.com/Tritlo/duckdb-haskell) has a complete
-example. CI builds and tests it.
+of `duckdb-ffi` and of `duckdb-simple`. The module's Haddock describes the
+entry point, typed registrations, and resource lifetimes. See
+`dev/extensions/README.md` in this repo. CI builds and tests the example.
 
 ## Tests
 

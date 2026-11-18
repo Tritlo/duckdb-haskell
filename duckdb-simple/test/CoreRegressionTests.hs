@@ -8,7 +8,7 @@
 module CoreRegressionTests (coreRegressionTests) where
 
 import Control.Concurrent (forkFinally, killThread, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
-import Control.Exception (IOException, SomeException, bracket, finally, throwIO, try)
+import Control.Exception (AsyncException (ThreadKilled), IOException, SomeException, bracket, finally, throw, throwIO, try)
 import Control.Monad (forM_, forever, replicateM, replicateM_, void, when)
 import Data.Either (partitionEithers)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
@@ -21,7 +21,7 @@ import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Catalog as Catalog
 import qualified Database.DuckDB.Simple.Config as Config
 import qualified Database.DuckDB.Simple.Copy as Copy
-import Database.DuckDB.Simple.FromField (FieldValue)
+import Database.DuckDB.Simple.FromField (BitString (..), FieldValue)
 import Database.DuckDB.Simple.Internal (
   DuckDBV2ResultHandle (..),
   Statement (statementStream),
@@ -134,6 +134,21 @@ coreRegressionTests =
             nextRow stmt >>= (@?= (Nothing :: Maybe (Only Int64)))
             bind stmt [toField (2 :: Int64)]
             nextRow stmt >>= (@?= Just (Only (2 :: Int64)))
+    , testCase "failed replacement retains complete bindings and resets the cursor" $
+        withConnection ":memory:" $ \conn ->
+          withStatement conn "SELECT ?::BIGINT, ?::BIGINT, ?::BIGINT FROM range(2)" $ \stmt -> do
+            let original = (1, 2, 3) :: (Int64, Int64, Int64)
+            bind stmt [toField (1 :: Int64), toField (2 :: Int64), toField (3 :: Int64)]
+            nextRow stmt >>= (@?= Just original)
+            assertInputError (bind stmt [toField (4 :: Int64), toField (BitString 8 "x"), toField (6 :: Int64)])
+            nextRow stmt >>= (@?= Just original)
+            interrupted <- try (bind stmt [toField (7 :: Int64), throw ThreadKilled, toField (9 :: Int64)]) :: IO (Either AsyncException ())
+            interrupted @?= Left ThreadKilled
+            nextRow stmt >>= (@?= Just original)
+            nextRow stmt >>= (@?= Just original)
+            nextRow stmt >>= (@?= (Nothing :: Maybe (Int64, Int64, Int64)))
+            bind stmt [toField (10 :: Int64), toField (11 :: Int64), toField (12 :: Int64)]
+            nextRow stmt >>= (@?= Just (10 :: Int64, 11 :: Int64, 12 :: Int64))
     , testCase "clear bindings invalidates an active cursor" $
         withConnection ":memory:" $ \conn ->
           withStatement conn "SELECT ?::BIGINT FROM range(3)" $ \stmt -> do
@@ -226,6 +241,39 @@ coreRegressionTests =
           (queryNamed conn "SELECT $3::BIGINT, $1::BIGINT, $3::BIGINT" ["1" := (11 :: Int64), "3" := (33 :: Int64)] :: IO [(Int64, Int64, Int64)])
             >>= (@?= [(33, 11, 33)])
           (query conn "SELECT ?::BIGINT, ?::BIGINT" ((1 :: Int64), (2 :: Int64)) :: IO [(Int64, Int64)]) >>= (@?= [(1, 2)])
+          (query conn "SELECT $02::BIGINT, $01::BIGINT" ((11 :: Int64), (22 :: Int64)) :: IO [(Int64, Int64)]) >>= (@?= [(22, 11)])
+    , testCase "a quoted parameter can start with a binding prefix" $
+        withConnection ":memory:" $ \conn -> do
+          let sql = "SELECT $foo::BIGINT, $\"$foo\"::BIGINT, $\":foo\"::BIGINT, $\"@foo\"::BIGINT"
+              names = ["$FOO", "$$foo", "$:foo", "$@foo"]
+          withStatement conn sql $ \stmt -> do
+            mapM (namedParameterIndex stmt) names >>= (@?= map Just [1 .. 4])
+            bindNamed stmt [name := value | (name, value) <- zip names [1 .. 4 :: Int64]]
+            nextRow stmt >>= (@?= Just (1 :: Int64, 2 :: Int64, 3 :: Int64, 4 :: Int64))
+          withStatement conn "SELECT $\"$1\"::BIGINT" $ \stmt -> do
+            outcome <- try (bind stmt [toField (5 :: Int64)])
+            case outcome of
+              Left (_ :: FormatError) -> pure ()
+              Right () -> assertFailure "a literal dollar sign is part of the name"
+            bindNamed stmt ["$$1" := (5 :: Int64)]
+            nextRow stmt >>= (@?= Just (Only (5 :: Int64)))
+    , testCase "quoted numeric names remain named parameters" $
+        withConnection ":memory:" $ \conn ->
+          forM_
+            [ ("SELECT $foo::BIGINT, $\"2\"::BIGINT", "foo")
+            , ("SELECT $\"01\"::BIGINT, $\"2\"::BIGINT", "01")
+            , ("SELECT $`0`::BIGINT, $`2`::BIGINT", "0")
+            ]
+            $ \(sql, first) -> do
+              (queryNamed conn sql [first := (11 :: Int64), "2" := (22 :: Int64)] :: IO [(Int64, Int64)]) >>= (@?= [(11, 22)])
+              Internal.withParsedStatements conn sql $ \parsed -> case parsed of
+                [raw] -> bracket (Internal.createStatementFromParsed conn "SELECT ?, ?" raw) closeStatement $ \stmt -> do
+                  namedParameterIndex stmt first >>= (@?= Just 1)
+                  outcome <- try (bind stmt [toField (11 :: Int64), toField (22 :: Int64)])
+                  case outcome of
+                    Left (_ :: FormatError) -> pure ()
+                    Right () -> assertFailure "expected positional binding rejection for quoted names"
+                _ -> assertFailure "expected one parsed statement"
     , testCase "statements bind several thousand parameters by position and by name" $
         withConnection ":memory:" $ \conn -> do
           let count = 3000 :: Int
@@ -240,7 +288,7 @@ coreRegressionTests =
               :: IO [Only Int64]
             )
             >>= (@?= [Only (sum values)])
-          -- The last parameter decides whether the names are the positions 1 to n.
+          -- Dense numbered parameters bind by position despite their SQL order.
           (query conn "SELECT $2::BIGINT, $1::BIGINT, $3::BIGINT" (1 :: Int64, 2 :: Int64, 3 :: Int64) :: IO [(Int64, Int64, Int64)])
             >>= (@?= [(2, 1, 3)])
           (queryNamed conn "SELECT $1::BIGINT, $3::BIGINT" ["1" := (11 :: Int64), "3" := (33 :: Int64)] :: IO [(Int64, Int64)]) >>= (@?= [(11, 33)])

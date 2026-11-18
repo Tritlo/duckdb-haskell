@@ -84,7 +84,12 @@ import Database.DuckDB.Simple.Ok (Ok (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
-import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToBaseRep, logicalTypeToRep)
+import Database.DuckDB.Simple.V2.LogicalRep (
+  destroyLogicalType,
+  logicalTypeFromRep,
+  logicalTypeToBaseRep,
+  logicalTypeToRep,
+ )
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import Database.DuckDB.Simple.Variant (Variant (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -429,8 +434,8 @@ valueRegressionTests =
             _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE back (v " <> sqlType <> ")"))
             _ <- execute conn "INSERT INTO back VALUES (?)" (Only value)
             (query_ conn (Query ("SELECT v IS NOT DISTINCT FROM " <> source <> " FROM back")) :: IO [Only Bool]) >>= assertEqual label [Only True]
-        -- A custom CRS needs the name on the connection, and SQL gives it through ST_SetCRS.
-        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["local grid"]} \custom -> do
+        -- ST_SetCRS supplies the custom CRS in the result type.
+        withConnection ":memory:" \custom -> do
           _ <- execute_ custom "CREATE TABLE shapes AS SELECT ST_SetCRS('POINT (1 2)'::GEOMETRY, 'local grid') AS v"
           [Only shape] <- query_ custom "SELECT v FROM shapes" :: IO [Only FieldValue]
           ( query custom "SELECT typeof(?), (SELECT typeof(v) FROM shapes), ? IS NOT DISTINCT FROM (SELECT v FROM shapes)" (shape, shape)
@@ -620,6 +625,59 @@ valueRegressionTests =
               checkType [first, second] (LogicalTypeList common)
               checkType array (LogicalTypeArray common 2)
               checkType mapping (LogicalTypeMap (LogicalTypeScalar LogicalTypeIdVarchar) common)
+    , testCase "collection inference preserves exact metadata at native equality boundaries" $ withConnection ":memory:" \conn -> do
+        let integer = LogicalTypeScalar LogicalTypeIdInteger
+            varchar = LogicalTypeScalar LogicalTypeIdVarchar
+            record name = LogicalTypeStruct (listArray (0, 0) [StructField name integer])
+            member name rep = LogicalTypeUnion (listArray (0, 0) [UnionMemberType name rep])
+            tuple rep = LogicalTypeTuple (listArray (0, 0) [rep])
+            enum labels = LogicalTypeEnum (listArray (0, length labels - 1) labels)
+            wkt =
+              "ENGCRS[\"Local grid\",EDATUM[\"Local datum\"],CS[Cartesian,2],AXIS[\"x\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"y\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]"
+            geometry = LogicalTypeGeometry . Just
+            wrappers =
+              [ ("STRUCT", id)
+              , ("LIST", LogicalTypeList)
+              , ("ARRAY", \rep -> LogicalTypeArray rep 1)
+              , ("MAP key", \rep -> LogicalTypeMap rep integer)
+              , ("MAP value", LogicalTypeMap varchar)
+              , ("TUPLE", tuple)
+              , ("UNION", member "value")
+              , ("alias", LogicalTypeAlias "nested_alias")
+              ]
+            cases =
+              [(label <> " field spelling", wrap (record "a"), wrap (record "A"), True, False) | (label, wrap) <- wrappers]
+                <> [ ("collation", tuple varchar, tuple (LogicalTypeCollatedVarchar "nocase"), True, False)
+                   , ("UNION spelling", member "a" integer, member "A" integer, True, False)
+                   , ("CRS definition", geometry wkt, geometry (Text.replace ",EDATUM" ", EDATUM" wkt), True, False)
+                   , ("ENUM label", enum ["A", "b"], enum ["a", "b"], False, False)
+                   , ("ENUM order", enum ["a", "b"], enum ["b", "a"], False, False)
+                   , ("same ENUM", enum ["a", "b"], enum ["a", "b"], True, True)
+                   , ("alias spelling", LogicalTypeAlias "alias" integer, LogicalTypeAlias "Alias" integer, False, True)
+                   , ("empty STRUCT", LogicalTypeStruct (listArray (0, -1) []), LogicalTypeStruct (listArray (0, -1) []), True, True)
+                   , ("empty TUPLE", LogicalTypeTuple (listArray (0, -1) []), LogicalTypeTuple (listArray (0, -1) []), True, True)
+                   ]
+            check :: (ToField a) => String -> a -> LogicalTypeRep -> Assertion
+            check label value expected =
+              (query conn "SELECT ?" (Only value) :: IO [Only FieldTypeOf]) >>= assertEqual label [Only (FieldTypeOf expected)]
+        forM_ cases \(label, first, second, nativeEqual, baseEqual) ->
+          forM_ [(first, second), (second, first)] \(leftRep, rightRep) -> do
+            expected <- withConnectionHandle conn \native -> withConnectionFactory native \factory ->
+              bracket (logicalTypeFromRep factory leftRep) destroyLogicalType \left ->
+                bracket (logicalTypeFromRep factory rightRep) destroyLogicalType \right -> do
+                  same <- (/= 0) <$> R.output (c_duckdb_v2_logical_type_is_equal left right)
+                  assertEqual (label <> " native equality") nativeEqual same
+                  sameBase <- (==) <$> logicalTypeToBaseRep left <*> logicalTypeToBaseRep right
+                  assertEqual (label <> " base equality") baseEqual sameBase
+                  -- Equal native types retain their exact metadata. Other types use native inference.
+                  if same && sameBase
+                    then logicalTypeToRep factory left
+                    else withArray [left, right] \types ->
+                      bracket (R.output (c_duckdb_v2_factory_create_common_type factory (ConstPtr types) 2)) destroyLogicalType (logicalTypeToRep factory)
+            let items = [TypedStructNull leftRep, TypedStructNull rightRep]
+            check label items (LogicalTypeList expected)
+            check label (sized items :: SizedArray 2 UnadaptedStruct) (LogicalTypeArray expected 2)
+            check label (Map.fromList (zip ["a" :: Text, "b"] items)) (LogicalTypeMap varchar expected)
     , testCase "collection inference keeps typed NULL aliases and collations" $ withConnection ":memory:" \conn -> do
         let varchar = LogicalTypeScalar LogicalTypeIdVarchar
             plain = singleField varchar (FieldText "{}")
@@ -687,7 +745,11 @@ valueRegressionTests =
             check items =
               (query conn (Query ("SELECT ?::" <> target)) (Only (map UnadaptedStruct items)) :: IO [Only [StructValue FieldValue]])
         forM_
-          [ ([coarse json, precise json], [structure json nanos (TimeOfDay 3 4 5), precise json])
+          [ ([coarse json], [structure json nanos (TimeOfDay 3 4 5)])
+          , ([precise json], [precise json])
+          , ([coarse json, coarse json], replicate 2 (structure json nanos (TimeOfDay 3 4 5)))
+          , ([precise json, precise json], [precise json, precise json])
+          , ([coarse json, precise json], [structure json nanos (TimeOfDay 3 4 5), precise json])
           , ([precise json, coarse json], [precise json, structure json nanos (TimeOfDay 3 4 5)])
           ]
           \(items, expected) -> check items >>= (@?= [Only expected])

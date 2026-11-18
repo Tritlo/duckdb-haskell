@@ -3,8 +3,10 @@
 This directory contains a loadable Haskell example for the pinned DuckDB 2.0.0
 release. The example is not part of either Hackage package. The reusable
 `Database.DuckDB.Simple.Extension` helper and extension-mode FFI headers are
-part of the packages. The Haddock of that module explains how to write, build,
-package, and load an extension.
+part of the packages. The module's Haddock describes the entry point, typed
+registrations, and resource lifetimes. This recipe gives the build, packaging,
+loading, and test commands. Use it from a checkout that matches the package
+sources.
 
 ## Design
 
@@ -46,8 +48,8 @@ has the typed registrations of the connection API: `createAggregate`,
 `createTableFunction`, `registerReplacementScan`,
 `registerCustomType`, `registerMultiFileFunction`, `registerCopyToFunction`,
 `registerCopyFromFunction`, and `registerCopyFunction`. These functions take
-the `Extension` value. A COPY TO function of an extension cannot read a VARIANT
-column. A replacement scan of an extension belongs to the instance.
+the `Extension` value. A replacement scan of an extension belongs to the
+instance.
 `Extension.extensionTarget` gives the `RegistrationTarget` for the functions of
 the V2 modules, for example
 `Database.DuckDB.Simple.V2.Registration.registerAggregateFunctionWith`. Use it
@@ -68,16 +70,19 @@ its headers. A rebuild against the same headers does not help.
 The example registers typed scalar functions, scalar and table macros, a
 PRAGMA, a typed custom option, and a log sink. They exercise native results,
 batch inputs, NULLs, Unicode text, a GEOMETRY argument, overflow, and callback
-errors. The example
-also registers an aggregate function, a table function, a custom type, a
-replacement scan, a COPY format with both directions, and a multi-file reader.
-Together, the registrations use eleven of the twelve V2 extension registration
-calls: the example registers no cast, because this release has no typed cast.
-Only when the test suite sets `DUCKDB_HASKELL_DEMO_GEOMETRY_CAST` does
-`src/TestCast.hs` register a native cast from GEOMETRY to BLOB, so that a case
-can check that the GEOMETRY reader of the library does not run it. The entrypoint is
+errors. It also registers aggregate functions, a table function, a custom type,
+a replacement scan, a COPY format with both directions, and a multi-file reader.
+A normal load registers no cast. When the test suite sets
+`DUCKDB_HASKELL_DEMO_GEOMETRY_CAST`, `src/TestCast.hs` registers a native cast
+from GEOMETRY to BLOB. The test checks that explicit SQL uses the cast and the
+library's GEOMETRY reader does not. The entrypoint is
 `haskell_demo_init_c_api_v2`. DuckDB derives the entrypoint name from the
 file name, so the packaged file must be `haskell_demo.duckdb_extension`.
+
+The example aggregate `haskell_centroid(x, y)` returns a GEOMETRY point, or
+NULL for an empty group. DuckDB resolves its return type on the loading host.
+A custom result encoder receives the extension's private instance factory,
+which resolves built-in types.
 
 Registration code uses ordinary Haskell values and functions:
 

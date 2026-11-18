@@ -525,22 +525,19 @@ withAdHocStatement conn queryText action empty = withParsedStatements conn query
 fold :: (FromRow row, ToRow params) => Connection -> Query -> params -> a -> (a -> row -> IO a) -> IO a
 fold conn queryText params initial step =
   withStatement conn queryText \stmt -> do
-    resetStatementStream stmt
     bind stmt (toRow params)
     Result.foldStatementWith MaterializedResult fromRow stmt initial step
 
 -- | Fold a parameterless result. Native materialization follows 'fold'.
 fold_ :: (FromRow row) => Connection -> Query -> a -> (a -> row -> IO a) -> IO a
 fold_ conn queryText initial step =
-  withStatement conn queryText \stmt -> do
-    resetStatementStream stmt
+  withStatement conn queryText \stmt ->
     Result.foldStatementWith MaterializedResult fromRow stmt initial step
 
 -- | Fold a result with named parameters. Native materialization follows 'fold'.
 foldNamed :: (FromRow row) => Connection -> Query -> [NamedParam] -> a -> (a -> row -> IO a) -> IO a
 foldNamed conn queryText params initial step =
   withStatement conn queryText \stmt -> do
-    resetStatementStream stmt
     bindNamed stmt params
     Result.foldStatementWith MaterializedResult fromRow stmt initial step
 

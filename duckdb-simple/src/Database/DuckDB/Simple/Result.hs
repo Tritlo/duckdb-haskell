@@ -36,17 +36,16 @@ import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (peek)
 
--- | Fold rows from one statement and release its result on every exit path.
+-- | Fold rows from a statement owned by the enclosing @withStatement@.
 foldStatementWith :: ResultMode -> RowParser row -> Statement -> a -> (a -> row -> IO a) -> IO a
-foldStatementWith mode parser stmt initial step =
-  let loop acc = do
-        nextVal <- nextRowWith mode parser stmt
-        case nextVal of
-          Nothing -> pure acc
-          Just row -> do
-            acc' <- step acc row
-            acc' `seq` loop acc'
-  in  loop initial `finally` resetStatementStream stmt
+foldStatementWith mode parser stmt initial step = loop initial
+  where
+    loop acc =
+      nextRowWith mode parser stmt >>= \case
+        Nothing -> pure acc
+        Just row -> do
+          acc' <- step acc row
+          acc' `seq` loop acc'
 
 -- | Read one row. The first fetch selects execution until the cursor resets.
 -- See Note [Statement cursor] in "Database.DuckDB.Simple.Internal".

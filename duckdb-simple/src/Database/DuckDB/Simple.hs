@@ -118,6 +118,8 @@ module Database.DuckDB.Simple (
 import Control.Exception (SomeException, bracket, evaluate, finally, mask, mask_, onException, throwIO, try)
 import Control.Monad (foldM, forM_, void, when, zipWithM_)
 import Data.Array (elems)
+import Data.IORef (atomicModifyIORef', newIORef, writeIORef)
+import qualified Data.IntMap.Strict as IntMap
 import Data.List (findIndex)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, isNothing)
@@ -317,6 +319,8 @@ withStatement :: Connection -> Query -> (Statement -> IO a) -> IO a
 withStatement conn sql = bracket (openStatement conn sql) closeStatement
 
 -- | Bind positional parameters to a prepared statement, replacing any previous bindings.
+-- The call resets the cursor. If validation or value conversion fails, the
+-- previous set of bindings remains.
 bind :: Statement -> [FieldBinding] -> IO ()
 bind stmt fields = do
   resetStatementStream stmt
@@ -329,8 +333,8 @@ bind stmt fields = do
     let parameterNames = fetchParameterNames stmt
     when (any isJust parameterNames) $
       throwFormatErrorBindings stmt (Text.pack "duckdb-simple: statement defines named parameters; use executeNamed or bindNamed") fields
-  clearStatementBindings stmt
-  zipWithM_ apply [1 ..] fields
+  replaceStatementBindings stmt \staged ->
+    zipWithM_ (\idx -> bindFieldBinding staged (fromIntegral idx)) [1 :: Int ..] fields
   where
     parameterCountMessage expected actual =
       Text.pack $
@@ -340,11 +344,10 @@ bind stmt fields = do
           <> show actual
           <> " argument(s) were supplied"
 
-    apply :: Int -> FieldBinding -> IO ()
-    apply idx = bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx)
-
 -- | Bind named parameters to a prepared statement.
--- Session variables can supply omitted named parameters.
+-- The cursor reset and failure guarantees of 'bind' also apply.
+-- A successful call replaces the explicit bindings. Current session variables
+-- can supply omitted parameters when the statement executes.
 bindNamed :: Statement -> [NamedParam] -> IO ()
 bindNamed stmt params =
   let bindings = fmap (\(name := value) -> (name, toField value)) params
@@ -362,13 +365,13 @@ bindNamed stmt params =
           ]
       -- One lookup table serves all bindings of this call.
       positions = Map.fromList (zip (map normalizeName (elems (statementParameterNames stmt))) [1 :: Int ..])
-      apply (name, binding) = do
+      apply target (name, binding) = do
         when (Text.any (== '\0') name) $
           withQueryError (statementQuery stmt) (throwInvalidArgument (Text.pack "parameter name contains NUL"))
         case Map.lookup (normalizeName name) positions of
           Nothing ->
             throwFormatErrorNamed stmt (unknownNameMessage name) bindings
-          Just idx -> bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx) binding
+          Just idx -> bindFieldBinding target (fromIntegral idx :: DuckDBIdx) binding
   in  do
         resetStatementStream stmt
         let names = map (normalizeName . fst) bindings
@@ -386,8 +389,27 @@ bindNamed stmt params =
               stmt
               (Text.pack "duckdb-simple: statement does not define named parameters; use positional bindings or adjust the SQL")
               bindings
-        clearStatementBindings stmt
-        mapM_ apply bindings
+        replaceStatementBindings stmt \staged -> mapM_ (apply staged) bindings
+
+{- Note [Atomic parameter bindings]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A statement owns its parameter values in a Haskell map. A bind constructs the
+replacement map separately. A failed bind releases only the new values.
+A successful bind transfers the complete map and moves the old values into the
+temporary map. The same cleanup releases that map after success or failure.
+Cursor reset and validation keep their existing order.
+-}
+
+-- | Replace all bindings after the action constructs every value successfully.
+-- See Note [Atomic parameter bindings].
+replaceStatementBindings :: Statement -> (Statement -> IO ()) -> IO ()
+replaceStatementBindings stmt action = withStatementHandle stmt \_ ->
+  bracket (newIORef IntMap.empty) clearBoundValues \staged -> do
+    action stmt{statementBindings = staged}
+    mask_ do
+      replacement <- atomicModifyIORef' staged (\values -> (IntMap.empty, values))
+      previous <- atomicModifyIORef' (statementBindings stmt) (\values -> (replacement, values))
+      writeIORef staged previous
 
 fetchParameterNames :: Statement -> [Maybe Text]
 fetchParameterNames stmt =

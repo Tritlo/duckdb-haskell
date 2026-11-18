@@ -240,6 +240,11 @@ cases:
 - You supply one parameter two times, for example as `$amount` and `$AMOUNT`.
 - You bind named parameters to a statement with only positional placeholders.
 
+`bind` and `bindNamed` reset the statement cursor before validation. If
+validation or value conversion fails, the previous set of bindings remains.
+A successful `bindNamed` replaces the explicit bindings. Current session
+variables can supply omitted parameters when the statement executes.
+
 ### Decoding rows
 
 The `fromRow` method of a `FromRow` instance is a `RowParser`. Write it with

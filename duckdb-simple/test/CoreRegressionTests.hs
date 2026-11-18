@@ -8,7 +8,7 @@
 module CoreRegressionTests (coreRegressionTests) where
 
 import Control.Concurrent (forkFinally, killThread, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
-import Control.Exception (IOException, SomeException, bracket, finally, throwIO, try)
+import Control.Exception (AsyncException (ThreadKilled), IOException, SomeException, bracket, finally, throw, throwIO, try)
 import Control.Monad (forM_, forever, replicateM, replicateM_, void, when)
 import Data.Either (partitionEithers)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
@@ -21,7 +21,7 @@ import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Catalog as Catalog
 import qualified Database.DuckDB.Simple.Config as Config
 import qualified Database.DuckDB.Simple.Copy as Copy
-import Database.DuckDB.Simple.FromField (FieldValue)
+import Database.DuckDB.Simple.FromField (BitString (..), FieldValue)
 import Database.DuckDB.Simple.Internal (
   DuckDBV2ResultHandle (..),
   Statement (statementStream),
@@ -134,6 +134,21 @@ coreRegressionTests =
             nextRow stmt >>= (@?= (Nothing :: Maybe (Only Int64)))
             bind stmt [toField (2 :: Int64)]
             nextRow stmt >>= (@?= Just (Only (2 :: Int64)))
+    , testCase "failed replacement retains complete bindings and resets the cursor" $
+        withConnection ":memory:" $ \conn ->
+          withStatement conn "SELECT ?::BIGINT, ?::BIGINT, ?::BIGINT FROM range(2)" $ \stmt -> do
+            let original = (1, 2, 3) :: (Int64, Int64, Int64)
+            bind stmt [toField (1 :: Int64), toField (2 :: Int64), toField (3 :: Int64)]
+            nextRow stmt >>= (@?= Just original)
+            assertInputError (bind stmt [toField (4 :: Int64), toField (BitString 8 "x"), toField (6 :: Int64)])
+            nextRow stmt >>= (@?= Just original)
+            interrupted <- try (bind stmt [toField (7 :: Int64), throw ThreadKilled, toField (9 :: Int64)]) :: IO (Either AsyncException ())
+            interrupted @?= Left ThreadKilled
+            nextRow stmt >>= (@?= Just original)
+            nextRow stmt >>= (@?= Just original)
+            nextRow stmt >>= (@?= (Nothing :: Maybe (Int64, Int64, Int64)))
+            bind stmt [toField (10 :: Int64), toField (11 :: Int64), toField (12 :: Int64)]
+            nextRow stmt >>= (@?= Just (10 :: Int64, 11 :: Int64, 12 :: Int64))
     , testCase "clear bindings invalidates an active cursor" $
         withConnection ":memory:" $ \conn ->
           withStatement conn "SELECT ?::BIGINT FROM range(3)" $ \stmt -> do

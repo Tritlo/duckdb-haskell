@@ -5,6 +5,9 @@ for the upgrade instructions.
 
 ## 1.0.1.0
 
+- Read and bind SQL `TYPE` values as `LogicalTypeRep`. This includes the
+  column metadata returned by `COPY ... TO (RETURN_COLUMN_TYPES)`. Reads
+  through `FieldValue` return the new `FieldType` constructor.
 - Add managed optimizer-statistics callbacks with
   `registerScalarFunctionWithStats`, `registerAggregateFunctionWithStats`, and
   `registerTableFunctionWithStats` in `Database.DuckDB.Simple.V2.Registration`.

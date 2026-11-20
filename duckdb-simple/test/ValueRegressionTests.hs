@@ -237,7 +237,15 @@ main = defaultMain valueRegressionTests
 valueRegressionTests :: TestTree
 valueRegressionTests =
   testGroup "value regressions" $
-    [ testCase "REAL decodes to Float and Double" $ withConnection ":memory:" \conn -> do
+    [ testCase "TYPE values round-trip with nested aliases and NULLs" $ withConnection ":memory:" \conn -> do
+        let json = LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)
+            expected = [Just (LogicalTypeList json), Nothing, Just (LogicalTypeDecimal 8 2)]
+            sql = "SELECT [get_type(['{}'::JSON]), NULL, get_type(1::DECIMAL(8,2))]"
+        query_ conn sql >>= (@?= [Only expected])
+        Streaming.fold_ conn sql [] (\rows (Only types) -> pure (types : rows)) >>= (@?= [expected])
+        query conn "SELECT ?" (Only expected) >>= (@?= [Only expected])
+        query conn "SELECT ?" (Only (FieldType json)) >>= (@?= [Only json])
+    , testCase "REAL decodes to Float and Double" $ withConnection ":memory:" \conn -> do
         (query_ conn "SELECT 1.25::REAL" :: IO [Only Float]) >>= (@?= [Only 1.25])
         (query_ conn "SELECT 1.25::REAL" :: IO [Only Double]) >>= (@?= [Only 1.25])
     , testCase "a Float parameter does not read as Text, and its cast to VARCHAR does" $ withConnection ":memory:" \conn -> do

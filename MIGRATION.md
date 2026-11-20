@@ -30,6 +30,9 @@ only the retained module.
 
 ### Parameters, results, and settings
 
+- Read and bind SQL `TYPE` values as `LogicalTypeRep`. The column metadata
+  returned by `COPY ... TO (RETURN_COLUMN_TYPES)` includes these values.
+  Include `FieldType` when matching exhaustively on `FieldValue`.
 - Finite TIMESTAMP and TIMESTAMPTZ parameters now accept
   `-9223372036854775808` microseconds from the epoch. The next microsecond
   represents negative infinity. TIMESTAMP_S and TIMESTAMP_MS accept whole

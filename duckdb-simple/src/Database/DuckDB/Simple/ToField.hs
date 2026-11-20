@@ -778,6 +778,10 @@ instance ToField RawGeometry where
       ("<geometry length=" <> show (BS.length rawGeometryWKB) <> ">")
       \builder -> rawGeometryDuckValue builder rawGeometryCRS raw
 
+-- | Bind a logical type as a SQL @TYPE@ value.
+instance ToField LogicalTypeRep where
+  toField rep = builderValueBinding (Text.unpack (logicalTypeSQL rep)) (`typeDuckValue` rep)
+
 -- | Bind the payload as a VARIANT.
 instance ToField Variant where
   toField value =
@@ -957,6 +961,7 @@ instance ToField FieldValue where
     FieldTimeTZ v -> toField v
     FieldBit v -> toField v
     FieldBigNum v -> toField v
+    FieldType v -> toField v
     FieldEnum _ label -> toField label
     FieldArray items
       | Just failure <- arraySizeError (length items) -> valueBinding (show value) (const failure)
@@ -1097,6 +1102,10 @@ instance DuckDBColumnType IntervalValue where
 
 instance DuckDBColumnType TimeWithZone where
   duckdbColumnTypeFor _ = "TIMETZ"
+
+-- | The SQL type of a value that carries a logical type.
+instance DuckDBColumnType LogicalTypeRep where
+  duckdbColumnTypeFor _ = "TYPE"
 
 instance DuckDBColumnType UTCTime where
   duckdbColumnTypeFor _ = "TIMESTAMPTZ"
@@ -1701,6 +1710,7 @@ fieldValueWithTypeDuckValue builder@ValueBuilder{builderFactory = factory, build
   -- Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
   (LogicalTypeAlias _ base, _) -> fieldValueWithTypeDuckValue builder base value
   (LogicalTypeScalar LogicalTypeIdVariant, _) -> variantDuckValue builder value
+  (LogicalTypeScalar LogicalTypeIdType, FieldType logical) -> typeDuckValue builder logical
   (LogicalTypeScalar dtype, _) -> scalarFieldValueDuckValue factory dtype value
   (LogicalTypeCollatedVarchar _, FieldText text) -> textDuckValue factory text
   (LogicalTypeGeometry crs, FieldGeometry raw) -> rawGeometryDuckValue builder crs raw
@@ -1957,8 +1967,8 @@ instance ToDuckValue Variant where
 -- The C API cannot construct a nonempty object whose keys are all empty.
 -- DuckDB 2.0 treats that STRUCT type as a tuple and casts it to a VARIANT array.
 -- A raw geometry without a CRS uses GEOMETRY. See Note [Raw GEOMETRY parameters].
--- A VARIANT does not keep a UNION, a MAP, an ENUM, or the CRS of a geometry, so
--- each of these payloads raises an error, at each depth.
+-- A VARIANT cannot keep TYPE, UNION, MAP, ENUM, or the CRS of a geometry.
+-- Each of these payloads raises an error at each depth.
 variantPayloadType :: FieldValue -> IO (LogicalTypeRep, FieldValue)
 variantPayloadType value = case value of
   FieldNull -> pure (variant, value)
@@ -1992,6 +2002,7 @@ variantPayloadType value = case value of
   FieldTimeTZ{} -> scalar LogicalTypeIdTimeTz
   FieldInterval{} -> scalar LogicalTypeIdInterval
   FieldBigNum{} -> scalar LogicalTypeIdBigNum
+  FieldType{} -> rejectPayload "a TYPE value" "DuckDB VARIANT has no TYPE payload"
   FieldBit{} -> scalar LogicalTypeIdBit
   FieldList{} -> pure (LogicalTypeList variant, value)
   FieldArray items -> pure (LogicalTypeList variant, FieldList (elems items))
@@ -2004,16 +2015,29 @@ variantPayloadType value = case value of
       throwInvalidArgument "DuckDB's C API cannot construct a VARIANT object with only an empty key"
     let types = fmap (\field -> field{structFieldValue = variant}) structValueTypes
     pure (LogicalTypeStruct types, FieldStruct structValue{structValueTypes = types})
-  FieldUnion{} -> throwInvalidArgument "a VARIANT keeps only the member value of a UNION, so a UNION value cannot bind as a VARIANT"
+  FieldUnion{} -> rejectPayload "a UNION value" "a VARIANT keeps only the member value of a UNION"
   FieldGeometry RawGeometry{rawGeometryCRS = Just crs} ->
-    throwInvalidArgument
-      ("a VARIANT does not keep the CRS of a GEOMETRY, so the GEOMETRY value with the CRS " <> quotedCRS crs <> " cannot bind as a VARIANT")
+    rejectPayload
+      ("the GEOMETRY value with the CRS " <> quotedCRS crs)
+      "a VARIANT does not keep the CRS of a GEOMETRY"
   FieldGeometry{} -> pure (LogicalTypeGeometry Nothing, value)
-  FieldMap{} -> throwInvalidArgument "a VARIANT stores a MAP as a list of key and value objects, so a MAP value cannot bind as a VARIANT"
-  FieldEnum{} -> throwInvalidArgument "a VARIANT stores an ENUM as its text, so an ENUM value cannot bind as a VARIANT"
+  FieldMap{} -> rejectPayload "a MAP value" "a VARIANT stores a MAP as a list of key and value objects"
+  FieldEnum{} -> rejectPayload "an ENUM value" "a VARIANT stores an ENUM as its text"
   where
     variant = LogicalTypeScalar LogicalTypeIdVariant
     scalar dtype = pure (LogicalTypeScalar dtype, value)
+    rejectPayload payload reason =
+      throwInvalidArgument (reason <> ", so " <> payload <> " cannot bind as a VARIANT")
+
+-- | Copy a logical type into an owned SQL TYPE value.
+typeDuckValue :: ValueBuilder -> LogicalTypeRep -> IO DuckDBV2ValueHandle
+typeDuckValue ValueBuilder{builderFactory, builderType} rep =
+  bracket (builderType rep) destroyLogicalType \logical ->
+    output (c_duckdb_v2_value_create_type builderFactory logical)
+
+-- | Construct a SQL @TYPE@ value with the supplied factory.
+instance ToDuckValue LogicalTypeRep where
+  toDuckValue factory = typeDuckValue (plainBuilder factory)
 
 instance ToDuckValue Null where
   toDuckValue factory _ = nullDuckValue factory

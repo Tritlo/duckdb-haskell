@@ -11,6 +11,7 @@ module CopyTests (copyTests) where
 
 import Control.Exception (bracket, try)
 import Control.Monad (forM_, void)
+import Data.Foldable (toList)
 import Data.IORef
 import Data.Int (Int64)
 import Data.List (sort)
@@ -20,7 +21,13 @@ import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple hiding (bind)
 import qualified Database.DuckDB.Simple.Catalog as Catalog
 import qualified Database.DuckDB.Simple.Copy as Copy
-import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), LogicalTypeRep (..))
+import Database.DuckDB.Simple.FromField (
+  Field (..),
+  FieldValue (..),
+  LogicalTypeRep (..),
+  StructField (..),
+  StructValue (..),
+ )
 import Database.DuckDB.Simple.LogicalRep (withoutAliases)
 import Database.DuckDB.Simple.Ok (Ok (..))
 import qualified Database.DuckDB.Simple.V2.Copy as V2Copy
@@ -41,7 +48,8 @@ copyTests :: TestTree
 copyTests =
   testGroup
     "managed COPY"
-    [ testCase "COPY TO scans batches and reports statistics" testCopyTo
+    [ testCase "COPY TO returns the types of the columns written" testCopyReturnedTypes
+    , testCase "COPY TO scans batches and reports statistics" testCopyTo
     , testCase "row callbacks receive per-partition file paths" testPartitionedCopy
     , testCase "row callbacks decode VARIANT after the registering connection closes" testVariantCopy
     , testCase "COPY FROM runs bind global local and exec callbacks" testCopyFrom
@@ -50,6 +58,29 @@ copyTests =
     , testCase "COPY TO and table descriptions report the logical type id of each column type" testColumnTypeIds
     , testCase "COPY TO snapshots survive but native metadata expires after the callback" testCopyFieldTypes
     ]
+
+-- | Read the native TYPE values in the metadata result and verify the file.
+testCopyReturnedTypes :: Assertion
+testCopyReturnedTypes = withDirectory \directory -> withConnection ":memory:" \connection -> do
+  let path = Text.pack (directory </> "columns.csv")
+  rows <-
+    query
+      connection
+      "COPY (SELECT 42::INTEGER AS v, '{}'::JSON AS doc) TO ? (RETURN_COLUMN_TYPES)"
+      (Only path)
+      :: IO [(Int64, [StructValue FieldValue])]
+  map (fmap (map (toList . structValueFields))) rows
+    @?= [
+          ( 1
+          ,
+            [ [StructField "name" (FieldText "v"), StructField "type" (FieldType (LogicalTypeScalar LogicalTypeIdInteger))]
+            , [StructField "name" (FieldText "doc"), StructField "type" (FieldType (LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)))]
+            ]
+          )
+        ]
+  forM_ rows \(_, columns) ->
+    query connection "SELECT ?" (Only (FieldList (map FieldStruct columns))) >>= (@?= [Only columns])
+  query connection "SELECT v::INTEGER FROM read_csv(?)" (Only path) >>= (@?= [Only (42 :: Int64)])
 
 -- | Run every COPY TO callback and check the reported file statistics.
 testCopyTo :: Assertion

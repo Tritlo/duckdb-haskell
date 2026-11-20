@@ -255,9 +255,8 @@ Read (prepareVectorReaderWith).
 - In DuckDB the view of a FLAT vector has no selection
   (duckdb_v2_vector_get_view in src/main/capi/v2/capi_v2_vector.cpp). The header
   does not say this. Then the physical row is the logical row. The readers of
-  VARIANT and GEOMETRY need this, because they read logical rows (rejectRows,
-  prepareVariantReader, and prepareGeometryReader). The reader still applies
-  the selection of a view that has one.
+  TYPE, VARIANT, and GEOMETRY use native calls that take logical rows.
+  The reader still applies the selection of a view that has one.
 
 - The flatten changes the buffers of the vector, so it runs before the view is
   read.
@@ -365,6 +364,10 @@ prepareValueReader
 prepareValueReader readers tree labels dtype vector dataPtr validity = case dtype of
   DuckDBV2LogicalTypeIdVariant -> variantReader readers vector
   DuckDBV2LogicalTypeIdGeometry -> geometryReader readers vector
+  DuckDBV2LogicalTypeIdType ->
+    pure $ whenValid FieldType \row ->
+      bracket (output (c_duckdb_v2_vector_get_value vector (fromIntegral row))) destroyValue \value ->
+        bracket (output (c_duckdb_v2_value_get_type value)) destroyLogicalType (typeReader readers)
   DuckDBV2LogicalTypeIdArray -> whenValid FieldArray <$> prepareArrayDecoder readers tree labels vector
   DuckDBV2LogicalTypeIdList -> whenValid FieldList <$> prepareListDecoder readers tree labels vector dataPtr
   DuckDBV2LogicalTypeIdMap -> whenValid FieldMap <$> prepareMapDecoder readers vector dataPtr

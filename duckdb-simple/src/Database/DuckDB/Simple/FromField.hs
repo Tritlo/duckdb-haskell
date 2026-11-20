@@ -96,6 +96,7 @@ import GHC.TypeLits (KnownNat, Nat, natVal)
 import Numeric.Natural (Natural)
 
 -- | Internal representation of a column value.
+-- 'FieldType' contains the logical type carried by a SQL @TYPE@ value.
 -- 'FieldGeometry' contains raw WKB and CRS metadata. A STRUCT, TUPLE, or UNION
 -- parameter binds it as a GEOMETRY with the same CRS. A VARIANT parameter
 -- binds it only when it has no CRS. A top-level t'RawGeometry' parameter binds
@@ -129,6 +130,7 @@ data FieldValue
   | FieldTimeTZ TimeWithZone
   | FieldBit BitString
   | FieldBigNum BigNum
+  | FieldType LogicalTypeRep
   | FieldEnum Word32 Text
   | FieldArray (Array Int FieldValue)
   | FieldList [FieldValue]
@@ -521,6 +523,13 @@ See Note [DECIMAL as DOUBLE and FLOAT] for the floating-point value of a DECIMAL
 -- | Reads each SQL type, and does not convert the value.
 instance FromField FieldValue where
   fromField Field{fieldValue} = pure fieldValue
+
+-- | Read the logical type carried by a SQL @TYPE@ value.
+instance FromField LogicalTypeRep where
+  fromField f@Field{fieldValue} = case fieldValue of
+    FieldType logical -> pure logical
+    FieldNull -> returnError UnexpectedNull f ""
+    _ -> returnError Incompatible f "expected TYPE"
 
 -- | Reads GEOMETRY, with its CRS.
 instance FromField RawGeometry where
@@ -1202,6 +1211,7 @@ fieldValueTypeName = \case
   FieldTimeTZ{} -> scalar LogicalTypeIdTimeTz
   FieldBit{} -> scalar LogicalTypeIdBit
   FieldBigNum{} -> scalar LogicalTypeIdBigNum
+  FieldType{} -> scalar LogicalTypeIdType
   FieldEnum{} -> "ENUM"
   FieldArray{} -> "ARRAY"
   FieldList{} -> "LIST"

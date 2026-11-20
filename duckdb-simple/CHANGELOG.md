@@ -3,6 +3,12 @@
 See [MIGRATION.md](https://github.com/Tritlo/duckdb-haskell/blob/main/MIGRATION.md)
 for the upgrade instructions.
 
+## Unreleased
+
+- Read and bind SQL `TYPE` values as `LogicalTypeRep`. This includes the
+  column metadata returned by `COPY ... TO (RETURN_COLUMN_TYPES)`. Reads
+  through `FieldValue` return the new `FieldType` constructor.
+
 ## 1.0.1.0
 
 - Add managed optimizer-statistics callbacks with

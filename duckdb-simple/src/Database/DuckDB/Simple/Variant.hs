@@ -22,9 +22,9 @@ import Database.DuckDB.Simple.LogicalRep (LogicalTypeId (..), LogicalTypeRep (..
 -- stored value. Arrays are 'FieldList' values. Objects are 'FieldStruct' values
 -- whose fields have the VARIANT type. Decoded object keys use DuckDB's native
 -- lexicographic order. Array elements retain their order. SQL NULL is 'FieldNull'.
--- A t'Variant' parameter binds its payload as a VARIANT. A VARIANT does not keep
--- a UNION, a MAP, an ENUM, or the CRS of a GEOMETRY, so a parameter with such a
--- payload, at any depth, raises an error. Results preserve their native scalar
+-- A t'Variant' parameter binds its payload as a VARIANT. A VARIANT cannot hold
+-- TYPE, UNION, MAP, ENUM, or the CRS of a GEOMETRY. A parameter with such a
+-- payload raises an error at any depth. Results preserve their native scalar
 -- types and nested values through public V2 operations.
 newtype Variant = Variant {variantPayload :: FieldValue}
   deriving (Eq, Show)
@@ -41,13 +41,14 @@ variantObject entries =
       }
 
 -- | Reads a value that a VARIANT can hold: the value of a VARIANT column, or a
--- value of another SQL type with that shape. The shape is a scalar that is not
--- an ENUM, a GEOMETRY with no CRS, a LIST of such values, or a STRUCT in the
--- form of a VARIANT object: its fields have the type VARIANT and hold such
--- values, and its keys are in ascending order. A value of another shape fails
+-- value of another SQL type with that shape. The shape can be a scalar
+-- other than TYPE or ENUM, GEOMETRY with no CRS, or a LIST of such values.
+-- A STRUCT can have this shape if its fields have type VARIANT and its keys
+-- are in ascending order. A value of another shape fails
 -- with 'Incompatible', because the cast of DuckDB to VARIANT gives another
--- value. Write @c::VARIANT@ in SQL for such a column. A column whose type is or
--- contains JSON, at each depth, also fails with 'Incompatible': DuckDB casts
+-- value. Write @c::VARIANT@ if DuckDB supports the cast. DuckDB cannot cast
+-- TYPE to VARIANT. A column whose type is or contains JSON also fails with
+-- 'Incompatible': DuckDB casts
 -- JSON to VARIANT by parsing the text, so @c::VARIANT@ gives the parsed value,
 -- not the text. See Note [Reads of another SQL type] in
 -- "Database.DuckDB.Simple.FromField".
@@ -63,26 +64,30 @@ instance FromField Variant where
       else
         if variantShape fieldValue
           then pure (Variant fieldValue)
-          else returnError Incompatible field (Text.pack "a VARIANT does not hold a value of this shape; write c::VARIANT")
+          else returnError Incompatible field (variantShapeError logical)
     where
       isJson (LogicalTypeAlias name (LogicalTypeScalar LogicalTypeIdVarchar)) = name == Text.pack "JSON"
       isJson (LogicalTypeAlias name LogicalTypeCollatedVarchar{}) = name == Text.pack "JSON"
       isJson _ = False
       column = if Text.null fieldName then Text.pack "c" else fieldName
+      variantShapeError logical
+        | containsType (== LogicalTypeScalar LogicalTypeIdType) logical = Text.pack "a VARIANT cannot hold a TYPE value"
+        | otherwise = Text.pack "a VARIANT does not hold a value of this shape; write c::VARIANT"
 
 -- | Whether a VARIANT can hold a decoded value. A VARIANT column decodes only to
--- these values: a scalar that is not an ENUM, a GEOMETRY with no CRS, a
+-- these values: a scalar other than TYPE or ENUM, a GEOMETRY with no CRS, a
 -- 'FieldList' of such values, and a 'FieldStruct' in the form of a VARIANT
 -- object. Such an object has fields of the type VARIANT that hold such values,
 -- and its keys are in ascending order: DuckDB sorts the keys of an object by
 -- their UTF-8 bytes. The order of 'Text' is the order of code points, and UTF-8
 -- keeps that order in its bytes, so the two orders are the same. Each other
--- value has no VARIANT form: a 'FieldArray', a 'FieldTuple', another
--- 'FieldStruct', a 'FieldEnum', a 'FieldMap', a 'FieldUnion', and a GEOMETRY
--- with a CRS.
+-- value has no VARIANT form. This includes 'FieldArray', 'FieldTuple',
+-- other 'FieldStruct' values, 'FieldType', 'FieldEnum', 'FieldMap',
+-- 'FieldUnion', and GEOMETRY with a CRS.
 variantShape :: FieldValue -> Bool
 variantShape = \case
   FieldEnum{} -> False
+  FieldType{} -> False
   FieldGeometry RawGeometry{rawGeometryCRS = Just _} -> False
   FieldMap{} -> False
   FieldUnion{} -> False

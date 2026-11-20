@@ -54,6 +54,7 @@ registrationTests =
     , testCase "pragma query execution errors and documentation" testPragma
     , testCase "pragma names must be nonempty and must not contain NUL" testPragmaNames
     , testCase "query metric snapshots copy values and survive later queries" testMetrics
+    , testCase "managed statistics callbacks preserve results and contain failures" testStatistics
     , testCase "aggregate grouped and window execution" testAggregate
     , testCase "aggregate registration cleanup follows callback ownership" testAggregateCleanup
     , testCase "table state and typed default parameter" testTable
@@ -89,6 +90,17 @@ scalarSum info _ = do
     R.output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral index)) >>= readIntegers (fromIntegral count)
   vector <- R.output (c_duckdb_v2_scalar_function_exec_get_result info)
   writeIntegers vector [sum [column !! row | column <- columns] | row <- [0 .. fromIntegral count - 1]]
+
+-- | Copy one scalar argument, including NULL values, to the result vector.
+scalarIdentity :: R.ContextCallback DuckDBV2ScalarFunctionExecInfoHandle
+scalarIdentity info _ = do
+  count <- R.output (c_duckdb_v2_scalar_function_exec_get_row_count info)
+  argument <- R.output (c_duckdb_v2_scalar_function_exec_get_arg info 0)
+  result <- R.output (c_duckdb_v2_scalar_function_exec_get_result info)
+  R.checked (c_duckdb_v2_vector_set_size result count)
+  forM_ (takeWhile (< count) [0 ..]) $ \index ->
+    bracket (R.output (c_duckdb_v2_vector_get_value argument index)) (R.destroy c_duckdb_v2_value_destroy) $ \value ->
+      R.checked (c_duckdb_v2_vector_set_value result index value)
 
 testScalar :: Assertion
 testScalar = withConnection ":memory:" \connection -> do
@@ -135,18 +147,12 @@ testScalarResolution = withConnection ":memory:" \connection -> do
       bindState _ result _ = do
         mark "bind"
         R.setCallbackState (c_duckdb_v2_scalar_function_bind_set_bind_data result) (42 :: Int)
-      executeRows info _ = do
+      executeRows info context = do
         state <- R.getCallbackState (c_duckdb_v2_scalar_function_exec_get_bind_data info)
         (state :: Int) @?= 42
         mismatch <- try (R.getCallbackState (c_duckdb_v2_scalar_function_exec_get_bind_data info) :: IO Bool)
         either (\(_ :: SQLError) -> pure ()) (\_ -> assertFailure "state read with another type") mismatch
-        count <- R.output (c_duckdb_v2_scalar_function_exec_get_row_count info)
-        argument <- R.output (c_duckdb_v2_scalar_function_exec_get_arg info 0)
-        result <- R.output (c_duckdb_v2_scalar_function_exec_get_result info)
-        R.checked (c_duckdb_v2_vector_set_size result count)
-        forM_ (takeWhile (< count) [0 ..]) $ \index ->
-          bracket (R.output (c_duckdb_v2_vector_get_value argument index)) (R.destroy c_duckdb_v2_value_destroy) $ \value ->
-            R.checked (c_duckdb_v2_vector_set_value result index value)
+        scalarIdentity info context
       anyType = R.StructuredType (LogicalTypeScalar LogicalTypeIdAny)
       signature = R.FunctionSignature [R.parameter "value" anyType] (Just anyType)
       target = R.ConnectionTarget connection
@@ -167,6 +173,125 @@ testScalarResolution = withConnection ":memory:" \connection -> do
   assertBool "bind callback" ("bind" `elem` seen)
   query_ connection "SELECT description FROM duckdb_functions() WHERE function_name='managed_resolved'"
     >>= (@?= [Only ("Preserve the input type." :: Text.Text)])
+
+-- | Statistics callbacks read borrowed arguments and narrow result statistics.
+-- A failed callback must leave the registration usable after rollback.
+testStatistics :: Assertion
+testStatistics = withConnection ":memory:" \connection -> do
+  scalarCalls <- newIORef (0 :: Int)
+  scalarExecutions <- newIORef (0 :: Int)
+  scalarNullability <- newIORef []
+  aggregateCalls <- newIORef (0 :: Int)
+  tableColumns <- newIORef []
+  failing <- newIORef False
+  let target = R.ConnectionTarget connection
+      mark calls = modifyIORef' calls (+ 1)
+      failWhenRequested = readIORef failing >>= \enabled -> when enabled (throwIO (userError "managed statistics failure"))
+      argumentCounts getter = allocaArray 4 \counts -> do
+        R.checked (getter counts (advancePtr counts 1) (advancePtr counts 2) (advancePtr counts 3))
+        peekArray 4 counts >>= (@?= [1, 0, 0, 0])
+      setResultFlags canHaveNull canHaveValid result = do
+        R.checked (c_duckdb_v2_stats_set_can_have_null result canHaveNull)
+        R.checked (c_duckdb_v2_stats_set_can_have_valid result canHaveValid)
+        R.output (c_duckdb_v2_stats_can_have_null result) >>= (@?= canHaveNull)
+        R.output (c_duckdb_v2_stats_can_have_valid result) >>= (@?= canHaveValid)
+      readOnly argument =
+        c_duckdb_v2_stats_set_can_have_null argument 0 nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
+      scalarStats info _ = do
+        mark scalarCalls
+        failWhenRequested
+        void (R.output (c_duckdb_v2_scalar_function_stats_get_user_data info))
+        R.getCallbackState (c_duckdb_v2_scalar_function_stats_get_bind_data info) >>= (@?= (17 :: Int))
+        argumentCounts (c_duckdb_v2_scalar_function_stats_get_arg_count info)
+        argument <- R.output (c_duckdb_v2_scalar_function_stats_get_arg_stats info 0)
+        readOnly argument
+        canHaveNull <- R.output (c_duckdb_v2_stats_can_have_null argument)
+        canHaveValid <- R.output (c_duckdb_v2_stats_can_have_valid argument)
+        modifyIORef' scalarNullability ((canHaveNull /= 0) :)
+        R.output (c_duckdb_v2_scalar_function_stats_get_result_stats info) >>= setResultFlags canHaveNull canHaveValid
+      aggregateStats info _ = do
+        mark aggregateCalls
+        failWhenRequested
+        void (R.output (c_duckdb_v2_aggregate_function_stats_get_user_data info))
+        R.getCallbackState (c_duckdb_v2_aggregate_function_stats_get_bind_data info) >>= (@?= (23 :: Int))
+        argumentCounts (c_duckdb_v2_aggregate_function_stats_get_arg_count info)
+        R.output (c_duckdb_v2_aggregate_function_stats_get_arg_stats info 0) >>= readOnly
+        -- The sum state starts at zero, including for an empty group.
+        R.output (c_duckdb_v2_aggregate_function_stats_get_result_stats info) >>= setResultFlags 0 1
+      tableStats info _ = do
+        column <- R.output (c_duckdb_v2_table_function_stats_get_column_index info)
+        modifyIORef' tableColumns (column :)
+        failWhenRequested
+        void (R.output (c_duckdb_v2_table_function_stats_get_user_data info))
+        R.getCallbackState (c_duckdb_v2_table_function_stats_get_bind_data info) >>= (@?= (3 :: Int64))
+        column @?= 0
+        R.output (c_duckdb_v2_table_function_stats_get_result_stats info) >>= setResultFlags 0 1
+      scalar =
+        (R.scalarCallbacks (\info context -> mark scalarExecutions >> scalarIdentity info context))
+          { R.scalarBindCallback = Just (\_ result _ -> R.setCallbackState (c_duckdb_v2_scalar_function_bind_set_bind_data result) (17 :: Int))
+          }
+      aggregate =
+        sumCallbacks
+          { R.aggregateBindCallback = Just (\input _ _ -> R.setCallbackState (c_duckdb_v2_function_bind_set_bind_data input) (23 :: Int))
+          }
+  R.withRegistrationFactory target \factory -> do
+    R.registerScalarFunctionWithStats
+      target
+      ( \function -> do
+          R.withIdentifier "managed_stats_scalar" (R.checked . c_duckdb_v2_scalar_function_set_name function)
+          R.output (c_duckdb_v2_scalar_function_get_signature function)
+            >>= R.configureFunctionSignature factory (scalarSignature [R.parameter "value" bigint])
+      )
+      scalarStats
+      scalar
+    R.registerAggregateFunctionWithStats
+      target
+      ( \function -> do
+          R.withIdentifier "managed_stats_sum" (R.checked . c_duckdb_v2_aggregate_function_set_name function)
+          R.output (c_duckdb_v2_aggregate_function_get_signature function)
+            >>= R.configureFunctionSignature factory (scalarSignature [R.parameter "value" bigint])
+      )
+      aggregateStats
+      aggregate
+    R.registerTableFunctionWithStats
+      target
+      ( \function -> do
+          R.withIdentifier "managed_stats_scan" (R.checked . c_duckdb_v2_table_function_set_name function)
+          R.output (c_duckdb_v2_table_function_get_signature function)
+            >>= R.configureFunctionSignature factory (R.FunctionSignature [R.parameter "count" bigint] Nothing)
+      )
+      tableStats
+      tableDefinition
+  void (execute_ connection "CREATE TABLE stats_input(v BIGINT NOT NULL)")
+  void (execute_ connection "INSERT INTO stats_input VALUES (1), (2)")
+  let scalarQuery = "SELECT managed_stats_scalar(v) FROM stats_input ORDER BY v"
+      aggregateQuery = "SELECT managed_stats_sum(v) FROM stats_input"
+      tableQuery = "SELECT amount FROM managed_stats_scan(3) ORDER BY amount"
+  query_ connection scalarQuery >>= (@?= map Only ([1, 2] :: [Int64]))
+  readIORef scalarExecutions >>= assertBool "scalar execution ran for non-NULL values" . (> 0)
+  query_ connection "SELECT managed_stats_scalar(v) FROM (VALUES (1::BIGINT), (NULL)) t(v) ORDER BY v NULLS LAST"
+    >>= (@?= [Only (Just (1 :: Int64)), Only Nothing])
+  readIORef scalarNullability >>= \flags -> do
+    assertBool "non-NULL argument statistics" (False `elem` flags)
+    assertBool "nullable argument statistics" (True `elem` flags)
+  query_ connection aggregateQuery >>= (@?= [Only (3 :: Int64)])
+  query_ connection "SELECT managed_stats_sum(v) FROM stats_input WHERE false" >>= (@?= [Only (0 :: Int64)])
+  query_ connection tableQuery >>= (@?= map Only ([42, 43, 44] :: [Int64]))
+  writeIORef scalarExecutions 0
+  query_ connection "SELECT count(*) FROM stats_input WHERE managed_stats_scalar(v) IS NULL" >>= (@?= [Only (0 :: Int64)])
+  readIORef scalarExecutions >>= (@?= 0)
+  query_ connection "SELECT managed_stats_sum(v) IS NULL FROM stats_input WHERE false" >>= (@?= [Only False])
+  query_ connection "SELECT count(*) FROM managed_stats_scan(3) WHERE amount IS NULL" >>= (@?= [Only (0 :: Int64)])
+  readIORef scalarCalls >>= assertBool "scalar statistics ran" . (> 0)
+  readIORef aggregateCalls >>= assertBool "aggregate statistics ran" . (> 0)
+  readIORef tableColumns >>= assertBool "table statistics requested a column" . not . null
+  forM_ [scalarQuery, aggregateQuery, tableQuery] \sql -> do
+    void (execute_ connection "BEGIN TRANSACTION")
+    writeIORef failing True
+    assertSqlErrorContaining "managed statistics failure" (query_ connection sql :: IO [Only Int64])
+    void (execute_ connection "ROLLBACK")
+    writeIORef failing False
+    query_ connection sql >>= \rows -> assertBool "registration is usable after rollback" (not (null (rows :: [Only Int64])))
 
 testPragma :: Assertion
 testPragma = withConnection ":memory:" \connection -> do
@@ -550,7 +675,7 @@ withCastDatabase environment castPair action = withCastInstance environment \ins
 
 -- | A second registration of a cast for the same pair of types returns with no
 -- error, and CAST still runs the callback of the first registration. DuckDB
--- 2.0.0 keeps the first cast for a pair.
+-- keeps the first cast for a pair.
 testCastSecond :: Assertion
 testCastSecond = withConnection ":memory:" \connection -> do
   R.registerCustomType connection "managed_kept" bigint

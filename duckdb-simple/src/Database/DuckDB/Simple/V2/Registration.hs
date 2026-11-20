@@ -91,11 +91,14 @@ module Database.DuckDB.Simple.V2.Registration (
   tableCallbacks,
   registerScalarFunction,
   registerScalarFunctionWith,
+  registerScalarFunctionWithStats,
   registerAggregateFunction,
   registerAggregateFunctionWith,
+  registerAggregateFunctionWithStats,
   registerAggregateFunctionWithCleanup,
   registerTableFunction,
   registerTableFunctionWith,
+  registerTableFunctionWithStats,
   registerCast,
   registerCastWith,
   registerCustomType,
@@ -302,6 +305,22 @@ registerScalarFunction connection name signature properties callbacks = do
       )
       callbacks
 
+{- Note [Managed statistics callbacks]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Statistics callbacks run during query optimization. The registration owns each
+callback pointer until DuckDB releases its last native owner. The callback info,
+context, and statistics handles are borrowed. Use them only during the callback.
+An exception in a callback becomes a SQL error. See Note [Callback ownership] in
+Database.DuckDB.Simple.Callback.
+
+Argument statistics are read-only. Result statistics start with both NULL and
+non-NULL values possible. Set a possibility to false only if every result meets
+that guarantee. An incorrect guarantee can cause wrong query results. Leave
+unknown statistics unchanged. Aggregate statistics must also describe the result
+of an ungrouped aggregate with no input rows. The table callback receives
+the index of the column in the declared schema.
+-}
+
 -- | Configure and register a managed scalar function on a connection or extension.
 -- The configuration action borrows the builder. Do not set callbacks or user data.
 --
@@ -328,7 +347,37 @@ registerScalarFunction connection name signature properties callbacks = do
 -- >   rows <- query_ connection "SELECT description FROM duckdb_functions() WHERE function_name = 'managed_target_default'"
 -- >   print (map fromOnly rows :: [Text.Text]) -- ["Add two BIGINT values."]
 registerScalarFunctionWith :: RegistrationTarget -> (DuckDBV2ScalarFunctionHandle -> IO ()) -> ScalarCallbacks -> IO ()
-registerScalarFunctionWith target configure callbacks =
+registerScalarFunctionWith target configure = registerScalarFunctionWithOptionalStats target configure Nothing
+
+-- | Configure and register a managed scalar function with statistics.
+-- The arguments are the target, configuration action, statistics callback, and
+-- execution callbacks. The configuration action must not set callbacks or user data.
+-- See Note [Managed statistics callbacks].
+--
+-- For a scalar function that always returns a non-NULL value, use this callback
+-- as the third argument. Leave the statistics unchanged if NULL is possible.
+--
+-- > nonNullStats info _ = do
+-- >   result <- R.output (c_duckdb_v2_scalar_function_stats_get_result_stats info)
+-- >   R.checked (c_duckdb_v2_stats_set_can_have_null result 0)
+-- >
+-- > R.registerScalarFunctionWithStats target configure nonNullStats callbacks
+registerScalarFunctionWithStats
+  :: RegistrationTarget
+  -> (DuckDBV2ScalarFunctionHandle -> IO ())
+  -> ContextCallback DuckDBV2ScalarFunctionStatsInfoHandle
+  -> ScalarCallbacks
+  -> IO ()
+registerScalarFunctionWithStats target configure stats = registerScalarFunctionWithOptionalStats target configure (Just stats)
+
+-- | Register with an optional statistics callback in the same resource owner.
+registerScalarFunctionWithOptionalStats
+  :: RegistrationTarget
+  -> (DuckDBV2ScalarFunctionHandle -> IO ())
+  -> Maybe (ContextCallback DuckDBV2ScalarFunctionStatsInfoHandle)
+  -> ScalarCallbacks
+  -> IO ()
+registerScalarFunctionWithOptionalStats target configure stats callbacks =
   withTarget
     target
     c_duckdb_v2_scalar_function_create
@@ -363,6 +412,12 @@ registerScalarFunctionWith target configure callbacks =
                   DuckDBV2ScalarFunctionExecCallbackFn
                   (DuckDBV2ScalarFunctionExecCallbackFn_Aux (guardContext (scalarExecCallback callbacks)))
                   (c_duckdb_v2_scalar_function_set_exec_callback function)
+              , installOptional stats $ \callback ->
+                  install
+                    allocate
+                    DuckDBV2ScalarFunctionStatsCallbackFn
+                    (DuckDBV2ScalarFunctionStatsCallbackFn_Aux (guardContext callback))
+                    (c_duckdb_v2_scalar_function_set_stats_callback function)
               ]
         )
         (attachOpaque (c_duckdb_v2_scalar_function_set_user_data function))
@@ -446,7 +501,32 @@ registerAggregateFunctionWith target = registerAggregateFunctionWithCleanup targ
 -- or user data.
 registerAggregateFunctionWithCleanup
   :: RegistrationTarget -> IO () -> (DuckDBV2AggregateFunctionHandle -> IO ()) -> AggregateCallbacks -> IO ()
-registerAggregateFunctionWithCleanup target cleanup configure callbacks =
+registerAggregateFunctionWithCleanup target cleanup configure =
+  registerAggregateFunctionWithOptionalStats target cleanup configure Nothing
+
+-- | Configure and register a managed aggregate function with statistics.
+-- The arguments are the target, configuration action, statistics callback, and
+-- execution callbacks. The configuration action must not set callbacks or user data.
+-- Statistics must include the result of an ungrouped aggregate with no input rows.
+-- See Note [Managed statistics callbacks].
+registerAggregateFunctionWithStats
+  :: RegistrationTarget
+  -> (DuckDBV2AggregateFunctionHandle -> IO ())
+  -> ContextCallback DuckDBV2AggregateFunctionStatsInfoHandle
+  -> AggregateCallbacks
+  -> IO ()
+registerAggregateFunctionWithStats target configure stats =
+  registerAggregateFunctionWithOptionalStats target (pure ()) configure (Just stats)
+
+-- | Register aggregate callbacks and cleanup in the same resource owner.
+registerAggregateFunctionWithOptionalStats
+  :: RegistrationTarget
+  -> IO ()
+  -> (DuckDBV2AggregateFunctionHandle -> IO ())
+  -> Maybe (ContextCallback DuckDBV2AggregateFunctionStatsInfoHandle)
+  -> AggregateCallbacks
+  -> IO ()
+registerAggregateFunctionWithOptionalStats target cleanup configure stats callbacks =
   withTarget
     target
     c_duckdb_v2_aggregate_function_create
@@ -496,6 +576,12 @@ registerAggregateFunctionWithCleanup target cleanup configure callbacks =
                     DuckDBV2AggregateFunctionDestroyCallbackFn
                     (DuckDBV2AggregateFunctionDestroyCallbackFn_Aux (guardCallback callback))
                     (c_duckdb_v2_aggregate_function_set_destroy_callback function)
+              , installOptional stats $ \callback ->
+                  install
+                    allocate
+                    DuckDBV2AggregateFunctionStatsCallbackFn
+                    (DuckDBV2AggregateFunctionStatsCallbackFn_Aux (guardContext callback))
+                    (c_duckdb_v2_aggregate_function_set_stats_callback function)
               ]
         )
         (attachOpaque (c_duckdb_v2_aggregate_function_set_user_data function))
@@ -554,7 +640,28 @@ registerTableFunction connection name parameters callbacks = do
 -- | Configure and register a managed table function on a connection or extension.
 -- The configuration action borrows the builder. Do not set callbacks or user data.
 registerTableFunctionWith :: RegistrationTarget -> (DuckDBV2TableFunctionHandle -> IO ()) -> TableCallbacks -> IO ()
-registerTableFunctionWith target configure callbacks =
+registerTableFunctionWith target configure = registerTableFunctionWithOptionalStats target configure Nothing
+
+-- | Configure and register a managed table function with statistics.
+-- The arguments are the target, configuration action, statistics callback, and
+-- execution callbacks. The configuration action must not set callbacks or user data.
+-- See Note [Managed statistics callbacks].
+registerTableFunctionWithStats
+  :: RegistrationTarget
+  -> (DuckDBV2TableFunctionHandle -> IO ())
+  -> ContextCallback DuckDBV2TableFunctionStatsInfoHandle
+  -> TableCallbacks
+  -> IO ()
+registerTableFunctionWithStats target configure stats = registerTableFunctionWithOptionalStats target configure (Just stats)
+
+-- | Register with an optional statistics callback in the same resource owner.
+registerTableFunctionWithOptionalStats
+  :: RegistrationTarget
+  -> (DuckDBV2TableFunctionHandle -> IO ())
+  -> Maybe (ContextCallback DuckDBV2TableFunctionStatsInfoHandle)
+  -> TableCallbacks
+  -> IO ()
+registerTableFunctionWithOptionalStats target configure stats callbacks =
   withTarget
     target
     c_duckdb_v2_table_function_create
@@ -624,6 +731,12 @@ registerTableFunctionWith target configure callbacks =
                     DuckDBV2TableFunctionGetBindInfoCallbackFn
                     (DuckDBV2TableFunctionGetBindInfoCallbackFn_Aux (guardContext callback))
                     (c_duckdb_v2_table_function_set_get_bind_info_callback function)
+              , installOptional stats $ \callback ->
+                  install
+                    allocate
+                    DuckDBV2TableFunctionStatsCallbackFn
+                    (DuckDBV2TableFunctionStatsCallbackFn_Aux (guardContext callback))
+                    (c_duckdb_v2_table_function_set_stats_callback function)
               ]
         )
         (attachOpaque (c_duckdb_v2_table_function_set_user_data function))
@@ -651,7 +764,7 @@ registerTableFunctionWith target configure callbacks =
 -- with no error and has no effect, because DuckDB keeps the first cast.
 --
 -- Warning: DuckDB does not always run the callback. Three rules of the
--- optimizer of DuckDB 2.0.0 use the two types of a cast and not the cast
+-- optimizer of DuckDB use the two types of a cast and not the cast
 -- function:
 --
 -- * expression_rewriter (ComparisonSimplificationRule, with
@@ -662,7 +775,7 @@ registerTableFunctionWith target configure callbacks =
 -- * statistics_propagation gives min and max from the statistics of the
 --   column through the cast.
 --
--- In runs with DuckDB 2.0.0, a cast from INTEGER to BIGINT, from BIGINT to a
+-- In runs with DuckDB, a cast from INTEGER to BIGINT, from BIGINT to a
 -- custom type with the base type BIGINT, and from that type to BIGINT, with a
 -- callback that changes the value, gave wrong rows and no error. This occurred
 -- in a filter, a filter with a parameter, IN, BETWEEN, a comparison of two
@@ -735,7 +848,7 @@ registerCastWith target configure execute =
 
 {- Note [The error code of a failed cast]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-DuckDB 2.0.0 runs each cast as its scalar function "__cast". It marks this
+DuckDB runs each cast as its scalar function "__cast". It marks this
 function as fallible only from the source type and the target type
 (CreateCastExpression in src/function/scalar/operator/cast.cpp, lines 174 to
 190, and BoundCastExpression::CastCanThrow in
@@ -865,7 +978,7 @@ registerInstanceReplacementScan instance' callback = withInstanceHandle instance
 -- | Store Haskell state in a native-owned bind, global, local, or init data slot.
 -- Pass the corresponding native opaque setter. Do not use registration user data.
 -- This helper uses native default equality. Use raw opaque callbacks for custom equality.
--- Transfer a value at most once to each native state slot. In DuckDB 2.0.0, a
+-- Transfer a value at most once to each native state slot. In DuckDB, a
 -- setter for init data, batch data, global state, or local state does not release
 -- a pointer that it replaces. See Note [Callback ownership] in
 -- <src/Database.DuckDB.Simple.Callback.html Database.DuckDB.Simple.Callback>. Store an @IORef@ or another mutable state

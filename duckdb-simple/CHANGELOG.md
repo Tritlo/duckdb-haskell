@@ -3,8 +3,13 @@
 See [MIGRATION.md](https://github.com/Tritlo/duckdb-haskell/blob/main/MIGRATION.md)
 for the upgrade instructions.
 
-## 1.0.0.1
+## 1.0.1.0
 
+- Add managed optimizer-statistics callbacks with
+  `registerScalarFunctionWithStats`, `registerAggregateFunctionWithStats`, and
+  `registerTableFunctionWithStats` in `Database.DuckDB.Simple.V2.Registration`.
+  They let the planner use guaranteed nullability facts. Existing registration
+  functions and callback records keep their types and constructors.
 - Use DuckDB 2.0.1 and `duckdb-ffi` 2.0.1.x. Rebuild loadable extensions
   for this native release.
 - Parse errors in user SQL follow the connection's transaction invalidation

@@ -90,7 +90,7 @@ import Database.DuckDB.Simple.LogicalRep (
  )
 import Database.DuckDB.Simple.Native (arraySizeReason)
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
-import GHC.Float (double2Float, float2Double, int2Double, int2Float, rationalToDouble, rationalToFloat, word2Double)
+import GHC.Float (double2Float, float2Double, int2Float, rationalToDouble, rationalToFloat)
 import GHC.Num.Integer (integerFromWordList)
 import GHC.TypeLits (KnownNat, Nat, natVal)
 import Numeric.Natural (Natural)
@@ -168,7 +168,7 @@ newtype BigNum = BigNum Integer
 -- header and a big-endian payload. Negative values have a complemented payload.
 -- Restore that payload, then split it into machine-word limbs for
 -- @integerFromWordList@, with the most significant limb first.
--- This is the BIGNUM storage of DuckDB 2.0.0. The V2 API does not commit to this
+-- This is the BIGNUM storage of DuckDB. The V2 API does not commit to this
 -- layout, and this library does not use this function.
 fromBigNumBytes :: [Word8] -> Integer
 fromBigNumBytes bytes =
@@ -194,7 +194,7 @@ fromBigNumBytes bytes =
 -- | Encode an @Integer@ as a DuckDB BIGNUM blob. Write the 3-byte header
 -- (sign bit and payload length), then the magnitude bytes in big-endian order.
 -- Complement the header and the payload for a negative value.
--- This is the BIGNUM storage of DuckDB 2.0.0. The V2 API does not commit to
+-- This is the BIGNUM storage of DuckDB. The V2 API does not commit to
 -- this layout, and this library does not use this function.
 toBigNumBytes :: Integer -> [Word8]
 toBigNumBytes value =
@@ -790,9 +790,8 @@ instance FromField Float where
     case fieldValue of
       -- DuckDB casts an integer to FLOAT with static_cast<float>, which
       -- rounds one time to the nearest value, ties to even. int2Float rounds
-      -- in the same way. As seen in CI, the DuckDB 2.0.0 build for macOS on
-      -- Apple Silicon rounds some BIGINT values above 2^53 two times in its
-      -- cast to FLOAT, and the library gives the nearest value there.
+      -- in the same way. The library gives the nearest value independently
+      -- of platform-specific native cast rounding.
       FieldInt i -> pure (int2Float (fromIntegral i))
       FieldDecimal value -> pure (decimalToFloat value)
       _ -> do
@@ -804,40 +803,23 @@ instance FromField Float where
 {- Note [DECIMAL as DOUBLE and FLOAT]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 A DECIMAL that a Double or a Float reads gives the value of the cast of DuckDB
-2.0.0 to DOUBLE or FLOAT. The cast is TryCastDecimalToFloatingPoint in
-src/common/operator/cast_operators.cpp of DuckDB. decimalToDouble and
-decimalToFloat use the same three paths:
+to DOUBLE or FLOAT. TryCastDecimalToFloatingPoint in
+src/common/operator/cast_operators.cpp uses these paths:
 
-1. Scale 0 and width 19 to 38. DuckDB stores the value as a HUGEINT and casts
-   it with CastBigintToFloating in src/common/types/hugeint.cpp:
-
-     case -1: result = -REAL_T(NumericLimits<uint64_t>::Maximum() - input.lower) - 1;
-     default: result = REAL_T(input.lower) + REAL_T(input.upper) * (REAL_T(NumericLimits<uint64_t>::Maximum()) + 1);
-
-   The case is the value of input.upper. A FLOAT result is this DOUBLE value
-   cast to float (Hugeint::TryCast for float). hugeIntToDouble copies the
-   formula. The formula rounds more than one time, so it does not always give
-   the nearest value. DuckDB casts -9007199254740994::DECIMAL(19,0) to
-   -9007199254740992.0, and 3356951675583485076575379654993209529::DECIMAL(38,0)
-   to 3.356951675583485e36. The nearest values are -9007199254740994.0 and
-   3.3569516755834854e36. This path exists only to give the value of the cast.
-2. Scale 0 with a width of at most 18, or an integer of at most 2^53 (2^24
-   for FLOAT) with a scale of at most 22 (10 for FLOAT). DuckDB converts the
-   integer to the floating-point type and divides it by the power of ten in
-   that type. Under the limits, the integer and the power of ten are exact in
-   the type, so only the division rounds. With scale 0, the division by 1 is
-   exact, so only the conversion of the integer rounds. Each step rounds one
-   time to the nearest value.
-3. Each other value. DuckDB converts the decimal digits with fast_float, which
-   gives the nearest value.
-
-Thus paths 2 and 3 give the nearest value, with ties to even. In path 2 the
-library does the same steps. With scale 0 and a width of at most 18, the
-integer is an Int64 value, and fromInteger converts it with int2Double or
-int2Float, which round one time as the C++ conversion of int64_t does. In path
-3 the library uses rationalToDouble or rationalToFloat. fromRational uses these
-functions too. They give the nearest value with ties to even, and they do not
-reduce the fraction first.
+1. Scale 0. DuckDB converts the stored integer directly to the target type.
+   For a HUGEINT, CastBigintToFloating in src/common/types/hugeint.cpp converts
+   its unsigned magnitude with Uhugeint::TryCast. That conversion folds the
+   discarded bits into a sticky bit before rounding. It gives the nearest
+   value, with ties to even. The conversion to FLOAT does not pass through DOUBLE. The
+   library uses fromInteger for both target types.
+2. An integer with magnitude at most 2^53 (2^24 for FLOAT) and scale at most 22
+   (10 for FLOAT). DuckDB converts the integer to the target type and divides
+   it by the power of ten in that type. Both inputs are exact, so only the
+   division rounds. The library uses the same steps.
+3. Each other value. DuckDB converts the decimal digits with fast_float,
+   which gives the nearest value, with ties to even. The library uses
+   rationalToDouble or rationalToFloat with the unscaled integer and 10^scale.
+   These functions give the same rounding without reducing the fraction first.
 
 Path 3 is slower than path 2. It applies to a Double with a scale above 0 when
 the unscaled integer is above 2^53 or the scale is above 22: at scale 2 for an
@@ -849,8 +831,7 @@ above 10.
 -- | The value of the cast of DuckDB from a DECIMAL to DOUBLE.
 -- See Note [DECIMAL as DOUBLE and FLOAT].
 decimalToDouble :: DecimalValue -> Double
-decimalToDouble DecimalValue{decimalWidth, decimalScale, decimalInteger}
-  | decimalScale == 0 && decimalWidth > 18 = hugeIntToDouble decimalInteger
+decimalToDouble DecimalValue{decimalScale, decimalInteger}
   | decimalScale == 0 = fromInteger decimalInteger
   | decimalScale <= 22 && abs decimalInteger <= 9007199254740992 = fromInteger decimalInteger / 10 ^ decimalScale
   | otherwise = rationalToDouble decimalInteger (10 ^ decimalScale)
@@ -858,26 +839,10 @@ decimalToDouble DecimalValue{decimalWidth, decimalScale, decimalInteger}
 -- | The value of the cast of DuckDB from a DECIMAL to FLOAT.
 -- See Note [DECIMAL as DOUBLE and FLOAT].
 decimalToFloat :: DecimalValue -> Float
-decimalToFloat DecimalValue{decimalWidth, decimalScale, decimalInteger}
-  | decimalScale == 0 && decimalWidth > 18 = double2Float (hugeIntToDouble decimalInteger)
+decimalToFloat DecimalValue{decimalScale, decimalInteger}
   | decimalScale == 0 = fromInteger decimalInteger
   | decimalScale <= 10 && abs decimalInteger <= 16777216 = fromInteger decimalInteger / 10 ^ decimalScale
   | otherwise = rationalToFloat decimalInteger (10 ^ decimalScale)
-
--- | The cast of DuckDB from a HUGEINT to DOUBLE. It is not always the nearest
--- value. See Note [DECIMAL as DOUBLE and FLOAT].
-hugeIntToDouble :: Integer -> Double
-hugeIntToDouble value
-  | upper == -1 = negate (word2Double (maxBound - lower)) - 1
-  | otherwise = word2Double lower + int2Double upper * 18446744073709551616
-  where
-    -- The two 64-bit halves of the HUGEINT in two's complement. word2Double
-    -- and int2Double round one time to the nearest value, ties to even, as
-    -- the C++ conversions of uint64_t and int64_t to double do. The C++
-    -- factor is 2^64 after its rounding, so the product is exact. The sum or
-    -- the difference rounds one time, as in C++.
-    upper = fromInteger (value `shiftR` 64) :: Int
-    lower = fromInteger value :: Word
 
 -- | Reads VARCHAR, TINYINT to BIGINT as decimal digits, BOOLEAN as @true@ or
 -- @false@, and the label of an ENUM value. It does not read FLOAT or DOUBLE. See

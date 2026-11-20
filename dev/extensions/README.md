@@ -1,6 +1,6 @@
 # Loadable Haskell extensions
 
-This directory contains a loadable Haskell example for the pinned DuckDB 2.0.0
+This directory contains a loadable Haskell example for the pinned DuckDB 2.0.1
 release. The example is not part of either Hackage package. The reusable
 `Database.DuckDB.Simple.Extension` helper and extension-mode FFI headers are
 part of the packages. The module's Haddock describes the entry point, typed
@@ -61,11 +61,13 @@ registration retains callback resources after the entrypoint returns.
 `registerCustomOption`, and `registerLogSink` use the same opaque extension
 value. Macro signatures and custom-option defaults use `defaultValue`, as on a
 connection.
-Upstream marks the complete V2 API as unstable. An extension uses the
+
+An extension uses the
 `C_STRUCT_UNSTABLE` function table, which DuckDB gives only to an extension
-whose footer names the exact running release. `Pack.hs` writes the version of
-the pinned V2 header. A later DuckDB release needs a `duckdb-ffi` release with
-its headers. A rebuild against the same headers does not help.
+whose footer names the exact running release. `Pack.hs` writes the binary
+release tag from `duckdb-ffi/native.sha256`. This tag can differ from the
+function-table version in the upstream headers. A later native release
+requires a matching package pin and a rebuilt extension.
 
 The example registers typed scalar functions, scalar and table macros, a
 PRAGMA, a typed custom option, and a log sink. They exercise native results,
@@ -145,7 +147,7 @@ Read the target platform before packaging:
 ```
 
 Use the exact platform printed by the CLI. `Pack.hs` reads the DuckDB version
-from `duckdb-ffi/cbits/duckdb_v2.h`, so run it from the repository root. See
+from `duckdb-ffi/native.sha256`, so run it from the repository root. See
 [PACKAGING.md](PACKAGING.md).
 
 On Linux, Nix's GHC can require a newer glibc than the host CLI uses.

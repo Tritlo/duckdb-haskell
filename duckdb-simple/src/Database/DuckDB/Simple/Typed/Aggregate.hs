@@ -100,7 +100,7 @@ stable pointers (StateTable and bindStateTable). A release removes the key from
 the table, and only the caller that removes it frees the stable pointer. This
 check stops a second free of a stable pointer that a byte copy of the native
 state also holds. It does not stop the release of a byte copy after the runtime
-has given its stable pointer to a new state. DuckDB 2.0.0 destroys each state at
+has given its stable pointer to a new state. DuckDB destroys each state at
 one location. The destructor of the state table frees the stable pointers that
 remain (releaseStateTable).
 
@@ -109,16 +109,16 @@ The code still reads the table as optional (readStateTable). Without bind data,
 only the destroy callback and a failed finalize release the states, and a
 release frees each stable pointer that it reads.
 
-These are the states that DuckDB 2.0.0 destroys and does not destroy.
+These are the states that DuckDB destroys and does not destroy.
 
 - The header says that the destroy callback runs on states that are discarded
-  without being finalized. DuckDB 2.0.0 runs the destroy callback on finalized
+  without being finalized. DuckDB runs the destroy callback on finalized
   states too: a hash aggregate destroys each chunk of states after it finalizes
   them, and an ungrouped aggregate and a window destroy their states after
   finalize (radix_partitioned_hashtable.cpp, physical_ungrouped_aggregate.cpp,
   and window_segment_tree.cpp).
 
-- DuckDB 2.0.0 does not run the destroy callback on these states:
+- DuckDB does not run the destroy callback on these states:
 
   - The states of a finalize call that fails, in a hash aggregate and in a
     window.
@@ -132,7 +132,7 @@ These are the states that DuckDB 2.0.0 destroys and does not destroy.
   of the other states.
 
 DuckDB runs the destructor of the state table when it drops the bind data of a
-call site. In DuckDB 2.0.0 a hash table and an ungrouped aggregate each hold a
+call site. In DuckDB a hash table and an ungrouped aggregate each hold a
 copy of the bind data, and each copy shares the holder of the state table
 through a shared pointer (CV2AggregateFunctionData::Copy and CV2UserData). Each
 of them runs the destroy callback on its states before it drops its copy
@@ -177,7 +177,7 @@ The destructor of the table reads all stripes (releaseStateTable).
 -- | The live states of one call site, as the keys of their stable pointers.
 -- 'stateStripe' gives the stripe of a key. See Note [State table stripes].
 --
--- With the table, the library frees the states that DuckDB 2.0.0 does not
+-- With the table, the library frees the states that DuckDB does not
 -- destroy. See Note [Aggregate state life cycle].
 type StateTable = Array Int (IORef IntSet.IntSet)
 

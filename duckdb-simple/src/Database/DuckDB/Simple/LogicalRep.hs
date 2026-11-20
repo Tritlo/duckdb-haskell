@@ -58,7 +58,7 @@ data LogicalTypeRep
 {- Note [Type aliases]
 ~~~~~~~~~~~~~~~~~~~~~~
 DuckDB can keep an alias on a type. The alias uses the value representation of
-its base type, and the type text of DuckDB gives the alias. In DuckDB 2.0.0 these
+its base type, and the type text of DuckDB gives the alias. In DuckDB these
 types have an alias:
 
 - JSON. It is VARCHAR with the alias JSON, also as a child type, for example
@@ -100,7 +100,7 @@ These places keep the alias:
   aliasBase. A value that the library reads and binds again keeps its type when
   the native default cast supports its aliases, for example STRUCT(k JSON).
 
-Alias metadata does not imply native cast support. DuckDB 2.0.0 cannot cast a
+Alias metadata does not imply native cast support. DuckDB cannot cast a
 TIME value to an alias of TIME through the default cast. The library writes
 TIME alias payloads through public vector storage. See Note [TIME alias values]
 in "Database.DuckDB.Simple.ToField". LogicalTypeRep stores the alias
@@ -148,13 +148,13 @@ mapEntryTypes parent = case aliasBase parent of
 {- Note [Type texts]
 ~~~~~~~~~~~~~~~~~~~~
 logicalTypeSQL gives the text of a type that duckdb_v2_logical_type_to_text of
-DuckDB 2.0.0 gives, for example DECIMAL(18,3), BIGINT[], INTEGER[3],
+DuckDB gives, for example DECIMAL(18,3), BIGINT[], INTEGER[3],
 MAP(VARCHAR, BIGINT), ENUM('sad', 'happy'), and GEOMETRY('OGC:CRS84'). An
 alias gives its name, for example JSON. The function is pure, so an error of a
 FromField instance can name the type with no native handle, and the text costs
 nothing until an error renders.
 
-These rules follow LogicalType::ToString of DuckDB 2.0.0:
+These rules follow LogicalType::ToString of DuckDB:
 
 - A scalar type has the name of its type id (logicalTypeIdName in
   "Database.DuckDB.Simple.Native"), and SQL NULL is "NULL" in double quotes. A
@@ -166,7 +166,7 @@ These rules follow LogicalType::ToString of DuckDB 2.0.0:
   quotes when it has a character that is not an ASCII letter, a digit, or an
   underscore, when it starts with a digit or an underscore followed by a digit,
   or when it is a keyword of DuckDB in any case (SQLIdentifier::ToString).
-  The keywords are the 502 names of duckdb_keywords() of DuckDB 2.0.0.
+  The keywords are the 502 names from duckdb_keywords().
 - An empty STRUCT or TUPLE has only its type name, with no parentheses.
 
 A test case compares the text with duckdb_v2_logical_type_to_text for one type of
@@ -210,7 +210,7 @@ logicalTypeSQL = \case
         || Set.member (Text.toLower name) duckDBKeywords
     plain index char = isAsciiLower char || isAsciiUpper char || char == '_' || (index > 0 && isDigit char)
 
--- | The keywords of DuckDB 2.0.0, from duckdb_keywords(). A field name that is
+-- | The keywords of DuckDB, from duckdb_keywords(). A field name that is
 -- a keyword needs quotes. See Note [Type texts].
 duckDBKeywords :: Set Text
 duckDBKeywords =
@@ -256,10 +256,9 @@ duckDBKeywords =
 -- name of a type from 'Database.DuckDB.Simple.Registration.registerCustomType'
 -- keeps that name, so a cast to it is a cast to the custom type. A name from
 -- SQL @CREATE TYPE name AS base@ is only another name for the base type, so a
--- cast to it is a cast to the base type. In a test with DuckDB 2.0.0, a
--- registered cast from BIGINT to a name for BIGINT did not run. The header of
--- DuckDB 2.0.0 says that a catalog type name is not kept, but DuckDB 2.0.0
--- keeps the name of a type from
+-- cast to it is a cast to the base type. A registered cast from BIGINT to
+-- a name for BIGINT does not run. The header says that a catalog type name is
+-- not kept. DuckDB keeps the name of a type from
 -- 'Database.DuckDB.Simple.Registration.registerCustomType'.
 data TypeDeclaration = StructuredType LogicalTypeRep | TypeExpression Text
   deriving (Eq, Show)

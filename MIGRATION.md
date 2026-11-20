@@ -1,6 +1,55 @@
 # Migration notes
 
-## DuckDB 2.0
+## DuckDB 2.0.0 to 2.0.1
+
+| Native DuckDB | `duckdb-ffi` | `duckdb-simple` |
+| --- | --- | --- |
+| 2.0.0 | 2.0.0.0 | 1.0.0.0 |
+| 2.0.1 | 2.0.1.0 | 1.0.1.0 |
+
+Rebuild V2 clients and loadable extensions against the matching native release.
+The 548 retained C signatures are identical. A dynamically linked Haskell
+application can still require new V2 symbols at startup, even when it imports
+only the retained module.
+
+### V2 bindings and extensions
+
+- Pass a boolean after the SQL string in `c_duckdb_v2_parse_sql`. Use 1 to
+  apply the connection's transaction invalidation policy to parse errors. Use
+  0 to inspect SQL without invalidating an active transaction. Simple uses 1
+  for user SQL. Under `ALL_ERRORS_INVALIDATE_TRANSACTION`, roll back after a
+  syntax error.
+- The V2 API adds 21 functions for optimizer statistics. The new entries
+  shift existing slots in the extension function table. Its header version is
+  still `2.0.0`. Package rebuilt extensions with a `v2.0.1` footer.
+- To report nullability to the optimizer from Simple, use
+  `registerScalarFunctionWithStats`, `registerAggregateFunctionWithStats`,
+  or `registerTableFunctionWithStats` in
+  `Database.DuckDB.Simple.V2.Registration`. Existing registrations continue
+  to work without a statistics callback.
+
+### Parameters, results, and settings
+
+- Finite TIMESTAMP and TIMESTAMPTZ parameters now accept
+  `-9223372036854775808` microseconds from the epoch. The next microsecond
+  represents negative infinity. TIMESTAMP_S and TIMESTAMP_MS accept whole
+  seconds and milliseconds within the finite range.
+- Reads of wide, scale-zero DECIMAL values now round once to the requested
+  `Float` or `Double`, with ties to even. For example,
+  `-9007199254740994::DECIMAL(19,0)` now reads as `-9007199254740994.0`
+  in a `Double`. In 2.0.0 it read as `-9007199254740992.0`.
+- DuckDB checks BIGNUM-to-integer casts for overflow and rejects negative
+  values for unsigned targets. `BigNum` still binds as BIGNUM. The binding
+  rules for Haskell `Integer` and `Natural` stay the same.
+- DuckDB can infer a common UNION type for collections with disjoint members.
+  It also finds a common payload type for matching members. A parameter such
+  as a list of UNION values follows the same rules as a SQL list literal.
+- Use `logging_sink` to select a log sink in startup configuration or SQL.
+  A session `RESET` on a custom option now exposes a global override when
+  one exists. The reset callback receives the declared default. A global
+  `RESET` restores that default.
+
+## DuckDB 1.5 to 2.0.0
 
 `duckdb-ffi` 2.0 and `duckdb-simple` 1.0 require DuckDB 2.0. Earlier package
 releases remain available for DuckDB 1.5. The retained API in

@@ -380,7 +380,7 @@ v20Tests =
         entries <- newIORef []
         withConnection ":memory:" \conn -> do
           Logging.registerLogStorage conn "hs_log_capture" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ())))
-          void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'hs_log_capture'; SELECT write_log('registered')"
+          void $ execute_ conn "CALL enable_logging(); SET logging_sink = 'hs_log_capture'; SELECT write_log('registered')"
         -- The sink receives the entry of write_log one time.
         readIORef entries >>= (@?= ["registered"]) . filter (== "registered") . map Logging.logEntryMessage
     ]

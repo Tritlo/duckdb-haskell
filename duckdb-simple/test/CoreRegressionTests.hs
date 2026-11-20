@@ -293,6 +293,16 @@ coreRegressionTests =
             >>= (@?= [(2, 1, 3)])
           (queryNamed conn "SELECT $1::BIGINT, $3::BIGINT" ["1" := (11 :: Int64), "3" := (33 :: Int64)] :: IO [(Int64, Int64)]) >>= (@?= [(11, 33)])
           assertThrows (query conn "SELECT $1::BIGINT, $3::BIGINT" (11 :: Int64, 33 :: Int64) :: IO [(Int64, Int64)])
+    , testCase "parse errors apply the transaction invalidation policy and permit rollback" $
+        withConnection ":memory:" $ \conn -> do
+          void $ execute_ conn "CREATE TABLE parse_audit (i INTEGER)"
+          void $ execute_ conn "BEGIN"
+          void $ execute_ conn "SET current_transaction_invalidation_policy = 'ALL_ERRORS_INVALIDATE_TRANSACTION'"
+          void $ execute_ conn "INSERT INTO parse_audit VALUES (1)"
+          assertSqlErrorType ErrorQueryParser (execute_ conn "SELEKT 1")
+          assertSqlErrorType ErrorDatabaseTransaction (execute_ conn "INSERT INTO parse_audit VALUES (2)")
+          void $ execute_ conn "ROLLBACK"
+          (query_ conn "SELECT count(*) FROM parse_audit" :: IO [Only Int64]) >>= (@?= [Only 0])
     , testCase "transaction preserves the original exception if rollback fails" $
         withConnection ":memory:" $ \conn -> do
           result <- try $ withTransaction conn $ do
@@ -456,6 +466,9 @@ coreRegressionTests =
                   Internal.InstanceClosed -> pure ()
                   Internal.InstanceOpen{} -> assertFailure "parent close missed an instance"
                 assertThrows (connect instance_)
+    , testCase "startup configuration selects a log sink" $
+        withConnectionWithConfig ":memory:" [("logging_sink", "stdout")] $ \conn ->
+          (query_ conn "SELECT current_setting('logging_sink')" :: IO [Only Text]) >>= (@?= [Only "stdout"])
     , testCase "startup configuration sets the whitelist before disabling external access" $ do
         path <- canonicalizePath "/tmp/duckdb-whitelist-probe"
         withConnectionWithConfig ":memory:" [("enable_external_access", "false"), ("allowed_paths", "['/tmp/duckdb-whitelist-probe']")] $ \conn ->
@@ -961,7 +974,7 @@ failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind row
           1
           ( \context -> Logging.registerLogSink (contextConnection context) "failing_log" (\_ -> countCall context >> failWith "failing log write") (pure ())
           )
-          ( \context -> runIn context "CALL enable_logging(); SET logging_storage = 'failing_log'; SELECT write_log('failing'); SET logging_storage = 'memory'"
+          ( \context -> runIn context "CALL enable_logging(); SET logging_sink = 'failing_log'; SELECT write_log('failing'); SET logging_sink = 'memory'"
           )
           Nothing
       , FailingCallback
@@ -970,7 +983,7 @@ failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind row
           1
           ( \context -> Logging.registerLogSink (contextConnection context) "failing_log" (\_ -> pure ()) (countCall context >> failWith "failing log flush")
           )
-          ( \context -> runIn context "CALL enable_logging(); SET logging_storage = 'failing_log'; SELECT write_log('failing'); SET logging_storage = 'memory'"
+          ( \context -> runIn context "CALL enable_logging(); SET logging_sink = 'failing_log'; SELECT write_log('failing'); SET logging_sink = 'memory'"
           )
           Nothing
       ]

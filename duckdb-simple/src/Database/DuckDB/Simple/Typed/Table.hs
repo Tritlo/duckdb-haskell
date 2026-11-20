@@ -70,12 +70,12 @@ the header), and the typed scans do not change it. But a multi-file function
 (registerMultiFileFunction) over the table function "claims the batches of the
 function itself, so that the rows of a file keep their order also when several
 threads scan it" (duckdb_v2_table_function_set_claim_batch_callback in the
-header). Then DuckDB 2.0.0 runs several exec callbacks of the scan of one file
+header). Then DuckDB runs several exec callbacks of the scan of one file
 at the same time. The lock of the MVar gives each row to one call only.
 
 A typed table function declares projection pushdown. DuckDB then asks the exec
 callback for only the columns that the query uses. When the query uses no
-column, for example in SELECT count(*), DuckDB 2.0.0 asks for the first column:
+column, for example in SELECT count(*), DuckDB asks for the first column:
 the function declares no virtual column, so LogicalGet::GetAnyColumn gives
 column 0 (logical_get.cpp), and CV2TableScanColumns gives column 0 for an empty
 projection (capi_v2_func_table.cpp). writeRows makes the values of the

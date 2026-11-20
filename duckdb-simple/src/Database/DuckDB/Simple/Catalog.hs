@@ -7,7 +7,7 @@
 --
 -- 'catalogTypeName' and 'lookupCatalogEntry' run SQL on the V2 connection.
 -- The SQL reads the @duckdb_*()@ table functions, which are the metadata
--- interface of DuckDB. The C API V2 of DuckDB 2.0.0 has no call that looks up
+-- interface of DuckDB. The C API V2 of DuckDB has no call that looks up
 -- a catalog entry. The V1 C API has such calls, but it has no supported way
 -- to use a V2 connection. In a reply of 2026-10-20 to an extension author,
 -- DuckDB wrote: "we'll add a catalog access interface eventually"

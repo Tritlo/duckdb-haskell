@@ -30,9 +30,11 @@ universal Mach-O files.
 
 The footer uses the `C_STRUCT_UNSTABLE` ABI. DuckDB loads it only into the
 release named in its version field. The script reads that version from the
-`DUCKDB_V2_API_VERSION_*` definitions in `duckdb-ffi/cbits/duckdb_v2.h`. For the
-pinned headers, the field is `v2.0.0`. The version is not an option, because
-the function table of another release can differ.
+release tags in `duckdb-ffi/native.sha256`. All archive records must name the
+same release. For the current pin, the field is `v2.0.1`. This binary release
+version is separate from the function-table version in the upstream headers,
+which is 2.0.0. The version is not an option, because the footer must
+match the native release.
 
 Each metadata field must contain at most 32 ASCII bytes. Required fields must
 be nonempty and must not contain NUL. The script rejects input that already has
@@ -41,7 +43,7 @@ refuses to overwrite any existing output. Remove an old output explicitly
 before packaging it again.
 
 The 534-byte suffix follows the pinned DuckDB
-[`scripts/append_metadata.cmake`](https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/scripts/append_metadata.cmake):
+[`scripts/append_metadata.cmake`](https://github.com/duckdb/duckdb/blob/8d78114e90a53823803660bf821f6073ac87da8c/scripts/append_metadata.cmake):
 a 22-byte custom-section prefix, eight reversed 32-byte metadata fields, and a
 256-byte zero signature. The fields record metadata format `4`, platform,
 DuckDB version, extension version, ABI type, and three empty reserved fields.

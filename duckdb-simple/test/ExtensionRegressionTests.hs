@@ -250,7 +250,7 @@ extensionRegressionTests =
     , testCase "a scalar callback failure gives an SQL error of the type ErrorInputInvalid" $
         withConnection ":memory:" \conn -> do
           -- An untyped callback failure gets the code DuckDBV2ErrorApi.
-          -- DuckDB 2.0.0 reports that code as an invalid input.
+          -- DuckDB reports that code as an invalid input.
           createFunction conn "throw_typed_scalar" (throwIO (userError "typed callback failure") :: IO Int64)
           outcome <- try (query_ conn "SELECT throw_typed_scalar()" :: IO [Only Int64])
           case outcome of
@@ -412,7 +412,7 @@ extensionRegressionTests =
         calls <- newIORef (0 :: Int)
         withConnection ":memory:" \conn -> do
           Logging.registerLogStorage conn "throwing_log" (\_ -> atomicModifyIORef' calls (\n -> (n + 1, ())) >> throwIO ThreadKilled)
-          void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'throwing_log'; SELECT write_log('contained')"
+          void $ execute_ conn "CALL enable_logging(); SET logging_sink = 'throwing_log'; SELECT write_log('contained')"
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
         readIORef calls >>= assertBool "the sink ran" . (> 0)
     , testCase "log sinks copy entries and flush when released" do
@@ -428,8 +428,8 @@ extensionRegressionTests =
           void $
             execute_
               conn
-              "CALL enable_logging(); SET logging_storage = 'captured_log'; SELECT write_log('Matti λ', level := 'warning', log_type := 'HaskellTest'); SET logging_storage = 'memory'"
-          -- DuckDB 2.0.0 flushes the sink five times for these statements.
+              "CALL enable_logging(); SET logging_sink = 'captured_log'; SELECT write_log('Matti λ', level := 'warning', log_type := 'HaskellTest'); SET logging_sink = 'memory'"
+          -- DuckDB flushes the sink five times for these statements.
           readIORef flushes >>= (@?= 5)
         end <- getCurrentTime
         received <- filter ((== "HaskellTest") . Logging.logEntryType) <$> readIORef entries
@@ -452,10 +452,10 @@ extensionRegressionTests =
           setDefaultDatabase instance_ "shared"
           Logging.registerInstanceLogSink instance_ "instance_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
           withConnectionOn instance_ \conn -> do
-            void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'instance_log'"
+            void $ execute_ conn "CALL enable_logging(); SET logging_sink = 'instance_log'"
             Logging.logConnectionMessage conn Logging.LogLevelWarning "HaskellConnection" "from a connection"
             Logging.logInstanceMessage instance_ Logging.LogLevelWarning "HaskellInstance" "from an instance"
-            void $ execute_ conn "SET logging_storage = 'memory'"
+            void $ execute_ conn "SET logging_sink = 'memory'"
         received <- readIORef entries
         let ofType kind = filter ((== kind) . Logging.logEntryType) received
         map Logging.logEntryMessage (ofType "HaskellConnection") @?= ["from a connection"]
@@ -468,7 +468,7 @@ extensionRegressionTests =
         entries <- newIORef []
         (connectionId, transactionId, queryId) <- withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
           Logging.registerLogSink conn "id_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
-          void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'id_log'"
+          void $ execute_ conn "CALL enable_logging(); SET logging_sink = 'id_log'"
           -- In a transaction, the transaction id and the query id differ.
           void $ execute_ conn "BEGIN"
           _ <- query_ conn "SELECT 1" :: IO [Only Int64]
@@ -477,7 +477,7 @@ extensionRegressionTests =
               conn
               "SELECT write_log('ids', level := 'warning', log_type := 'HaskellIds'), current_connection_id(), current_transaction_id(), current_query_id()"
               :: IO [(FieldValue, Word64, Word64, Word64)]
-          void $ execute_ conn "COMMIT; SET logging_storage = 'memory'"
+          void $ execute_ conn "COMMIT; SET logging_sink = 'memory'"
           case rows of
             [(_, connection, transaction, queryNumber)] -> pure (connection, transaction, queryNumber)
             _ -> assertFailure ("expected one row, got " <> show rows)
@@ -644,10 +644,13 @@ extensionRegressionTests =
                   }
           Config.registerCustomOption conn option
           Config.getConfigDefaultValue conn "haskell_limit" >>= (@?= FieldInt64 3)
+          Config.setConfigValue conn Config.SettingScopeGlobal "haskell_limit" (9 :: Int64)
           Config.setConfigValue conn Config.SettingScopeSession "haskell_limit" (7 :: Int64)
           Config.getConfigValue conn "haskell_limit" >>= (@?= (FieldInt64 7, Config.SettingScopeSession))
           assertSqlErrorContaining "limit must be nonnegative" $ Config.setConfigValue conn Config.SettingScopeSession "haskell_limit" (-1 :: Int64)
           void $ execute_ conn "RESET haskell_limit"
+          Config.getConfigValue conn "haskell_limit" >>= (@?= (FieldInt64 9, Config.SettingScopeGlobal))
+          void $ execute_ conn "RESET GLOBAL haskell_limit"
           fmap Config.configValueText <$> Config.getConfigOption conn "haskell_limit" >>= (@?= Just (Just "3"))
           assertSqlError $ Config.registerCustomOption conn option
     , testCase "listConfigFlags lists a custom option of the connection" $
@@ -691,7 +694,7 @@ extensionRegressionTests =
           Config.getConfigValue conn "haskell_variant_update" >>= (@?= (FieldInt64 7, Config.SettingScopeSession))
     , testCase "setConfigValue with an Integer or a Natural checks the range of an unsigned option" $
         withConnection ":memory:" \conn -> do
-          -- DuckDB 2.0.0 gives asof_loop_join_threshold the type UBIGINT.
+          -- DuckDB gives asof_loop_join_threshold the type UBIGINT.
           let option = "asof_loop_join_threshold"
               current = fst <$> Config.getConfigValue conn option
           Config.setConfigValue conn Config.SettingScopeSession option (9 :: Integer)
@@ -781,9 +784,9 @@ extensionRegressionTests =
         entries <- newIORef []
         withConnection ":memory:" \conn -> do
           Logging.registerLogSink conn "level_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
-          void $ execute_ conn "CALL enable_logging(level := 'trace'); SET logging_storage = 'level_log'"
+          void $ execute_ conn "CALL enable_logging(level := 'trace'); SET logging_sink = 'level_log'"
           forM_ [minBound .. maxBound] \level -> Logging.logConnectionMessage conn level "HaskellLevels" (Text.pack (show level))
-          void $ execute_ conn "SET logging_storage = 'memory'"
+          void $ execute_ conn "SET logging_sink = 'memory'"
         received <- filter ((== "HaskellLevels") . Logging.logEntryType) <$> readIORef entries
         sort [(Logging.logEntrySeverity entry, Logging.logEntryLevel entry, Logging.logEntryMessage entry) | entry <- received]
           @?= [ (level, name, Text.pack (show level))

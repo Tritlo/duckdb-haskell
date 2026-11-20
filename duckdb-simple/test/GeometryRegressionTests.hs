@@ -385,7 +385,7 @@ tests =
           inserted <- try (execute conn "INSERT INTO stored VALUES (?)" (Only other))
           case inserted of
             Left err -> do
-              sqlErrorMessage err @?= mismatch
+              Text.takeWhile (/= '\n') (sqlErrorMessage err) @?= mismatch
               sqlErrorType err @?= Just ErrorQueryBinder
             Right _ -> assertFailure "expected the CRS cast error of DuckDB"
           (query_ conn "SELECT count(*) FROM stored" :: IO [Only Int64]) >>= (@?= [Only 0])
@@ -395,7 +395,7 @@ tests =
           compared <- try (query conn "SELECT count(*) FROM stored WHERE v = ?" (Only other) :: IO [Only Int64])
           case compared of
             Left err -> do
-              sqlErrorMessage err @?= mismatch
+              Text.takeWhile (/= '\n') (sqlErrorMessage err) @?= mismatch
               sqlErrorType err @?= Just ErrorQueryBinder
             Right rows -> assertFailure ("expected the CRS cast error of DuckDB, got " <> show rows)
     , testCase "a Maybe RawGeometry parameter binds NULL and a value" $

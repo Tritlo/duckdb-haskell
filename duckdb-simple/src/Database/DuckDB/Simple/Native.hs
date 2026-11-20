@@ -95,7 +95,7 @@ import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable, peek, poke, sizeOf)
 
 -- | The largest size of a DuckDB ARRAY: @ArrayType::MAX_ARRAY_SIZE@ in
--- @src/include/duckdb/common/types.hpp@ of DuckDB 2.0.0. See
+-- @src/include/duckdb/common/types.hpp@ of DuckDB. See
 -- Note [Sized ARRAY bounds].
 maxArraySize :: Int
 maxArraySize = 100000
@@ -600,7 +600,7 @@ back ErrorRuntimeInternal and ErrorRuntimeFatal and writes the code
 DuckDBV2ErrorApi and the message for them. See
 Note [Errors that leave a callback] in "Database.DuckDB.Simple.Callback". The
 type ErrorRuntimeInternal, and ErrorRuntimeFatal, must never go into the error
-slot of a callback, because DuckDB 2.0.0 then invalidates the database, and
+slot of a callback, because DuckDB then invalidates the database, and
 each later statement raises "FATAL Error: ... database has been invalidated".
 This holds for a callback at execution time, for example a scalar function, a
 table function, a cast, or COPY FROM; at bind time, for example in a
@@ -621,7 +621,7 @@ factoryOutput connection create = withConnectionFactory connection (output . cre
 withSQLStatement :: DuckDBV2ConnectionHandle -> Text -> (DuckDBV2SqlStatementHandle -> IO a) -> IO a
 withSQLStatement connection sql action =
   TextForeign.withCString sql $ \source ->
-    bracket (output (c_duckdb_v2_parse_sql connection (ConstPtr source))) (destroy c_duckdb_v2_statement_iterator_destroy) $ \iterator ->
+    bracket (output (c_duckdb_v2_parse_sql connection (ConstPtr source) 0)) (destroy c_duckdb_v2_statement_iterator_destroy) $ \iterator ->
       bracket (output (c_duckdb_v2_statement_iterator_next iterator)) (destroy c_duckdb_v2_sql_statement_destroy) action
 
 -- | Borrow a factory during its native callback. Do not retain or destroy it.
@@ -894,7 +894,7 @@ logicalTypeIdFromNative = \case
   DuckDBV2LogicalTypeIdTuple -> pure LogicalTypeIdTuple
   DuckDBV2LogicalTypeId value -> throwUnknownNative "logical type id" value
 
--- | The name of a type id in DuckDB 2.0.0. duckdb_v2_logical_type_get_name
+-- | The name of a type id in DuckDB. duckdb_v2_logical_type_get_name
 -- gives this name for a type with no alias. See Note [Type aliases] in
 -- "Database.DuckDB.Simple.LogicalRep".
 logicalTypeIdName :: LogicalTypeId -> Text

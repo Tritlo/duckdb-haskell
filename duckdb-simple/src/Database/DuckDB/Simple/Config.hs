@@ -66,7 +66,7 @@ data ConfigValue = ConfigValue
 -- 'configOptionDefault' is the static default of the declaration. 'Nothing'
 -- means that the declaration has no default. The value after @RESET@ can
 -- differ from the static default: @progress_bar_time@ has no static default,
--- and DuckDB 2.0.0 gives 2000 after @RESET@.
+-- and DuckDB gives 2000 after @RESET@.
 data ConfigOption = ConfigOption
   { configOptionName :: Text
   , configOptionDescription :: Text

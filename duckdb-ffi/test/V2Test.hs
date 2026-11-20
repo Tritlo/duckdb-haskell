@@ -152,7 +152,7 @@ readView (DuckDBV2Str ptr len)
 
 withStatement :: DuckDBV2ConnectionHandle -> String -> (DuckDBV2SqlStatementHandle -> IO a) -> IO a
 withStatement conn sql action = withCString sql $ \text ->
-  withHandle (c_duckdb_v2_parse_sql conn (ConstPtr text)) c_duckdb_v2_statement_iterator_destroy $ \iterator ->
+  withHandle (c_duckdb_v2_parse_sql conn (ConstPtr text) 1) c_duckdb_v2_statement_iterator_destroy $ \iterator ->
     withHandle (c_duckdb_v2_statement_iterator_next iterator) c_duckdb_v2_sql_statement_destroy action
 
 withResult :: DuckDBV2ConnectionHandle -> String -> (DuckDBV2ResultHandle -> IO a) -> IO a

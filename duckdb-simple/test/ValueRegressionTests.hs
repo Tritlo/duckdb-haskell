@@ -264,7 +264,7 @@ valueRegressionTests =
               in  UnionValue (fromIntegral (count - 1)) (name (count - 1)) (FieldInt32 7) members
             accepted = lastMember 255
         (query conn "SELECT union_tag(?)::VARCHAR, ?" (accepted, accepted) :: IO [(Text, UnionValue FieldValue)]) >>= (@?= [("m254", accepted)])
-        -- DuckDB 2.0.0 permits at most 255 members in a UNION type.
+        -- DuckDB permits at most 255 members in a UNION type.
         forM_ [256, 300] \count ->
           try (query conn "SELECT ?" (Only (lastMember count)) :: IO [Only (UnionValue FieldValue)]) >>= \case
             Left SQLError{sqlErrorMessage, sqlErrorType} -> do
@@ -567,11 +567,14 @@ valueRegressionTests =
           (sized mismatch :: SizedArray 2 (Maybe (StructValue FieldValue)))
           ErrorQueryNotImplemented
           "Cannot combine types"
-        unions <-
-          mapM
-            (\sql -> query_ conn sql :: IO [Only (UnionValue FieldValue)])
-            ["SELECT union_value(a := 1)::UNION(a INTEGER)", "SELECT union_value(b := 'x')::UNION(b VARCHAR)"]
-        duckdbError "UNION list" (map fromOnly (concat unions)) ErrorTypeConversion "is not present in target union"
+        -- A disjoint member survives the native UNION common-type calculation.
+        let unionSQL = ["union_value(a := 1)", "union_value(b := 'x')"]
+            unionList = "[" <> Text.intercalate ", " unionSQL <> "]"
+        values <- forM unionSQL $ \sql -> do
+          [Only value] <- query_ conn (Query ("SELECT " <> sql)) :: IO [Only (UnionValue FieldValue)]
+          pure value
+        [Only expected] <- query_ conn (Query ("SELECT " <> unionList)) :: IO [Only FieldValue]
+        query conn "SELECT ?" (Only values) >>= (@?= [Only expected])
         duckdbError
           "ARRAY sizes"
           ( FieldList
@@ -1113,8 +1116,8 @@ valueRegressionTests =
         _ <- execute conn "INSERT INTO empty_integers VALUES (?)" (Only ([] :: [Integer]))
         (query_ conn "SELECT typeof(v), v::VARCHAR FROM empty_integers" :: IO [(Text, Text)]) >>= (@?= [("INTEGER[]", "[]")])
         -- In a VARIANT, the elements keep the HUGEINT values, so a cast to an
-        -- unsigned type checks their range. A BIGNUM element gave
-        -- 18446744073709551611 for -5 with no error.
+        -- unsigned type checks their range. DuckDB also checks the range
+        -- of a BIGNUM element.
         let variantCast :: (ToField a) => String -> a -> Text -> Assertion
             variantCast label value target = do
               _ <- execute_ conn "CREATE OR REPLACE TABLE variant_integers (v VARIANT)"
@@ -1363,17 +1366,23 @@ valueRegressionTests =
         (query conn "SELECT typeof(?), ?::VARCHAR" (Map.empty :: Map.Map Text [Int64], Map.empty :: Map.Map Text [Int64]) :: IO [(Text, Text)])
           >>= (@?= [("MAP(VARCHAR, \"NULL\")", "{}")])
     , testCase "an array of BigNum values keeps the BIGNUM casts of DuckDB" $ withConnection ":memory:" \conn -> do
-        -- DuckDB 2.0.0 casts the BIGNUM -6 to UBIGINT as a wrapped value with no
-        -- error. See Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
         forM_
           [ ("BIGINT[2]", [BigNum 5, BigNum 6], "[5, 6]")
           , ("BIGNUM[2]", [BigNum 5, BigNum 6], "[5, 6]")
-          , ("UBIGINT[2]", [BigNum 5, BigNum (-6)], "[5, 18446744073709551610]")
+          , ("HUGEINT[2]", [BigNum 5, BigNum (-6)], "[5, -6]")
+          , ("UHUGEINT[2]", [BigNum 5, BigNum 6], "[5, 6]")
           ]
           \(dtype, values, expected) -> do
             _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE bignum_array (v " <> dtype <> ")"))
             _ <- execute conn "INSERT INTO bignum_array VALUES (?)" (Only (sized values :: SizedArray 2 BigNum))
             (query_ conn "SELECT v::VARCHAR FROM bignum_array" :: IO [Only Text]) >>= assertEqual (Text.unpack dtype) [Only expected]
+        _ <- execute_ conn "CREATE OR REPLACE TABLE bignum_array (v UBIGINT[2])"
+        assertConversionError (execute conn "INSERT INTO bignum_array VALUES (?)" (Only (sized [BigNum 5, BigNum (-6)] :: SizedArray 2 BigNum)))
+    , testCase "BIGNUM integer casts check signedness and 128-bit boundaries" $ withConnection ":memory:" \conn -> do
+        forM_ [("HUGEINT", negate (2 ^ (127 :: Int))), ("HUGEINT", 2 ^ (127 :: Int) - 1), ("UHUGEINT", 2 ^ (128 :: Int) - 1)] \(dtype, value) ->
+          (query conn (Query ("SELECT ?::" <> dtype)) (Only (BigNum value)) :: IO [Only Integer]) >>= (@?= [Only value])
+        forM_ [("UBIGINT", -6), ("HUGEINT", 2 ^ (127 :: Int)), ("UHUGEINT", -1), ("BIGINT", 2 ^ (128 :: Int) + 5), ("UHUGEINT", 2 ^ (128 :: Int))] \(dtype, value) ->
+          assertConversionError (query conn (Query ("SELECT ?::" <> dtype)) (Only (BigNum value)) :: IO [Only Integer])
     , testCase "native timestamp extrema read back in all units, and bind back only in the range of DuckDB" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
         let checkTemporalFailure :: forall a. (FromField a) => Query -> Proxy a -> Text -> IO ()
             checkTemporalFailure sql _ target = do
@@ -1472,7 +1481,7 @@ valueRegressionTests =
               -- A second, millisecond, or microsecond value outside the range of
               -- DuckDB raises an error. See Note [Time ranges] in
               -- "Database.DuckDB.Simple.ToField".
-              if units == 1000000000 || (micros >= -9223372022400000000 && micros <= 9223372036854775806)
+              if units == 1000000000 || (micros >= -9223372036854775808 && micros <= 9223372036854775806)
                 then rebind >>= (@?= [Only original])
                 else assertOutsideTimeRange rebind
               _ <- execute_ conn "DROP TABLE native_timestamp"
@@ -1531,16 +1540,12 @@ valueRegressionTests =
               (query conn "SELECT ?" (Only (singleField (LogicalTypeScalar LogicalTypeIdTimeNs) (FieldTime value))) :: IO [Only FieldValue])
     , testCase "microsecond timestamps round trip at the ends of the range of DuckDB" $ withConnection ":memory:" \conn -> do
         let local (micros :: Int64) = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (toInteger micros % 1000000)))
-        forM_ [-9223372022400000000, -1, 0, maxBound - 1] \value -> do
+        forM_ [minBound, negate (maxBound :: Int64) + 1, -9223372022400000001, -1, 0, maxBound - 1] \value -> do
           _ <- execute_ conn "CREATE TABLE microsecond_timestamp(value TIMESTAMP)"
           _ <- execute conn "INSERT INTO microsecond_timestamp VALUES (?)" (Only (local value))
           (query_ conn "SELECT value FROM microsecond_timestamp" :: IO [Only LocalTime]) >>= (@?= [Only (local value)])
           _ <- execute_ conn "DROP TABLE microsecond_timestamp"
           pure ()
-        -- The INT64 storage also holds the four hours before the range, but
-        -- DuckDB does not accept them.
-        forM_ [minBound, negate (maxBound :: Int64) + 1, -9223372022400000001] \value ->
-          assertOutsideTimeRange (query conn "SELECT ?" (Only (local value)) :: IO [Only LocalTime])
     , testCase "out-of-range dates and timestamps fail without abort" $ withConnection ":memory:" \conn -> do
         let hugeDay = fromGregorian 10000000 1 1
             local = LocalTime hugeDay (TimeOfDay 0 0 0)
@@ -1590,17 +1595,15 @@ valueRegressionTests =
             query_ conn (Query ("SELECT x::" <> dtype <> " FROM (VALUES ('v0'), (NULL), ('" <> label (size - 1) <> "')) t(x)")) :: IO [Only FieldValue]
           rows @?= map Only [FieldEnum 0 (label (0 :: Int)), FieldNull, FieldEnum (fromIntegral (size - 1)) (label (size - 1))]
     , testCase "DECIMAL and BIGINT values read as Double and Float give the casts of DuckDB" $ withConnection ":memory:" \conn -> do
-        -- Each row has the read of v as Double and Float, and the casts of v
-        -- to DOUBLE and FLOAT read at their own types. The value lists are
-        -- fixed. See Note [DECIMAL as DOUBLE and FLOAT] in
-        -- "Database.DuckDB.Simple.FromField". For scale 0 and a width of 19
-        -- to 38, the library copies the cast of DuckDB 2.0.0, which is not
-        -- always the nearest value. If a later DuckDB version changes the
-        -- rounding of that cast, the first assertion fails and shows the new
-        -- values of DuckDB. DuckDB 2.0.0 gives these values. The nearest values
-        -- are -9007199254740994 and 3.3569516755834854e36.
+        -- Each row compares a read with the native cast. DuckDB rounds
+        -- HUGEINT storage directly to the target type at scale 0. These values
+        -- detect incorrect DOUBLE results and FLOAT rounding through DOUBLE.
+        -- See Note [DECIMAL as DOUBLE and FLOAT] in
+        -- "Database.DuckDB.Simple.FromField".
         query_ conn "SELECT (-9007199254740994)::DECIMAL(19,0)::DOUBLE, 3356951675583485076575379654993209529::DECIMAL(38,0)::DOUBLE"
-          >>= (@?= [(-9007199254740992 :: Double, 3.356951675583485e36 :: Double)])
+          >>= (@?= [(-9007199254740994 :: Double, 3.3569516755834854e36 :: Double)])
+        query_ conn "SELECT 1267650675786093127411026624513::DECIMAL(38,0)::FLOAT"
+          >>= (@?= [Only (fromInteger (2 ^ (100 :: Int) + 2 ^ (76 :: Int) + 1) :: Float)])
         let bigints =
               filter (\v -> v >= toInteger (minBound :: Int64) && v <= toInteger (maxBound :: Int64)) (toInteger (minBound :: Int64) : decimalIntegers 19)
             kinds =
@@ -1620,12 +1623,9 @@ valueRegressionTests =
           if sqlType /= "BIGINT"
             then [(sqlType, text, value, cast) | (text, _, _, value, cast) <- rows, castFloatToWord32 value /= castFloatToWord32 cast] @?= []
             else do
-              -- CI on macOS (Apple Silicon) showed a cast of DuckDB 2.0.0 from
-              -- BIGINT to FLOAT that rounds two times, through DOUBLE, for some
-              -- values above 2^53: 9007199791611905 gave 9.007199e15, and the
-              -- nearest FLOAT is 9.0072e15. On Linux x86-64 and aarch64 the cast
-              -- gave the nearest value. The read of the library is the nearest
-              -- value on each platform. The cast of DuckDB is one of the two.
+              -- The library must give the nearest FLOAT. The native cast may
+              -- round directly or through DOUBLE on different platforms.
+              -- Accept either native result while checking the library exactly.
               let integer text = read (Text.unpack text) :: Integer
                   nearest text = fromRational (toRational (integer text)) :: Float
                   throughDouble text = realToFrac (fromInteger (integer text) :: Double) :: Float
@@ -2434,8 +2434,8 @@ valueRegressionTests =
               bind stmt [toField struct]
               readAllRows next stmt >>= (@?= replicate 3000 (Only struct))
     , testCase "an Integer outside the HUGEINT range raises the range error for each integer type" $ withConnection ":memory:" \conn -> do
-        -- A BIGNUM value for these types stores a wrong value with no error.
-        -- See Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
+        -- Keep the parameter range checks when native BIGNUM casts also check
+        -- the range. See Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
         let huge = 2 ^ (128 :: Int) + 5 :: Integer
             insert :: Text -> Integer -> IO (Either SQLError Int)
             insert dtype value = do
@@ -2667,15 +2667,15 @@ splitMix64 = map mix (drop 1 (iterate (+ 0x9e3779b97f4a7c15) 1))
       in  z2 `xor` (z2 `shiftR` 31)
 
 -- | Unscaled integers that a DECIMAL of a width holds, with both signs: zero
--- and the extremes; two values that DuckDB 2.0.0 does not cast to the nearest
--- DOUBLE at scale 0; a value that two roundings change at scale 2; values next
+-- and the extremes; values that expose the former HUGEINT rounding errors at
+-- scale 0; a value that two roundings change at scale 2; values next
 -- to each power of two and next to the DOUBLE and FLOAT midpoints above it; and
 -- 400 values of 'splitMix64' with 1 to width digits.
 decimalIntegers :: Int -> [Integer]
 decimalIntegers width = filter (\v -> abs v <= limit) (special <> near <> spread)
   where
     limit = 10 ^ width - 1
-    special = [0, limit, negate limit, -9007199254740994, 270628455292663770, 3356951675583485076575379654993209529]
+    special = [0, limit, negate limit, -9007199254740994, 270628455292663770, 3356951675583485076575379654993209529, 1267650675786093127411026624513]
     near =
       [ sign * (2 ^ k + base + delta)
       | k <- [0 .. 127 :: Int]

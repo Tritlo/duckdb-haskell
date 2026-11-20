@@ -83,7 +83,7 @@ nativePlatform = case (os, arch) of
 
 -- | Read the release path and checksum for one platform from @native.sha256@.
 -- Each line has a checksum and a release path, for example
--- @v2.0.0/duckdb-shared-libs-linux-amd64.tar.gz@.
+-- @v2.0.1/duckdb-shared-libs-linux-amd64.tar.gz@.
 nativeArchive :: String -> IO (FilePath, String)
 nativeArchive platform = do
   pinned <- doesFileExist "native.sha256"

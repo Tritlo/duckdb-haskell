@@ -217,7 +217,7 @@ would round or raise an error in some of them.
   "Database.DuckDB.Simple.Internal". A microsecond value gives the same result
   for each parameter type, so the read has no use for it.
 
-- Why a microsecond parameter gets the microsecond value. In DuckDB 2.0.0, the
+- Why a microsecond parameter gets the microsecond value. In DuckDB, the
   SQL literal '03:04:05.123456999'::TIME gives 03:04:05.123456, but a cast from
   TIME_NS to TIME rounds and gives 03:04:05.123457. The same holds for
   TIMESTAMP. A nanosecond value would thus change what a microsecond column
@@ -225,9 +225,9 @@ would round or raise an error in some of them.
 
 - An explicit cast of the parameter to a nanosecond type, as in
   ?::TIMESTAMP_NS, makes it a nanosecond parameter. DuckDB then rounds when it
-  casts the value to a microsecond type, for example for a TIMESTAMP column or
-  in ?::TIMESTAMP_NS + INTERVAL 1 DAY. A plain parameter for a microsecond
-  type cuts the digits.
+  casts the value to a microsecond type, for example for a TIMESTAMP column.
+  DuckDB keeps nanosecond precision in TIMESTAMP_NS arithmetic with an
+  INTERVAL. A plain parameter for a microsecond type cuts the digits.
 
 - A LocalTime for a TIMESTAMP_NS parameter, or for the TIMESTAMP_NS elements
   of a SizedArray, a list, or a Map, is in one of three zones:
@@ -591,18 +591,9 @@ integerBinding binds an Integer or a Natural parameter with this rule:
   SQLError with the type ErrorTypeConversion. Each other parameter, and a
   parameter with no known type, gets a BIGNUM value.
 
-- Why a HUGEINT. In DuckDB 2.0.0, the casts from BIGNUM to the integer types
-  have defects (Bignum::BignumToInt in
-  src/include/duckdb/common/types/bignum.hpp):
-  - A cast to HUGEINT or UHUGEINT fails for each value except 0 and -1.
-  - A cast of a negative value to an unsigned type gives a wrapped value and
-    no error. For example, -5 for a UBIGINT gives 18446744073709551611.
-  - A cast reduces a value of 2^128 or more modulo 2^128 before it checks the
-    range. For example, 2^128 + 5 for a BIGINT gives 5.
-  DuckDB 2.0.0 has no cast from BIGNUM to DECIMAL. DuckDB checks the range of
-  each cast from HUGEINT and UHUGEINT. For TINYINT to UBIGINT, DOUBLE,
-  VARCHAR, BIGNUM, JSON, and VARIANT, the cast from HUGEINT gives the same
-  result as the cast from BIGNUM where the cast from BIGNUM has no defect.
+- Why a HUGEINT. HUGEINT and UHUGEINT support casts to DECIMAL. BIGNUM
+  has no cast to DECIMAL. The binding uses HUGEINT within its range and
+  checks the parameter range before it binds a larger integer.
 
 - Why the binding reads the parameter type only outside the HUGEINT range. A
   read of the parameter type runs the binder of DuckDB. See
@@ -611,8 +602,8 @@ integerBinding binds an Integer or a Natural parameter with this rule:
 
 - What stays BIGNUM:
   - A value outside the HUGEINT range for a parameter with no known type, as
-    in SELECT ?, binds as a BIGNUM. A cast that DuckDB adds later can still
-    have the defects above.
+    in SELECT ?, binds as a BIGNUM. DuckDB checks the range of a later
+    cast to an integer type.
   - A BigNum always binds as a BIGNUM.
 
   Collection values infer their common type as described below and in
@@ -622,9 +613,9 @@ integerBinding binds an Integer or a Natural parameter with this rule:
   rule (hugeIntInRange): a value from -2^127 to 2^127 - 1 gives a HUGEINT
   value. A Natural from 2^127 to 2^128 - 1 gives a UHUGEINT value. Each other
   value raises an SQLError of the type ErrorTypeConversion (outsideRange).
-  toDuckValue has no target type. A BIGNUM value would thus reach a HUGEINT
-  column, and DuckDB 2.0.0 casts the BIGNUM 2^128 to the HUGEINT 0 with no
-  error. The callers of toDuckValue are setConfigValue, defaultValue, the
+  toDuckValue has no target type. It checks the range before a value reaches
+  the declared HUGEINT or UHUGEINT column. The callers of toDuckValue are
+  setConfigValue, defaultValue, the
   typed rows of table functions and COPY FROM, and the writer of a scalar
   function result. Use BigNum for a larger value.
   The default toField of the ToField class also calls toDuckValue. Thus a
@@ -652,8 +643,8 @@ integerBinding binds an Integer or a Natural parameter with this rule:
   of the cast of each element. For example, [5, -6] for a UBIGINT[2] column
   raises an error. A SizedArray or a list of BigNum values also takes the element
   type of the target, but each element is a BIGNUM value. DuckDB casts each
-  element with the casts from BIGNUM, so the result for BigNum elements does
-  not improve. For each other target, and for a parameter with no known type,
+  element with the checked integer casts from BIGNUM in DuckDB.
+  For each other target, and for a parameter with no known type,
   a list takes the type that its elements give (withValueType), as each scalar
   Integer and as a SQL list literal of the HUGEINT and BIGNUM values: [1, 2^64]
   gives HUGEINT[], and [5, 2^130] gives BIGNUM[]. An Integer has no fixed SQL
@@ -742,7 +733,7 @@ instance ToField TimeOfDay where
 
 -- | Bind a local time as a TIMESTAMP, or as a TIMESTAMP_NS. See
 -- Note [Nanosecond parameters]. A time outside the range of DuckDB, from
--- -290308-12-22 00:00:00 (290309-12-22 BC) to 294247-01-10 04:00:54.775806 in
+-- -290308-12-21 19:59:05.224192 (290309-12-21 BC) to 294247-01-10 04:00:54.775806 in
 -- the notation of "Data.Time", raises an t'SQLError' of the type
 -- 'ErrorTypeConversion'. For a TIMESTAMP_NS target, a time outside the range
 -- of TIMESTAMP_NS can get another error, also a time outside the range of
@@ -1173,7 +1164,7 @@ value that a program builds at run time.
   raises Incompatible, which names the column type and the SizedArray type.
 - Sizes. A DuckDB ARRAY has 1 to 100000 elements (maxArraySize). DuckDB
   rejects the SQL type T[0] and a larger type, for example with "ARRAY type
-  size must be at most 100000". The value API of DuckDB 2.0.0 does not check
+  size must be at most 100000". The value API of DuckDB does not check
   the largest size, so a parameter of a larger ARRAY would bind a value that
   the SQL of DuckDB cannot write. Thus the library checks both sizes, as an
   input check: the declaration of a SizedArray of another size gives Left,
@@ -1415,7 +1406,7 @@ constructor:
   Native equality distinguishes aliases, including the alias "NULL". When
   each remaining element has the type of the first one, that type is the
   element type. The check uses native equality to keep aliases and ENUM dictionaries.
-  valuesHaveType checks the metadata that equality omits. In DuckDB 2.0.0,
+  valuesHaveType checks the metadata that equality omits. In DuckDB,
   VARCHAR equality ignores collations. STRUCT and UNION names compare without
   ASCII case. GEOMETRY CRS definitions can compare equal through a shared
   identifier. The metadata check keeps exact names, collations, and definitions.
@@ -1437,7 +1428,9 @@ constructor:
   set with no common type surfaces the cast error."). For example, a STRUCT(a
   INTEGER) and a STRUCT(b INTEGER) give STRUCT(a INTEGER, b INTEGER), with NULL
   for a field that an element does not have. A BIGINT field and a DOUBLE field
-  give a DOUBLE field, which rounds a large BIGINT, as in SQL.
+  give a DOUBLE field, which rounds a large BIGINT, as in SQL. DuckDB
+  also merges UNION members and gives matching members their common payload
+  type. This rule applies inside nested collections.
 - Elements with no common type raise the SQLError of DuckDB. For a STRUCT(a
   INTEGER) and a STRUCT(a VARCHAR), it is "Cannot combine types" of the type
   ErrorQueryNotImplemented. The SQL list literal raises a Binder Error for the
@@ -1640,7 +1633,7 @@ UTINYINT tag and one field per member is another alternative, but the header
 does not document that cast.
 
 The vector construction uses the documented layout and writes. It requires
-FLAT child vectors. DuckDB 2.0.0 supplies them in a new vector, but the header
+FLAT child vectors. DuckDB supplies them in a new vector, but the header
 does not guarantee this for the children. A change can make the writes fail
 or give a wrong value. See Note [Vector flatten] in
 "Database.DuckDB.Simple.Materialize". Regression cases check the selected
@@ -1678,7 +1671,7 @@ unionValueDuckValue builder@ValueBuilder{builderFactory = factory, builderType =
 
 {- Note [TIME alias values]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
-DuckDB 2.0.0 rejects the default cast from TIME to a TIME alias. The public
+DuckDB rejects the default cast from TIME to a TIME alias. The public
 API specifies that an alias keeps its base representation. TIME vector data
 uses int64 microseconds since midnight, as encodeTimeOfDay does. Thus a checked
 TIME payload can be written through vector_get_data_mutable without a cast.
@@ -1916,7 +1909,7 @@ connection". This limits toDuckValue for composite values with CRS-tagged
 geometry leaves, including typed NULLs. A connection factory has no such
 limit.
 
-DuckDB 2.0.0 stores GEOMETRY as WKB. The BLOB cast and ST_GeomFromWKB both use
+DuckDB stores GEOMETRY as WKB. The BLOB cast and ST_GeomFromWKB both use
 Geometry::FromBinary (src/function/cast/geo_casts.cpp and
 src/function/scalar/geometry/geometry_functions.cpp). The result reader casts
 GEOMETRY to BLOB with Geometry::ToBinary, which copies the stored bytes
@@ -2206,41 +2199,32 @@ encodeTimestampUnits units value@LocalTime{localTimeOfDay} = do
   _ <- timeOfDayUnits units localTimeOfDay
   checkTimestampRange units value
   let total = timestampUnits units value
-  -- Only a nanosecond value reaches this check with a value outside the
-  -- storage or at an infinity value. See Note [Time ranges].
+  -- Exclude the infinity sentinels. See Note [Time ranges].
   checkFiniteRange "TIMESTAMP" (minBound :: Int64) maxBound total
   pure (fromInteger total)
 
 {- Note [Time ranges]
 ~~~~~~~~~~~~~~~~~~~~~
-The storage of a DATE and of a TIMESTAMP can hold values that DuckDB 2.0.0
-does not accept. The SQL literal of each type, and the casts to it, reject
-these values:
+DuckDB accepts these finite ranges:
 
 - DATE: from -5877641-06-25 (5877642-06-25 BC) to 5881580-07-10, days
   -2147483646 to 2147483646 from the Unix epoch. The INT32 storage also holds
-  day -2147483648.
+  day -2147483648, which is outside the SQL range.
+- TIMESTAMP and TIMESTAMPTZ: from -290308-12-21 19:59:05.224192
+  (290309-12-21 BC) to 294247-01-10 04:00:54.775806, microseconds
+  -2^63 to 2^63 - 2, except -2^63 + 1, the negative infinity sentinel.
+- TIMESTAMP_S and TIMESTAMP_MS: whole seconds or milliseconds inside the
+  microsecond range. Their storage holds more values at each end.
+- TIMESTAMP_NS and TIMESTAMPTZ_NS: the INT64 nanosecond range, except the
+  two infinity sentinels.
 
-- TIMESTAMP, TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS: from -290308-12-22
-  00:00:00 (290309-12-22 BC) to 294247-01-10 04:00:54.775806, microseconds
-  -9223372022400000000 to 2^63 - 2. The INT64 storage of a microsecond value
-  also holds about four hours before that start, and the storage of a second
-  or a millisecond value holds much more at each end.
-
-A value outside these ranges breaks ordinary SQL in DuckDB 2.0.0. A cast of
-such a TIMESTAMP to VARCHAR raises an INTERNAL error, and DuckDB then
-invalidates the database. A cast of such a TIMESTAMP to TIMESTAMP_S stores the
-first valid value with no error. A DATE before the range sorts before
--infinity, and a cast of it to TIMESTAMP fails. Thus encodeDay and
-encodeTimestampUnits raise an SQLError of the type ErrorTypeConversion for
-each finite value outside these ranges (throwOutsideTimeRange), before any
-check of the storage, so a value outside the storage and a value at an
-infinity value get this error too. The text names the value and the end of
-the range in the notation of Data.Time, where the year -5877641 is 5877642 BC.
-A nanosecond value has the range of its INT64 storage, and the literal of
-TIMESTAMP_NS accepts that range, so it gets no check here. checkFiniteRange
-then catches only a nanosecond value outside its storage or at an infinity
-value.
+encodeDay and encodeTimestampUnits raise an SQLError of the type
+ErrorTypeConversion before binding a finite value outside these ranges.
+checkTimestampRange checks the microsecond range for second, millisecond,
+and microsecond targets, before and after cutting to whole target units.
+checkFiniteRange checks the storage and excludes
+both infinity sentinels. The text names calendar values in the notation of
+Data.Time, where the year -5877641 is 5877642 BC.
 
 A leap second gets no check. A TimeOfDay with 60 seconds binds as the next
 second, as make_time(23, 59, 60) and make_timestamp(2016, 12, 31, 23, 59, 60)
@@ -2252,16 +2236,20 @@ of DuckDB give it. The SQL literal '23:59:60' raises an error.
 checkTimestampRange :: Integer -> LocalTime -> IO ()
 checkTimestampRange units value
   | units > 1000000 = pure ()
-  | micros < -9223372022400000000 =
-      throwOutsideTimeRange (show value) ("below the smallest " <> name <> " of DuckDB, -290308-12-22 00:00:00")
+  | storedMicros < toInteger (minBound :: Int64) =
+      throwOutsideTimeRange (show value) ("below the smallest " <> name <> " of DuckDB, " <> smallest)
+  | micros == -9223372036854775807 =
+      throwOutsideTimeRange (show value) ("at the negative infinity sentinel of DuckDB for " <> name)
   | micros > 9223372036854775806 = throwOutsideTimeRange (show value) ("above the largest " <> name <> " of DuckDB, " <> largest)
   | otherwise = pure ()
   where
     micros = timestampUnits 1000000 value
-    (name, largest) = case units of
-      1 -> ("TIMESTAMP_S", "294247-01-10 04:00:54")
-      1000 -> ("TIMESTAMP_MS", "294247-01-10 04:00:54.775")
-      _ -> ("TIMESTAMP", "294247-01-10 04:00:54.775806")
+    -- Cutting to whole target units can move a value below the lower bound.
+    storedMicros = micros - micros `mod` (1000000 `div` units)
+    (name, smallest, largest) = case units of
+      1 -> ("TIMESTAMP_S", "-290308-12-21 19:59:06", "294247-01-10 04:00:54")
+      1000 -> ("TIMESTAMP_MS", "-290308-12-21 19:59:05.225", "294247-01-10 04:00:54.775")
+      _ -> ("TIMESTAMP", "-290308-12-21 19:59:05.224192", "294247-01-10 04:00:54.775806")
 
 -- | Raise the error for a date or a timestamp outside the range of DuckDB. The
 -- text names the Haskell value and the end of the range. See

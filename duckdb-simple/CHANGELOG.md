@@ -3,6 +3,24 @@
 See [MIGRATION.md](https://github.com/Tritlo/duckdb-haskell/blob/main/MIGRATION.md)
 for the upgrade instructions.
 
+## 1.0.1.0
+
+- Add managed optimizer-statistics callbacks with
+  `registerScalarFunctionWithStats`, `registerAggregateFunctionWithStats`, and
+  `registerTableFunctionWithStats` in `Database.DuckDB.Simple.V2.Registration`.
+  They let the planner use guaranteed nullability facts. Existing registration
+  functions and callback records keep their types and constructors.
+- Use DuckDB 2.0.1 and `duckdb-ffi` 2.0.1.x. Rebuild loadable extensions
+  for this native release.
+- Parse errors in user SQL follow the connection's transaction invalidation
+  policy. Under `ALL_ERRORS_INVALIDATE_TRANSACTION`, roll back the transaction
+  after a syntax error.
+- Accept the wider finite timestamp range in DuckDB 2.0.1 and match its
+  rounding when reading wide, scale-zero DECIMAL values as floating point.
+- Accept the new `logging_sink` setting when opening a connection with configuration.
+- Binding a `BigNum` uses DuckDB's corrected integer casts. A negative BIGNUM
+  cast to an unsigned integer now raises a conversion error.
+
 ## 1.0.0.0
 
 - Target DuckDB 2.0 with `duckdb-ffi` 2.0.0.x. The backend uses the

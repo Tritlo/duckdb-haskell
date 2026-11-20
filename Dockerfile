@@ -110,7 +110,7 @@ RUN (cd duckdb-ffi && sha256sum --check generated.sha256) && \
 
 
 # Test the packages
-RUN DUCKDB_TEST_VERSION=2.0.0 cabal test all --project-file=cabal.project --project-dir=/app --test-show-details=streaming
+RUN DUCKDB_TEST_VERSION=2.0.1 cabal test all --project-file=cabal.project --project-dir=/app --test-show-details=streaming
 
 # Generate Haddocks for all packages
 RUN cabal haddock all --project-file=cabal.project --project-dir=/app --haddock-for-hackage --enable-documentation

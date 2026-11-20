@@ -37,7 +37,9 @@ import Database.DuckDB.Simple.V2.Registration (
 -- exception in the function rejects the value. The text of the exception is the
 -- SQL error. A RESET gives the default value to the function, or
 -- 'Database.DuckDB.Simple.FromField.FieldNull' for an option without a default.
--- Thus the function must accept the default value. A VARIANT gives its
+-- Thus the function must accept the default value. RESET removes the override
+-- at its scope. A SESSION reset can expose a GLOBAL value instead of the
+-- declared default. A VARIANT gives its
 -- contained value, as in 'Database.DuckDB.Simple.Config.getConfigValue'.
 data CustomOption = CustomOption
   { customOptionName :: !Text

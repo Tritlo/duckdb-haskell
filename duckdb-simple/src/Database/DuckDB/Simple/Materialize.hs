@@ -252,7 +252,7 @@ Read (prepareVectorReaderWith).
   call vector_flatten first." The flatten also changes a CONSTANT or DICTIONARY
   vector to FLAT.
 
-- In DuckDB 2.0.0 the view of a FLAT vector has no selection
+- In DuckDB the view of a FLAT vector has no selection
   (duckdb_v2_vector_get_view in src/main/capi/v2/capi_v2_vector.cpp). The header
   does not say this. Then the physical row is the logical row. The readers of
   VARIANT and GEOMETRY need this, because they read logical rows (rejectRows,
@@ -262,7 +262,7 @@ Read (prepareVectorReaderWith).
 - The flatten changes the buffers of the vector, so it runs before the view is
   read.
 
-- In DuckDB 2.0.0 the flatten is recursive: it also flattens the child of a
+- In DuckDB the flatten is recursive: it also flattens the child of a
   LIST or MAP vector and the fields of a STRUCT vector (VectorListBuffer::Flatten
   and VectorStructBuffer::Flatten). The header does not say this. The MAP
   decoder (prepareMapDecoder) depends on this, because it takes the key and
@@ -273,7 +273,7 @@ then flattens the vector (writeRows and writeResults). A writer of an
 owned vector from withOwnedVector does not flatten (materializeValue, and the
 writers of one-row vectors in "Database.DuckDB.Simple.ToField").
 
-- The writer sets the size before the flatten. In DuckDB 2.0.0,
+- The writer sets the size before the flatten. In DuckDB,
   duckdb_v2_vector_flatten flattens the rows of the current size of the vector:
   it calls Vector::Flatten without a row count
   (src/main/capi/v2/capi_v2_vector.cpp). duckdb_v2_vector_set_size reserves
@@ -283,7 +283,7 @@ writers of one-row vectors in "Database.DuckDB.Simple.ToField").
 - A new vector of a data chunk is FLAT. The header of
   duckdb_v2_data_chunk_create says: "Allocates one FLAT vector per element of
   the types array". Thus the writer of an owned vector needs no flatten. In
-  DuckDB 2.0.0 the children of such a vector are FLAT too: the vector cache
+  DuckDB the children of such a vector are FLAT too: the vector cache
   resets each child of a LIST, ARRAY, or STRUCT vector to FLAT
   (VectorCacheEntry::ResetFromCache in src/common/types/vector_cache.cpp). The
   header does not say this for the children. The writer of a UNION value writes

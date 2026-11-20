@@ -409,7 +409,7 @@ testParallelScan = do
 
 -- | The function declares the columns pad, v and k, with projection pushdown. Batch b holds b + 1 rows with k = b.
 -- The query does not read pad, so the scan position of k is not its declared column 2.
--- In DuckDB 2.0.0 only an aggregate with a cluster update, such as count(v), can use the partitioned aggregate.
+-- In DuckDB only an aggregate with a cluster update, such as count(v), can use the partitioned aggregate.
 -- Four functions share the callbacks. Their user data holds the mode of the partition data callback.
 testPartitioning :: IO ()
 testPartitioning = do

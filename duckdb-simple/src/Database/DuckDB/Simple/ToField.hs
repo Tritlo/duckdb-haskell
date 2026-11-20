@@ -217,7 +217,7 @@ would round or raise an error in some of them.
   "Database.DuckDB.Simple.Internal". A microsecond value gives the same result
   for each parameter type, so the read has no use for it.
 
-- Why a microsecond parameter gets the microsecond value. In DuckDB 2.0.0, the
+- Why a microsecond parameter gets the microsecond value. In DuckDB, the
   SQL literal '03:04:05.123456999'::TIME gives 03:04:05.123456, but a cast from
   TIME_NS to TIME rounds and gives 03:04:05.123457. The same holds for
   TIMESTAMP. A nanosecond value would thus change what a microsecond column
@@ -226,7 +226,7 @@ would round or raise an error in some of them.
 - An explicit cast of the parameter to a nanosecond type, as in
   ?::TIMESTAMP_NS, makes it a nanosecond parameter. DuckDB then rounds when it
   casts the value to a microsecond type, for example for a TIMESTAMP column.
-  DuckDB 2.0.1 keeps nanosecond precision in TIMESTAMP_NS arithmetic with an
+  DuckDB keeps nanosecond precision in TIMESTAMP_NS arithmetic with an
   INTERVAL. A plain parameter for a microsecond type cuts the digits.
 
 - A LocalTime for a TIMESTAMP_NS parameter, or for the TIMESTAMP_NS elements
@@ -591,12 +591,9 @@ integerBinding binds an Integer or a Natural parameter with this rule:
   SQLError with the type ErrorTypeConversion. Each other parameter, and a
   parameter with no known type, gets a BIGNUM value.
 
-- Why a HUGEINT. This binding was introduced for DuckDB 2.0.0, whose
-  BIGNUM casts could reject valid integers or store wrapped values. DuckDB
-  2.0.1 fixes these casts (Bignum::BignumToInt in
-  src/include/duckdb/common/types/bignum.hpp). The binding keeps the same
-  value types and range checks. DuckDB 2.0.1 still has no cast from BIGNUM
-  to DECIMAL. HUGEINT and UHUGEINT support that cast.
+- Why a HUGEINT. HUGEINT and UHUGEINT support casts to DECIMAL. BIGNUM
+  has no cast to DECIMAL. The binding uses HUGEINT within its range and
+  checks the parameter range before it binds a larger integer.
 
 - Why the binding reads the parameter type only outside the HUGEINT range. A
   read of the parameter type runs the binder of DuckDB. See
@@ -646,7 +643,7 @@ integerBinding binds an Integer or a Natural parameter with this rule:
   of the cast of each element. For example, [5, -6] for a UBIGINT[2] column
   raises an error. A SizedArray or a list of BigNum values also takes the element
   type of the target, but each element is a BIGNUM value. DuckDB casts each
-  element with the checked integer casts from BIGNUM in DuckDB 2.0.1.
+  element with the checked integer casts from BIGNUM in DuckDB.
   For each other target, and for a parameter with no known type,
   a list takes the type that its elements give (withValueType), as each scalar
   Integer and as a SQL list literal of the HUGEINT and BIGNUM values: [1, 2^64]
@@ -1167,7 +1164,7 @@ value that a program builds at run time.
   raises Incompatible, which names the column type and the SizedArray type.
 - Sizes. A DuckDB ARRAY has 1 to 100000 elements (maxArraySize). DuckDB
   rejects the SQL type T[0] and a larger type, for example with "ARRAY type
-  size must be at most 100000". The value API of DuckDB 2.0.0 does not check
+  size must be at most 100000". The value API of DuckDB does not check
   the largest size, so a parameter of a larger ARRAY would bind a value that
   the SQL of DuckDB cannot write. Thus the library checks both sizes, as an
   input check: the declaration of a SizedArray of another size gives Left,
@@ -1409,7 +1406,7 @@ constructor:
   Native equality distinguishes aliases, including the alias "NULL". When
   each remaining element has the type of the first one, that type is the
   element type. The check uses native equality to keep aliases and ENUM dictionaries.
-  valuesHaveType checks the metadata that equality omits. In DuckDB 2.0.0,
+  valuesHaveType checks the metadata that equality omits. In DuckDB,
   VARCHAR equality ignores collations. STRUCT and UNION names compare without
   ASCII case. GEOMETRY CRS definitions can compare equal through a shared
   identifier. The metadata check keeps exact names, collations, and definitions.
@@ -1431,7 +1428,7 @@ constructor:
   set with no common type surfaces the cast error."). For example, a STRUCT(a
   INTEGER) and a STRUCT(b INTEGER) give STRUCT(a INTEGER, b INTEGER), with NULL
   for a field that an element does not have. A BIGINT field and a DOUBLE field
-  give a DOUBLE field, which rounds a large BIGINT, as in SQL. DuckDB 2.0.1
+  give a DOUBLE field, which rounds a large BIGINT, as in SQL. DuckDB
   also merges UNION members and gives matching members their common payload
   type. This rule applies inside nested collections.
 - Elements with no common type raise the SQLError of DuckDB. For a STRUCT(a
@@ -1636,7 +1633,7 @@ UTINYINT tag and one field per member is another alternative, but the header
 does not document that cast.
 
 The vector construction uses the documented layout and writes. It requires
-FLAT child vectors. DuckDB 2.0.0 supplies them in a new vector, but the header
+FLAT child vectors. DuckDB supplies them in a new vector, but the header
 does not guarantee this for the children. A change can make the writes fail
 or give a wrong value. See Note [Vector flatten] in
 "Database.DuckDB.Simple.Materialize". Regression cases check the selected
@@ -1674,7 +1671,7 @@ unionValueDuckValue builder@ValueBuilder{builderFactory = factory, builderType =
 
 {- Note [TIME alias values]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
-DuckDB 2.0.0 rejects the default cast from TIME to a TIME alias. The public
+DuckDB rejects the default cast from TIME to a TIME alias. The public
 API specifies that an alias keeps its base representation. TIME vector data
 uses int64 microseconds since midnight, as encodeTimeOfDay does. Thus a checked
 TIME payload can be written through vector_get_data_mutable without a cast.
@@ -1912,7 +1909,7 @@ connection". This limits toDuckValue for composite values with CRS-tagged
 geometry leaves, including typed NULLs. A connection factory has no such
 limit.
 
-DuckDB 2.0.0 stores GEOMETRY as WKB. The BLOB cast and ST_GeomFromWKB both use
+DuckDB stores GEOMETRY as WKB. The BLOB cast and ST_GeomFromWKB both use
 Geometry::FromBinary (src/function/cast/geo_casts.cpp and
 src/function/scalar/geometry/geometry_functions.cpp). The result reader casts
 GEOMETRY to BLOB with Geometry::ToBinary, which copies the stored bytes
@@ -2208,7 +2205,7 @@ encodeTimestampUnits units value@LocalTime{localTimeOfDay} = do
 
 {- Note [Time ranges]
 ~~~~~~~~~~~~~~~~~~~~~
-DuckDB 2.0.1 accepts these finite ranges:
+DuckDB accepts these finite ranges:
 
 - DATE: from -5877641-06-25 (5877642-06-25 BC) to 5881580-07-10, days
   -2147483646 to 2147483646 from the Unix epoch. The INT32 storage also holds
@@ -2216,8 +2213,6 @@ DuckDB 2.0.1 accepts these finite ranges:
 - TIMESTAMP and TIMESTAMPTZ: from -290308-12-21 19:59:05.224192
   (290309-12-21 BC) to 294247-01-10 04:00:54.775806, microseconds
   -2^63 to 2^63 - 2, except -2^63 + 1, the negative infinity sentinel.
-  DuckDB 2.0.1 accepts the part of the first day before midnight that
-  DuckDB 2.0.0 rejected.
 - TIMESTAMP_S and TIMESTAMP_MS: whole seconds or milliseconds inside the
   microsecond range. Their storage holds more values at each end.
 - TIMESTAMP_NS and TIMESTAMPTZ_NS: the INT64 nanosecond range, except the

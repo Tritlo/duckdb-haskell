@@ -270,7 +270,7 @@ readFunctions =
       where
         go rows = next stmt >>= maybe (pure (reverse rows)) (\row -> go (row : rows))
 
--- | The WKB of the point (x, 0) in the little-endian byte order. DuckDB 2.0.0
+-- | The WKB of the point (x, 0) in the little-endian byte order. DuckDB
 -- gives the same bytes for 'POINT (x 0)'::GEOMETRY::BLOB.
 pointWkb :: Int64 -> BS.ByteString
 pointWkb x = BL.toStrict (Builder.toLazyByteString (Builder.word8 1 <> Builder.word32LE 1 <> Builder.doubleLE (fromIntegral x) <> Builder.doubleLE 0))

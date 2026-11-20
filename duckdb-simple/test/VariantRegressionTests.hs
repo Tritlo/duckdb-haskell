@@ -155,8 +155,7 @@ tests =
               [(30000000000000, 30000000000000001), (-30000000000000, -30000000000000001), (maxBound - 1, maxBound - 1), (minBound, minBound)]
                 :: [(Int64, Int64)]
         void (executeMany conn "INSERT INTO wide_timestamps VALUES (?, ?)" [(Seconds seconds, Milliseconds millis) | (seconds, millis) <- units])
-        -- DuckDB sorts the raw values. A cast of these values to VARCHAR gives an
-        -- internal error in DuckDB 2.0.0, so the case does not read their text.
+        -- Compare the order of the raw values without a cast to VARCHAR.
         forM_ ["seconds", "millis"] \column ->
           query_ conn (Query ("SELECT rowid FROM wide_timestamps ORDER BY " <> column)) >>= (@?= map Only [3, 1, 0, 2 :: Int64])
         query_ conn "SELECT seconds, millis FROM wide_timestamps ORDER BY rowid"

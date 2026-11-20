@@ -264,7 +264,7 @@ valueRegressionTests =
               in  UnionValue (fromIntegral (count - 1)) (name (count - 1)) (FieldInt32 7) members
             accepted = lastMember 255
         (query conn "SELECT union_tag(?)::VARCHAR, ?" (accepted, accepted) :: IO [(Text, UnionValue FieldValue)]) >>= (@?= [("m254", accepted)])
-        -- DuckDB 2.0.0 permits at most 255 members in a UNION type.
+        -- DuckDB permits at most 255 members in a UNION type.
         forM_ [256, 300] \count ->
           try (query conn "SELECT ?" (Only (lastMember count)) :: IO [Only (UnionValue FieldValue)]) >>= \case
             Left SQLError{sqlErrorMessage, sqlErrorType} -> do
@@ -1116,7 +1116,7 @@ valueRegressionTests =
         _ <- execute conn "INSERT INTO empty_integers VALUES (?)" (Only ([] :: [Integer]))
         (query_ conn "SELECT typeof(v), v::VARCHAR FROM empty_integers" :: IO [(Text, Text)]) >>= (@?= [("INTEGER[]", "[]")])
         -- In a VARIANT, the elements keep the HUGEINT values, so a cast to an
-        -- unsigned type checks their range. DuckDB 2.0.1 also checks the range
+        -- unsigned type checks their range. DuckDB also checks the range
         -- of a BIGNUM element.
         let variantCast :: (ToField a) => String -> a -> Text -> Assertion
             variantCast label value target = do
@@ -1595,9 +1595,9 @@ valueRegressionTests =
             query_ conn (Query ("SELECT x::" <> dtype <> " FROM (VALUES ('v0'), (NULL), ('" <> label (size - 1) <> "')) t(x)")) :: IO [Only FieldValue]
           rows @?= map Only [FieldEnum 0 (label (0 :: Int)), FieldNull, FieldEnum (fromIntegral (size - 1)) (label (size - 1))]
     , testCase "DECIMAL and BIGINT values read as Double and Float give the casts of DuckDB" $ withConnection ":memory:" \conn -> do
-        -- Each row compares a read with the native cast. DuckDB 2.0.1 rounds
+        -- Each row compares a read with the native cast. DuckDB rounds
         -- HUGEINT storage directly to the target type at scale 0. These values
-        -- detect the former DOUBLE errors and the FLOAT rounding through DOUBLE.
+        -- detect incorrect DOUBLE results and FLOAT rounding through DOUBLE.
         -- See Note [DECIMAL as DOUBLE and FLOAT] in
         -- "Database.DuckDB.Simple.FromField".
         query_ conn "SELECT (-9007199254740994)::DECIMAL(19,0)::DOUBLE, 3356951675583485076575379654993209529::DECIMAL(38,0)::DOUBLE"
@@ -1623,12 +1623,9 @@ valueRegressionTests =
           if sqlType /= "BIGINT"
             then [(sqlType, text, value, cast) | (text, _, _, value, cast) <- rows, castFloatToWord32 value /= castFloatToWord32 cast] @?= []
             else do
-              -- CI on macOS (Apple Silicon) showed a cast of DuckDB 2.0.0 from
-              -- BIGINT to FLOAT that rounds two times, through DOUBLE, for some
-              -- values above 2^53: 9007199791611905 gave 9.007199e15, and the
-              -- nearest FLOAT is 9.0072e15. On Linux x86-64 and aarch64 the cast
-              -- gave the nearest value. The read of the library is the nearest
-              -- value on each platform. The cast of DuckDB is one of the two.
+              -- The library must give the nearest FLOAT. The native cast may
+              -- round directly or through DOUBLE on different platforms.
+              -- Accept either native result while checking the library exactly.
               let integer text = read (Text.unpack text) :: Integer
                   nearest text = fromRational (toRational (integer text)) :: Float
                   throughDouble text = realToFrac (fromInteger (integer text) :: Double) :: Float

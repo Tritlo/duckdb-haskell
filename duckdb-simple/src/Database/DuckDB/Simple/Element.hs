@@ -69,7 +69,7 @@ of duckdb_v2_vector_flat_get_validity_mutable.
 
 - Read (chunkIsRowValid). The V2 API has no call that reads the validity of
   one row, so the reader reads the mask memory from duckdb_v2_vector_get_view.
-  The header does not say what a null mask pointer means. In DuckDB 2.0.0 a
+  The header does not say what a null mask pointer means. In DuckDB a
   null pointer means that the vector has no mask, and then every row is valid.
 
 - Write (markValid and markInvalid). The writer sets or clears one bit of the
@@ -218,7 +218,7 @@ decodeTimeUnits units value =
 decodeDuckDBTimeNs :: Int64 -> TimeOfDay
 decodeDuckDBTimeNs = decodeTimeUnits 1000000000
 
--- | The largest UTC offset of a TIMETZ value in seconds: 15:59:59. DuckDB 2.0.0
+-- | The largest UTC offset of a TIMETZ value in seconds: 15:59:59. DuckDB
 -- defines it as @dtime_tz_t::MAX_OFFSET@ in
 -- @src/include/duckdb/common/types/datetime.hpp@. The low 24 bits of a TIMETZ
 -- value hold this maximum minus the offset (@encode_offset@ and
@@ -230,7 +230,7 @@ timeTzMaxOffsetSeconds :: Int
 timeTzMaxOffsetSeconds = 16 * 60 * 60 - 1
 
 -- | The number of low bits of a TIMETZ value that hold the biased offset. The
--- high 40 bits hold the time of day in microseconds. DuckDB 2.0.0 names the two
+-- high 40 bits hold the time of day in microseconds. DuckDB names the two
 -- widths @dtime_tz_t::OFFSET_BITS@ and @dtime_tz_t::TIME_BITS@.
 timeTzOffsetBits :: Int
 timeTzOffsetBits = 24

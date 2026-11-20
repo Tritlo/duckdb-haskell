@@ -18,10 +18,8 @@ synopsis: Low-level bindings to the DuckDB C API
 homepage: https://github.com/Tritlo/duckdb-haskell
 bug-reports: https://github.com/Tritlo/duckdb-haskell/issues
 description:
-  Haskell FFI bindings generated from the DuckDB 2.0 C APIs with hs-bindgen.
-  The retained C API is ABI-compatible with DuckDB 2.0.0. The unstable V2 API
-  requires exactly DuckDB 2.0.1. Use duckdb-ffi 2.0.0.x with native 2.0.0
-  when linking Haskell libraries dynamically.
+  Haskell FFI bindings generated from the DuckDB 2.0.1 C APIs with hs-bindgen.
+  The V2 bindings include unstable C declarations and require exactly DuckDB 2.0.1.
 
   Downloads the verified DuckDB 2.0.1 release on supported Linux and macOS
   systems. Also accepts a native library supplied by the user or Nix.

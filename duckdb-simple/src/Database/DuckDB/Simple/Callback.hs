@@ -150,7 +150,7 @@ destructor frees it.
   pointer. readCallbackState reads the slot and dereferences the pointer. The
   caller supplies the type, so it must be the type of the value in the slot.
 
-These two rules are the behaviour of DuckDB 2.0.0. The header does not state
+These two rules are the behaviour of DuckDB. The header does not state
 them.
 
 - A setter that fails has not taken the pointer. Thus the handlers of
@@ -235,7 +235,7 @@ config, the option value, its BIGINT, and the release of the value) and raises
 the input error of the library when the setting is above 1. A registration with
 no callback, for example a custom type, a macro, or a custom option with no
 update function, does not check. The setting threads has only the GLOBAL scope
-("cannot be set locally" in DuckDB 2.0.0), so each connection of an instance and
+("cannot be set locally" in DuckDB), so each connection of an instance and
 the instance itself give the same value.
 
 The check cannot see a later change. A statement SET threads = 4 after the
@@ -353,9 +353,9 @@ wrong or unsafe with its own code. There are three groups:
   them. With DuckDBV2ErrorApi, DuckDB invalidates the explicit transaction, and
   COMMIT stores none of its rows.
 - ErrorRuntimeInternal and ErrorRuntimeFatal invalidate the database. For these
-  codes, DuckDB 2.0.0 invalidates the database of the outer statement, also
+  codes, DuckDB invalidates the database of the outer statement, also
   when the error came from another database.
-- ErrorIONetwork has no name. Its exception type has no name in DuckDB 2.0.0
+- ErrorIONetwork has no name. Its exception type has no name in DuckDB
   (EXCEPTION_MAP in exception.cpp). With its code, the outer statement fails
   with ErrorApi and the prefix "Invalid Error: " of a type with no name. With
   DuckDBV2ErrorApi, it fails with ErrorInputInvalid, as for an SQLError without
@@ -377,7 +377,7 @@ text, for example "Conversion Error: " for the code of ErrorTypeConversion, and
   and its body in the same way.
 - An SQLError of a type of typesWithoutOwnCode writes the code DuckDBV2ErrorApi
   and its message.
-- DuckDB 2.0.0 cannot raise some codes again with their own type. Six codes
+- DuckDB cannot raise some codes again with their own type. Six codes
   have no exception type in the map of the C API (TryGetExceptionTypeFromErrorCode
   in capi_v2.cpp): the codes of ErrorApi, ErrorIOFileNotFound,
   ErrorIOReadFailure, ErrorIOEof, ErrorInputParameterInvalid, and

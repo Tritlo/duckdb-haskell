@@ -1,10 +1,10 @@
 # DuckDB 2.0
 
-`duckdb-ffi` 2.0.1.0 and `duckdb-simple` 1.0.0.1 target DuckDB
+`duckdb-ffi` 2.0.1.0 and `duckdb-simple` 1.0.1.0 target DuckDB
 [2.0.1](https://github.com/duckdb/duckdb/releases/tag/v2.0.1). `duckdb-simple`
 uses the V2 API and requires exactly DuckDB 2.0.1. The package version selects
-the supported native API. Earlier package releases remain available for
-DuckDB 1.5.
+the supported native API. See [MIGRATION.md](../MIGRATION.md) for upgrade
+instructions.
 
 ## Pinned API
 
@@ -22,24 +22,18 @@ Builds use the checked-in headers directly. Cabal installs both client headers,
 library. Package users do not need LLVM or hs-bindgen. The pin update and download scripts are maintainer
 tools outside the Hackage packages.
 
-The retained header declares 548 functions. Compared with the 1.5.6 header, it adds
-`duckdb_create_timestamp_tz_ns`, `duckdb_get_timestamp_tz_ns`, type tag
-`DUCKDB_TYPE_TIMESTAMP_TZ_NS = 42`, and error tags
-`DUCKDB_ERROR_DATA_CORRUPTION = 43` and `DUCKDB_ERROR_RESOURCE_IN_USE = 44`.
-It removes no functions and changes no existing function signatures or
-structure definitions. The V2 header declares 641 functions. DuckDB 2.0.1
-adds 21 V2 functions to the 2.0.0 header. Its upstream function-table version
-remains 2.0.0. The extension footer must still name the binary release,
-`v2.0.1`. See [extension packaging](../dev/extensions/PACKAGING.md).
+The retained header declares 548 functions. It includes nanosecond TIMESTAMPTZ
+values and the `DUCKDB_ERROR_DATA_CORRUPTION` and
+`DUCKDB_ERROR_RESOURCE_IN_USE` error tags. The V2 header declares 641 functions.
+Its upstream function-table version is 2.0.0. The extension footer must name
+the binary release, `v2.0.1`. See [extension packaging](../dev/extensions/PACKAGING.md).
 
 ## Generated modules
 
 Both client APIs are generated with `hs-bindgen` 1.0. `Database.DuckDB.FFI`
-exposes the retained API and replaces the old aggregate and Deprecated modules.
-`Database.DuckDB.FFI.V2` exposes the new V2 API. The raw API exposes native
-primitives. `duckdb-simple` uses V2 handles for its connection, statement,
-result, conversion, callback, and Arrow backends. The query and execute
-entrypoints keep their public signatures. See
+exposes the retained API.
+`Database.DuckDB.FFI.V2` exposes the V2 API. `duckdb-simple` uses V2 handles for its connection, statement,
+result, conversion, callback, and Arrow backends. See
 [the V2 backend notes](../dev/v2-migration.md) for its contracts and native
 limits.
 
@@ -50,8 +44,8 @@ contracts differ. File flag 4 means exclusive creation in the retained API and
 truncation in V2.
 
 The generator supplies layouts, typed callbacks, const pointers, and adapters
-for structures passed by value. All 641 V2 functions are unstable and require
-the matching native version. The generated C source enables
+for structures passed by value. The V2 bindings include unstable functions and
+require the matching native release. The generated C source enables
 `DUCKDB_V2_API_ALLOW_UNSTABLE` explicitly. Ownership, callback lifetimes,
 exception handling, Arrow release operations, and value conversion remain in
 the calling code.
@@ -150,7 +144,7 @@ These commands build local artifacts without uploading or deploying them.
 
 ## Feature coverage
 
-The SQL feature list follows the [DuckDB 2.0.0 announcement](https://duckdb.org/2026/10/21/announcing-duckdb-200).
+The SQL feature list follows the [DuckDB 2.0 announcement](https://duckdb.org/2026/10/21/announcing-duckdb-200).
 The C API list follows the pinned headers. SQL support depends on the native
 build and its installed extensions.
 
@@ -166,7 +160,7 @@ build and its installed extensions.
 | Environment, instances, connections, attachment options, schemas, catalog | `duckdb-simple`, `Config`, `Catalog`, and raw V2 |
 | SQL tokenization, statements, prepared statements, expressions, result cursors, Arrow results and streams | `Tokenizer`, query and streaming APIs, `Arrow`, and raw V2 expression operations |
 | Values, logical and custom types, vectors, data chunks, arenas, column collections | Typed conversions, `LogicalRep`, `V2.LogicalRep`, `Registration`, and raw V2 vector operations |
-| Scalar, aggregate, table, cast, and COPY functions and signatures | Typed `Function` and `Copy` registrations, `V2.Registration` and `V2.Copy` callbacks, and raw V2 |
+| Scalar, aggregate, table, cast, and COPY functions and signatures | Typed `Function` and `Copy` registrations, `V2.Registration` and `V2.Copy` callbacks, and raw V2. Managed `WithStats` registrations report guaranteed result nullability to the optimizer; see [optimizer statistics](../duckdb-simple/README.md#optimizer-statistics). |
 | Multi-file functions, table partitioning, batch claiming | `Copy.registerMultiFileFunction`, `V2.Copy`, and `V2.Registration.TableCallbacks` |
 | Replacement scans, file systems, logging, extension entry points | Typed `Registration`, `V2.Registration`, `FileSystem`, `Logging`, `V2.Logging`, and `Extension`. V2 has no custom file-system registration. See [the extension recipe](../dev/extensions/README.md). |
 | Custom options, macro and pragma functions, function documentation, query profiles | `Config`, `V2.Config`, `Extension`, `V2.Registration`, `Pragma`, `V2.Pragma`, `V2.FunctionDocs`, and `QueryMetrics` |

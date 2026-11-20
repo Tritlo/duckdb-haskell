@@ -353,7 +353,7 @@ tests paths =
           paths
           [ "SELECT haskell_sum(v) FROM (VALUES (9223372036854775807), (1)) AS t(v);"
           , "SELECT 'after_update_error', 42;"
-          , -- The frame of row 0 has 32 rows. DuckDB 2.0.0 adds rows 0 to 15 and rows 16 to 31
+          , -- The frame of row 0 has 32 rows. DuckDB adds rows 0 to 15 and rows 16 to 31
             -- in separate update calls. Then the combine callback adds the two sums. No row has
             -- the value 2, so only the combine callback can report the second overflow.
             "SELECT haskell_sum(v) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) FROM (SELECT i, CASE WHEN i = 0 THEN 9223372036854775807 WHEN i IN (16, 17) THEN 1 ELSE 0 END AS v FROM range(32) AS t(i));"

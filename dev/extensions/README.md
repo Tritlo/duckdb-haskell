@@ -61,7 +61,8 @@ registration retains callback resources after the entrypoint returns.
 `registerCustomOption`, and `registerLogSink` use the same opaque extension
 value. Macro signatures and custom-option defaults use `defaultValue`, as on a
 connection.
-Upstream marks the complete V2 API as unstable. An extension uses the
+
+An extension uses the
 `C_STRUCT_UNSTABLE` function table, which DuckDB gives only to an extension
 whose footer names the exact running release. `Pack.hs` writes the binary
 release tag from `duckdb-ffi/native.sha256`. This tag can differ from the

@@ -250,7 +250,7 @@ extensionRegressionTests =
     , testCase "a scalar callback failure gives an SQL error of the type ErrorInputInvalid" $
         withConnection ":memory:" \conn -> do
           -- An untyped callback failure gets the code DuckDBV2ErrorApi.
-          -- DuckDB 2.0.0 reports that code as an invalid input.
+          -- DuckDB reports that code as an invalid input.
           createFunction conn "throw_typed_scalar" (throwIO (userError "typed callback failure") :: IO Int64)
           outcome <- try (query_ conn "SELECT throw_typed_scalar()" :: IO [Only Int64])
           case outcome of
@@ -429,7 +429,7 @@ extensionRegressionTests =
             execute_
               conn
               "CALL enable_logging(); SET logging_sink = 'captured_log'; SELECT write_log('Matti λ', level := 'warning', log_type := 'HaskellTest'); SET logging_sink = 'memory'"
-          -- DuckDB 2.0.0 flushes the sink five times for these statements.
+          -- DuckDB flushes the sink five times for these statements.
           readIORef flushes >>= (@?= 5)
         end <- getCurrentTime
         received <- filter ((== "HaskellTest") . Logging.logEntryType) <$> readIORef entries
@@ -694,7 +694,7 @@ extensionRegressionTests =
           Config.getConfigValue conn "haskell_variant_update" >>= (@?= (FieldInt64 7, Config.SettingScopeSession))
     , testCase "setConfigValue with an Integer or a Natural checks the range of an unsigned option" $
         withConnection ":memory:" \conn -> do
-          -- DuckDB 2.0.0 gives asof_loop_join_threshold the type UBIGINT.
+          -- DuckDB gives asof_loop_join_threshold the type UBIGINT.
           let option = "asof_loop_join_threshold"
               current = fst <$> Config.getConfigValue conn option
           Config.setConfigValue conn Config.SettingScopeSession option (9 :: Integer)

@@ -54,8 +54,7 @@ primitiveLogicalTypes =
       , (DuckDBTypeBlob, DuckDBTypeBlob)
       ]
 
--- | A query gives the complete VARIANT descriptor, also before DuckDB 2.0.1.
--- Direct construction supplies the descriptor from DuckDB 2.0.1 onward.
+-- | A query and direct construction give the complete VARIANT descriptor.
 variantLogicalType :: TestTree
 variantLogicalType =
   testCase "query-derived VARIANT exposes its physical children" $

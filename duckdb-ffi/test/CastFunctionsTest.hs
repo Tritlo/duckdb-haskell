@@ -49,7 +49,7 @@ castFunctionOverridesBuiltin =
             errPtr <- c_duckdb_result_error resPtr
             errPtr @?= coerce nullPtr
 
--- In DuckDB 2.0.0, a failing cast between types that DuckDB plans as infallible, for example INTEGER to VARCHAR,
+-- In DuckDB, a failing cast between types that DuckDB plans as infallible, for example INTEGER to VARCHAR,
 -- gives an INTERNAL error and invalidates the database. The V1 API cannot choose the error type, so the target is a custom type.
 castFunctionReportsErrors :: TestTree
 castFunctionReportsErrors =

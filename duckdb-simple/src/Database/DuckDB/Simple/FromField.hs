@@ -168,7 +168,7 @@ newtype BigNum = BigNum Integer
 -- header and a big-endian payload. Negative values have a complemented payload.
 -- Restore that payload, then split it into machine-word limbs for
 -- @integerFromWordList@, with the most significant limb first.
--- This is the BIGNUM storage of DuckDB 2.0.0. The V2 API does not commit to this
+-- This is the BIGNUM storage of DuckDB. The V2 API does not commit to this
 -- layout, and this library does not use this function.
 fromBigNumBytes :: [Word8] -> Integer
 fromBigNumBytes bytes =
@@ -194,7 +194,7 @@ fromBigNumBytes bytes =
 -- | Encode an @Integer@ as a DuckDB BIGNUM blob. Write the 3-byte header
 -- (sign bit and payload length), then the magnitude bytes in big-endian order.
 -- Complement the header and the payload for a negative value.
--- This is the BIGNUM storage of DuckDB 2.0.0. The V2 API does not commit to
+-- This is the BIGNUM storage of DuckDB. The V2 API does not commit to
 -- this layout, and this library does not use this function.
 toBigNumBytes :: Integer -> [Word8]
 toBigNumBytes value =
@@ -790,9 +790,8 @@ instance FromField Float where
     case fieldValue of
       -- DuckDB casts an integer to FLOAT with static_cast<float>, which
       -- rounds one time to the nearest value, ties to even. int2Float rounds
-      -- in the same way. As seen in CI, the DuckDB 2.0.0 build for macOS on
-      -- Apple Silicon rounds some BIGINT values above 2^53 two times in its
-      -- cast to FLOAT, and the library gives the nearest value there.
+      -- in the same way. The library gives the nearest value independently
+      -- of platform-specific native cast rounding.
       FieldInt i -> pure (int2Float (fromIntegral i))
       FieldDecimal value -> pure (decimalToFloat value)
       _ -> do
@@ -804,14 +803,14 @@ instance FromField Float where
 {- Note [DECIMAL as DOUBLE and FLOAT]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 A DECIMAL that a Double or a Float reads gives the value of the cast of DuckDB
-2.0.1 to DOUBLE or FLOAT. TryCastDecimalToFloatingPoint in
+to DOUBLE or FLOAT. TryCastDecimalToFloatingPoint in
 src/common/operator/cast_operators.cpp uses these paths:
 
 1. Scale 0. DuckDB converts the stored integer directly to the target type.
    For a HUGEINT, CastBigintToFloating in src/common/types/hugeint.cpp converts
    its unsigned magnitude with Uhugeint::TryCast. That conversion folds the
    discarded bits into a sticky bit before rounding. It gives the nearest
-   value, with ties to even. FLOAT no longer converts through DOUBLE. The
+   value, with ties to even. The conversion to FLOAT does not pass through DOUBLE. The
    library uses fromInteger for both target types.
 2. An integer with magnitude at most 2^53 (2^24 for FLOAT) and scale at most 22
    (10 for FLOAT). DuckDB converts the integer to the target type and divides

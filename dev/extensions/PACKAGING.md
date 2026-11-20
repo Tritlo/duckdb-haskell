@@ -33,7 +33,7 @@ release named in its version field. The script reads that version from the
 release tags in `duckdb-ffi/native.sha256`. All archive records must name the
 same release. For the current pin, the field is `v2.0.1`. This binary release
 version is separate from the function-table version in the upstream headers,
-which remains 2.0.0. The version is not an option, because the footer must
+which is 2.0.0. The version is not an option, because the footer must
 match the native release.
 
 Each metadata field must contain at most 32 ASCII bytes. Required fields must

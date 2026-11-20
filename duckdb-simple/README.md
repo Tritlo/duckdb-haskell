@@ -71,7 +71,9 @@ is idempotent. `open` and `withConnection` continue to create private parents.
   names, and defaults. Haskell callbacks use typed V2 info handles. The library
   retains their function pointers and contains callback exceptions. The advanced
   extension builders accept a borrowed native extension handle and context.
-  Scalar type resolution runs before binding. Table callbacks can report
+  Managed statistics callbacks report nullability to the planner. See
+  [Optimizer statistics](#optimizer-statistics). Scalar type resolution runs
+  before binding. Table callbacks can report
   multi-file column identifiers and metadata after binding.
 - `Copy` registers COPY formats and multi-file table functions with Haskell
   values. `V2.Copy` has the native COPY callbacks, with batch transfer, flush,
@@ -172,11 +174,8 @@ An `Integer` or a `Natural` parameter binds as a HUGEINT, a UHUGEINT, or a
 BIGNUM value, or raises an error, depending on its size and target type:
 note 1 of [Types](#types) gives the rule.
 
-DuckDB 2.0.1 fixes the integer casts from BIGNUM that could fail or store
-wrapped values in DuckDB 2.0.0 ([issue
-41](https://github.com/Tritlo/duckdb-haskell/issues/41)). A `BigNum` value,
-and a `SizedArray` or a list of `BigNum` values, now use these checked casts
-for integer targets. BIGNUM still has no cast to DECIMAL. A `SizedArray` or a
+A `BigNum` value, and a `SizedArray` or a list of `BigNum` values, use checked
+casts for integer targets. BIGNUM has no cast to DECIMAL. A `SizedArray` or a
 list of `Integer` or `Natural` values takes the element type of its target when
 that type is an integer type or DECIMAL. For each other target, and for a parameter
 with no known type, a `SizedArray`, a list, or a `Map` of `Integer` or `Natural`
@@ -430,12 +429,9 @@ Notes:
    value does not read as an integer type. Write `enum_code(c)::BIGINT` in SQL
    for its index, or `c::INTEGER` for the value of its label.
 4. A read returns the value of DuckDB's `c::DOUBLE` or `c::FLOAT` cast. This
-   includes a DECIMAL. DuckDB 2.0.1 rounds a scale-zero DECIMAL directly to
-   the target type. Reads follow this change for HUGEINT storage, including
-   FLOAT values that previously rounded through DOUBLE. CI showed that the
-   DuckDB 2.0.0 build for macOS on Apple Silicon rounds some BIGINT values above
-   2^53 two times in its cast to FLOAT. The library gives the nearest `Float`
-   value there. A
+   includes a DECIMAL. A scale-zero DECIMAL rounds directly to the target type,
+   including HUGEINT storage. On macOS on Apple Silicon, the library gives
+   the nearest `Float` value for a BIGINT conversion. A
    finite value that `Float` cannot hold raises a conversion error of the
    library, an `SQLError` with no type.
 5. A read of another SQL type returns the value of DuckDB's cast to the Haskell
@@ -726,7 +722,7 @@ These 16 types do not pass through a callback:
   database after them.
 - `ErrorApi`, `ErrorIOFileNotFound`, `ErrorIOReadFailure`, `ErrorIOEof`,
   `ErrorInputParameterInvalid`, `ErrorInputMetadataDeferred`, and
-  `ErrorIONetwork`. DuckDB 2.0.0 cannot raise them again with their own type.
+  `ErrorIONetwork`. DuckDB cannot raise them again with their own type.
 
 When an error of a callback fails a statement in an explicit transaction, DuckDB
 aborts that transaction, also under the setting
@@ -741,7 +737,7 @@ constant through the cast while it binds the query, for example the INTEGER
 literal of `range(10)` with a cast from INTEGER to BIGINT, the error has the
 type `ErrorInputInvalid` and the text `Failed to cast value: ` before the text
 of the exception, and the database stays usable. The type `ErrorTypeMismatch`
-is the same for each pair of types, because of a property of DuckDB 2.0.0.
+is the same for each pair of types.
 DuckDB plans casts between some pairs of types as casts that cannot fail,
 including registered casts. Examples are casts to VARCHAR, including
 from an ENUM, a LIST, or a STRUCT, and a widening cast such as INTEGER to
@@ -759,11 +755,10 @@ because `TRY` catches only the types `ErrorInputInvalid`,
 `ErrorInputOutOfRange`, and `ErrorTypeConversion`. DuckDB still plans such a
 cast as one that cannot fail, so it can run the cast for a row that another
 condition of the query excludes, for example in
-`WHERE c < 2500 AND CAST(c AS VARCHAR) <> 'x'`. In DuckDB 2.0.0, only a guard in
-a CASE expression, for example
-`CASE WHEN d <> 0 THEN CAST(c AS VARCHAR) <> 'x' ELSE false END`, kept the cast
-from the excluded rows. A cast that a program registers with the native API of
-`duckdb-ffi` also gets the INTERNAL error for such a pair and such an error
+`WHERE c < 2500 AND CAST(c AS VARCHAR) <> 'x'`. Use a guard in a CASE
+expression to exclude rows from the cast, for example
+`CASE WHEN d <> 0 THEN CAST(c AS VARCHAR) <> 'x' ELSE false END`. A cast that a
+program registers with the native API of `duckdb-ffi` also gets the INTERNAL error for such a pair and such an error
 type. A V2 cast can report the code `DUCKDB_V2_ERROR_TYPE_MISMATCH` in their
 place.
 
@@ -1072,7 +1067,7 @@ nanoseconds.
 
 TIME aliases keep their alias and exact microsecond value when they bind
 inside a composite. The library uses public vector storage because the
-default TIME-to-alias cast fails in DuckDB 2.0.0. Other aliases require native
+default TIME-to-alias cast fails. Other aliases require native
 cast support.
 
 Some values bind with another type than the column that they came from. A
@@ -1598,15 +1593,12 @@ import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunctio
 import Database.DuckDB.Simple.Registration
 ```
 
-The library has no typed cast in this release. A registered cast can give
-wrong rows with no error, because the optimizer of DuckDB 2.0.0 decides from
-the two types of a cast alone whether it can move the cast away from a column
-in a filter or a join. In a run, it also gave min and max from the statistics
-of the column without the cast. The cast function then does not run on that
-column, or, in a comparison of two columns, it runs on one side only. In runs
-with DuckDB 2.0.0, a cast from INTEGER to BIGINT, and a cast between BIGINT and
-a custom type with the base type BIGINT, gave wrong rows when its function
-changed the value. `registerCast` in
+The library has no typed cast in this release. The native optimizer can move a
+registered cast away from a column in a filter or a join based on the two types.
+It can also use column statistics without applying the cast. A cast that changes
+the value can therefore give wrong rows without an error. This affects widening
+casts and casts between an integer type and a custom type with the same base
+type. `registerCast` in
 `Database.DuckDB.Simple.V2.Registration` registers a native cast, and its
 Haddock gives the warning. For a conversion that changes the value, register a
 scalar function with `createFunction` (see
@@ -1739,6 +1731,36 @@ A typed registration has more overhead for each row than raw vector access. Use
 scalar functions with a bind callback or variadic parameters. A typed table
 function has projection pushdown (see `createTableFunction` above), but no
 filter pushdown.
+
+### Optimizer statistics
+
+Use `registerScalarFunctionWithStats`, `registerAggregateFunctionWithStats`, or
+`registerTableFunctionWithStats` from `Database.DuckDB.Simple.V2.Registration`
+when a native registration can guarantee whether its result can contain NULL
+or non-NULL values. Each takes `target configure stats callbacks`. The planner
+can use these facts to simplify queries.
+
+For example, add a statistics callback to a scalar registration that always
+returns a non-NULL value, including for NULL inputs. Here `configure` and
+`callbacks` are the configuration action and execution callbacks of that
+registration. `R` names `Database.DuckDB.Simple.V2.Registration`, and the native
+functions come from `Database.DuckDB.FFI.V2`:
+
+```haskell
+R.registerScalarFunctionWithStats target configure
+  (\info _ -> do
+    result <- R.output (c_duckdb_v2_scalar_function_stats_get_result_stats info)
+    R.checked (c_duckdb_v2_stats_set_can_have_null result 0))
+  callbacks
+```
+
+Report only facts that hold for every result. An incorrect guarantee can give
+wrong query results. Leave unknown statistics unchanged. An ungrouped aggregate
+can produce a result for empty input, so its statistics must cover that result
+too. The info, context, and statistics handles are borrowed. Do not destroy them
+or keep them after the callback returns. Argument statistics are read-only;
+change only result statistics. The module's Haddock describes the callback
+contracts and ownership rules.
 
 ## Loadable extensions
 

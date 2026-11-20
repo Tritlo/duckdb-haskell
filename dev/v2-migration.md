@@ -5,15 +5,16 @@ This document describes the contracts, design, and native limits of the
 
 ## Overview
 
-The backend uses only V2 handles. It does not convert retained API handles into
-V2 handles. Upstream marks the complete V2 API as unstable, so the backend
-requires exactly the DuckDB release of the pinned headers. Creating an
-environment compares the library version with the header version and raises
-`SQLError` on a mismatch.
+The backend uses V2 handles and depends on unstable declarations. It requires
+the native DuckDB release recorded in the first three components of the
+`duckdb-ffi` package version. Creating an environment compares the loaded
+library version with that release and raises `SQLError` on a mismatch. The
+native loader can report a missing symbol before this check runs.
 
 The public API includes shared environments and instances, attachment
 management, option discovery, tokenization, advanced function signatures,
-aggregate, table, and cast registration, COPY FROM and COPY TO operations,
+function registration with optimizer statistics, cast registration, COPY FROM
+and COPY TO operations,
 custom types, replacement scans, file operations, callback logging, log sinks,
 custom options, macros, pragmas, query metrics, function documentation, and
 Arrow integration. Operations that V2 does not provide raise `SQLError` or are

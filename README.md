@@ -1,8 +1,7 @@
 # duckdb-haskell
 
-`duckdb-ffi` 2.0 and `duckdb-simple` 1.0 target DuckDB 2.0.
+`duckdb-ffi` 2.0.1.0 and `duckdb-simple` 1.0.1.0 target DuckDB 2.0.1.
 See [the pinned API, feature coverage, and build commands](docs/duckdb-2.0.md).
-Use the earlier package releases with DuckDB 1.5.
 
 ## duckdb-ffi
 
@@ -20,11 +19,8 @@ The package generates bindings from the pinned DuckDB 2.0 client headers with
 - Generates native types, layouts, callbacks, and calling-convention adapters.
 - Includes integration tests for the native bindings.
 - Covers all 548 retained and 641 V2 functions in the pinned 2.0.1 release.
-- The retained C API has the same ABI in DuckDB 2.0.0 and 2.0.1. CI tests 2.0.1.
-- `Database.DuckDB.FFI.V2` requires exactly DuckDB 2.0.1. Upstream marks the
-  complete V2 API as unstable: "The C API v2 is not yet stable. Its interface
-  may change in upcoming releases." A later DuckDB release can require a new
-  `duckdb-ffi` release for V2.
+- `Database.DuckDB.FFI.V2` includes unstable C declarations and requires
+  exactly DuckDB 2.0.1.
 
 ### Generate the bindings
 
@@ -98,10 +94,8 @@ When building this repository, you can also pass `-fsystemlib` and
 `--extra-lib-dirs=/absolute/path/to/duckdb` on the command line.
 Supplying `extra-lib-dirs` also skips the download without the flag.
 
-Supply DuckDB 2.0.1 for this package release. With DuckDB 2.0.0, use
-`duckdb-ffi` 2.0.0.x. The retained API is compatible across both releases,
-but a dynamically linked Haskell program can resolve symbols from both FFI
-modules at startup. Only DuckDB 2.0.1 exports the new V2 symbols.
+Supply DuckDB 2.0.1 for this package release. A dynamically linked Haskell
+program can resolve symbols from both FFI modules at startup.
 In Nix builds and shells, Setup uses Cabal and Nix to find the library and skips
 the download.
 
@@ -109,7 +103,7 @@ the download.
 checks reject other platforms. The automatic download supports glibc Linux and
 macOS. On other Linux systems, supply the library with `-fsystemlib`.
 
-For raw API changes and earlier upgrade notes, see
+For upgrade instructions, see
 [MIGRATION.md](MIGRATION.md).
 
 ## duckdb-simple
@@ -135,6 +129,8 @@ which supports explicit IO and conversion errors. Query APIs run conversions;
 - Register scalar functions with `Database.DuckDB.Simple.Function`. SQL
   expressions can call Haskell functions, including functions that return
   `Maybe` values or run `IO` actions. Use `createAggregate` to register a Haskell fold.
+- Report guaranteed result nullability to the optimizer with managed scalar,
+  aggregate, and table statistics callbacks in `V2.Registration`.
 - Use `withTransaction` for transactions and `columnCount` and `columnName`
   for statement metadata.
 

@@ -5,7 +5,7 @@
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
-  echo "Usage: $0 TAG (for example v2.0.0)" >&2
+  echo "Usage: $0 TAG (for example v2.0.1)" >&2
   exit 2
 fi
 

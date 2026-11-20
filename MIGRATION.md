@@ -2,16 +2,25 @@
 
 ## DuckDB 2.0
 
-`duckdb-ffi` 2.0 and `duckdb-simple` 1.0 require DuckDB 2.0. Earlier package
-releases remain available for DuckDB 1.5. The retained API in
-`Database.DuckDB.FFI` supports DuckDB 2.0.x releases. The V2 API in
-`Database.DuckDB.FFI.V2` requires exactly DuckDB 2.0.0, because upstream marks
-it as unstable. `duckdb-simple` 1.0 uses the V2 API, so it also requires
-exactly DuckDB 2.0.0.
+The retained C API has the same ABI in DuckDB 2.0.0 and 2.0.1. The V2 API
+and `duckdb-simple` require an exact native release. Use `duckdb-ffi` 2.0.1.0
+and `duckdb-simple` 1.0.0.1 with DuckDB 2.0.1. For DuckDB 2.0.0, use
+`duckdb-ffi` 2.0.0.0 and `duckdb-simple` 1.0.0.0.
+
+When moving V2 code from 2.0.0 to 2.0.1, pass the transaction invalidation
+flag after the SQL string in `c_duckdb_v2_parse_sql`. Pass 1 when executing
+user SQL, or 0 when inspecting SQL without affecting the transaction. Rebuild
+loadable extensions because DuckDB changed the V2 function table layout.
+
+DuckDB 2.0.1 changes `RESET` for custom options. It removes the override at
+the selected scope. A SESSION reset therefore exposes a GLOBAL value when
+one exists. The reset callback still receives the declared default, which can
+differ from the effective value after the reset. A GLOBAL reset removes the
+GLOBAL override and exposes the declared default.
 
 ### duckdb-ffi 1.5 to 2.0
 
-`hs-bindgen` 1.0 generates both C APIs from the pinned 2.0.0 headers. The
+`hs-bindgen` 1.0 generates both C APIs from the pinned 2.0.1 headers. The
 function names stay the same. Many of their types change.
 
 - Import `Database.DuckDB.FFI` for the retained API. The
@@ -69,12 +78,14 @@ duckdb-simple README gives the details.
 
 ### duckdb-simple 0.3 to 1.0
 
-This release is version 1.0.0.0 because it has many breaking changes from
-0.3.0.0.
+Version 1.0.0.0 introduced the breaking changes from 0.3.0.0 described below.
+Version 1.0.0.1 updates the native requirement to DuckDB 2.0.1.
 
 `duckdb-simple` 1.0 uses the V2 C API for connections, results, conversions,
-and callbacks. Upstream marks that API as unstable, so 1.0 requires exactly
-DuckDB 2.0.0. Creating an environment raises `SQLError` for another version.
+and callbacks. Upstream marks that API as unstable, so each release requires
+its matching native version. Version 1.0.0.1 requires DuckDB 2.0.1. Creating
+an environment checks the version and raises `SQLError` on a mismatch. A
+native library missing required symbols can fail to link before this check.
 The SQL workflow stays the same. These changes can affect your code:
 
 - The package requires `base` 4.18 or later, that is GHC 9.6 or later.
@@ -204,8 +215,10 @@ The SQL workflow stays the same. These changes can affect your code:
   `SizedArray`, or a `Map`, inside a STRUCT, a TUPLE, or a UNION, and in a
   VARIANT. For a `Day`, that range is the range of DATE, from -5877641-06-25 to
   5881580-07-10. For a `LocalTime` or a `UTCTime` (in UTC), it is the range of
-  TIMESTAMP, TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS, from -290308-12-22
-  00:00:00 to 294247-01-10 04:00:54.775806. The dates are in the notation of
+  TIMESTAMP, TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS, from -290308-12-21
+  19:59:05.224192 to 294247-01-10 04:00:54.775806, except the negative infinity
+  sentinel at -290308-12-21 19:59:05.224193. Second and millisecond targets
+  accept whole units within this range. The dates are in the notation of
   `Data.Time`. A target of the type TIMESTAMP_NS or TIMESTAMPTZ_NS is different.
   These types have a smaller range, about the years 1677 to 2262. A value
   outside that range also gets the type `ErrorTypeConversion`, in each position.
@@ -229,7 +242,8 @@ The SQL workflow stays the same. These changes can affect your code:
   (-5877641-06-23 in the notation of `Data.Time`), and a `LocalTime` or a
   `UTCTime` from -290308-12-21 19:59:05.224192 to 23:59:59.999999, except the
   -infinity value at 19:59:05.224193. A stored TIMESTAMP of that time makes a
-  cast to VARCHAR raise an INTERNAL error in DuckDB 2.0.0. Code that catches
+  cast to VARCHAR raise an INTERNAL error in DuckDB 2.0.0. DuckDB 2.0.1
+  accepts that part of the day, except the infinity sentinel. Code that catches
   the `IOException` must catch `SQLError`.
 - A VARIANT of a `LocalTime` whose microseconds do not fit in INT64 bound as
   TIMESTAMP_S or TIMESTAMP_MS in version 0.3. It now raises the range error, as
@@ -309,8 +323,11 @@ The SQL workflow stays the same. These changes can affect your code:
   gave `1` or `0`. Read `Bool`, or write `c::INTEGER` in SQL for the old text.
 - A DECIMAL read as `Double` or `Float`, and a BIGINT read as `Float`, give
   the value of the cast of DuckDB. A value can differ from version 0.3 in the
-  last bit. As seen in CI, the DuckDB 2.0.0 build for macOS on Apple Silicon
-  rounds some BIGINT values above 2^53 two times in its cast to FLOAT, and the
+  last bit. DuckDB 2.0.1 changes scale-zero DECIMAL conversions with HUGEINT
+  storage to round directly to the target type. Reads now follow that change
+  for both `Double` and `Float`. As seen in CI, the DuckDB 2.0.0 build for macOS
+  on Apple Silicon rounds some BIGINT values above 2^53 two times in its cast
+  to FLOAT, and the
   library gives the nearest value there.
 - A TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, or TIMESTAMP_NS read as `UTCTime`
   raises the error of an incompatible column. Write
@@ -425,7 +442,9 @@ The SQL workflow stays the same. These changes can affect your code:
   for 1 and 2, where version 0.3 gave `BIGNUM[2]`. A list and a `Map` of such
   values follow the same rule. Stored in a VARIANT column, such a value keeps
   the HUGEINT elements, so a later cast checks their range: `[-5]` cast to
-  `UBIGINT[]` raises an error, where a BIGNUM element gave 18446744073709551611.
+  `UBIGINT[]` raises an error. DuckDB 2.0.0 gave 18446744073709551611 for a
+  BIGNUM element. DuckDB 2.0.1 rejects that cast too. The binding keeps the
+  same value types and range checks.
 - A typed registration declares HUGEINT for an `Integer` and UHUGEINT for a
   `Natural`: a column of a typed row, an argument, and a result. The column type
   name (`duckdbColumnTypeFor`, also `duckdbColumnType`) still gives BIGNUM for
@@ -525,7 +544,10 @@ The SQL workflow stays the same. These changes can affect your code:
   different element types gets the type that DuckDB gives a SQL list literal of
   the elements. Version 0.3 raised an `IOException` for it. The common type can
   add fields with NULL values, and a `BIGINT` field with a `DOUBLE` field gives
-  a `DOUBLE` field, which can round a large value. Elements with no common type
+  a `DOUBLE` field, which can round a large value. DuckDB 2.0.1 also merges
+  UNION members and widens the types of matching member payloads. A list or
+  array of disjoint UNION types now succeeds, including in nested collections
+  and `Map` values. Elements with no common type
   now raise the `SQLError` of DuckDB. Such a `SizedArray` with only NULL
   elements takes the element type of a parameter with a known type, and
   otherwise the type of `array_value(NULL, ...)`, for example `"NULL"[2]`.

@@ -1,16 +1,16 @@
 # DuckDB 2.0
 
-`duckdb-ffi` 2.0.0.0 and `duckdb-simple` 1.0.0.0 target DuckDB
-[2.0.0](https://github.com/duckdb/duckdb/releases/tag/v2.0.0). `duckdb-simple`
-uses the V2 API and requires exactly DuckDB 2.0.0. The package version selects
+`duckdb-ffi` 2.0.1.0 and `duckdb-simple` 1.0.0.1 target DuckDB
+[2.0.1](https://github.com/duckdb/duckdb/releases/tag/v2.0.1). `duckdb-simple`
+uses the V2 API and requires exactly DuckDB 2.0.1. The package version selects
 the supported native API. Earlier package releases remain available for
 DuckDB 1.5.
 
 ## Pinned API
 
 The client headers in `duckdb-ffi/cbits/duckdb.h` and `duckdb_v2.h` come from
-the upstream `v2.0.0` tag, commit
-[d54cbbe3df17e8e5ce68312f483b4155836112aa](https://github.com/duckdb/duckdb/commit/d54cbbe3df17e8e5ce68312f483b4155836112aa).
+the upstream `v2.0.1` tag, commit
+[8d78114e90a53823803660bf821f6073ac87da8c](https://github.com/duckdb/duckdb/commit/8d78114e90a53823803660bf821f6073ac87da8c).
 `duckdb-ffi/cbits/duckdb-LICENSE` contains the upstream license.
 The headers and license are unmodified upstream files.
 `duckdb-ffi/vendor/upstream.sha256` records their SHA256 digests.
@@ -27,7 +27,10 @@ The retained header declares 548 functions. Compared with the 1.5.6 header, it a
 `DUCKDB_TYPE_TIMESTAMP_TZ_NS = 42`, and error tags
 `DUCKDB_ERROR_DATA_CORRUPTION = 43` and `DUCKDB_ERROR_RESOURCE_IN_USE = 44`.
 It removes no functions and changes no existing function signatures or
-structure definitions. The V2 header declares 620 functions.
+structure definitions. The V2 header declares 641 functions. DuckDB 2.0.1
+adds 21 V2 functions to the 2.0.0 header. Its upstream function-table version
+remains 2.0.0. The extension footer must still name the binary release,
+`v2.0.1`. See [extension packaging](../dev/extensions/PACKAGING.md).
 
 ## Generated modules
 
@@ -47,7 +50,7 @@ contracts differ. File flag 4 means exclusive creation in the retained API and
 truncation in V2.
 
 The generator supplies layouts, typed callbacks, const pointers, and adapters
-for structures passed by value. All 620 V2 functions are unstable and require
+for structures passed by value. All 641 V2 functions are unstable and require
 the matching native version. The generated C source enables
 `DUCKDB_V2_API_ALLOW_UNSTABLE` explicitly. Ownership, callback lifetimes,
 exception handling, Arrow release operations, and value conversion remain in
@@ -83,9 +86,9 @@ After a `duckdb_v2_result_render_box` error, check the result slot and destroy
 any owned handle that remains. The pinned implementation checks the render mode
 and view arguments before it transfers ownership. These argument errors leave
 the result intact. After transfer, it clears the slot on success and failure.
-See the [validation before transfer](https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/main/capi/v2/capi_v2_result.cpp#L464).
+See the [validation before transfer](https://github.com/duckdb/duckdb/blob/8d78114e90a53823803660bf821f6073ac87da8c/src/main/capi/v2/capi_v2_result.cpp#L464).
 
-The [upstream versioning rules](https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/api_spec/VERSIONING.md)
+The [upstream versioning rules](https://github.com/duckdb/duckdb/blob/8d78114e90a53823803660bf821f6073ac87da8c/api_spec/VERSIONING.md)
 define stable, deprecated, unstable, and removed lifecycle states. Headers
 default to the newest specified version. To use unstable declarations, enable
 them explicitly and target the newest API. Extension headers use versioned
@@ -101,7 +104,7 @@ header, and the upstream license. It writes new digests to
 the diff:
 
 ```sh
-dev/update-duckdb.sh v2.0.0
+dev/update-duckdb.sh v2.0.1
 nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh'
 git diff
 ```
@@ -132,11 +135,11 @@ requires the release headers to be identical to the vendored headers.
 ```sh
 dev/fetch-duckdb.sh /tmp/duckdb-2.0-native
 cabal build all -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native
-DUCKDB_TEST_VERSION=2.0.0 cabal test all -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native --test-show-details=direct
+DUCKDB_TEST_VERSION=2.0.1 cabal test all -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native --test-show-details=direct
 ```
 
 The `bindings` job of `.github/workflows/bindings.yml` and Docker use the
-release archives. Nix builds the same source pin with explicit version 2.0.0:
+release archives. Nix builds the same source pin with explicit version 2.0.1:
 
 ```sh
 nix-build dev/nix/ci.nix --no-out-link

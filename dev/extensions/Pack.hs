@@ -10,8 +10,8 @@ import Control.Monad (unless, when)
 import Data.Bits ((.&.))
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
-import Data.Char (ord)
-import Data.List (intercalate, isPrefixOf, isSuffixOf)
+import Data.Char (isDigit, isHexDigit, ord)
+import Data.List (intercalate, isPrefixOf, isSuffixOf, nub)
 import System.Console.GetOpt
 import System.Directory (canonicalizePath, doesFileExist, removeFile)
 import System.Environment (getArgs)
@@ -25,7 +25,7 @@ import System.Posix.Files (createLink, fileMode, getFileStatus, isRegularFile, s
 data Flag = Output FilePath | Platform String | ExtensionVersion String | Help
   deriving (Eq, Show)
 
--- | Command-line options. The DuckDB version comes from the pinned V2 header.
+-- | Command-line options. The DuckDB version comes from the native archive manifest.
 options :: [OptDescr Flag]
 options =
   [ Option [] ["output"] (ReqArg Output "OUTPUT") "new NAME.duckdb_extension path, where NAME_init_c_api_v2 is the entrypoint; must not exist"
@@ -98,19 +98,29 @@ checkLibrary header platform
     magic = BS.take 4 header
     invalid = ioError . userError
 
--- | Read the release version from the pinned V2 header. The unstable function
--- table matches only this exact DuckDB release, so the footer must name it.
+-- | Read the binary release tag. The extension footer names the native release,
+-- which can differ from the version of the unstable function table.
 pinnedVersion :: IO String
 pinnedVersion = do
-  let header = "duckdb-ffi/cbits/duckdb_v2.h"
-  found <- doesFileExist header
-  unless found $ failUsage ("run this script from the repository root; " <> header <> " is missing")
-  definitions <- map words . lines <$> readFile header
-  let part name = case [value | ["#define", key, value] <- definitions, key == "DUCKDB_V2_API_VERSION_" <> name] of
-        [value] -> pure value
-        _ -> failUsage (header <> " must define DUCKDB_V2_API_VERSION_" <> name <> " once")
-  parts <- mapM part ["MAJOR", "MINOR", "PATCH"]
-  pure ('v' : intercalate "." parts)
+  let manifest = "duckdb-ffi/native.sha256"
+  found <- doesFileExist manifest
+  unless found $ failUsage ("run this script from the repository root; " <> manifest <> " is missing")
+  records <- map words . lines <$> readFile manifest
+  versions <- mapM (releaseTag manifest) records
+  case nub versions of
+    [version] -> pure version
+    _ -> failUsage (manifest <> " must name exactly one native release")
+  where
+    releaseTag manifest [digest, path]
+      | length digest == 64 && all isHexDigit digest
+      , (tag@('v' : version), '/' : archive) <- break (== '/') path
+      , not (null archive)
+      , let parts = words (map (\c -> if c == '.' then ' ' else c) version)
+      , length parts == 3 && all (all isDigit) parts
+      , intercalate "." parts == version =
+          pure tag
+      | otherwise = failUsage (manifest <> " has an invalid native archive record")
+    releaseTag manifest _ = failUsage (manifest <> " has an invalid native archive record")
 
 -- | Copy bytes without retaining the complete shared library in memory.
 copyHandle :: Handle -> Handle -> IO ()

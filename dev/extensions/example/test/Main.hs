@@ -195,9 +195,9 @@ tests paths =
         checkProcess
           paths
           [ "SET enable_logging=true;"
-          , "SET logging_storage='haskell_sink';"
+          , "SET logging_sink='haskell_sink';"
           , "SELECT 'log_sink', write_log('Haskell extension test', level := 'warning', return_value := 42);"
-          , "SET logging_storage='memory';"
+          , "SET logging_sink='memory';"
           , "SET enable_logging=false;"
           , "SELECT 'log_entries', haskell_log_entries() > 0;"
           ]

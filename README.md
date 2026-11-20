@@ -19,9 +19,9 @@ The package generates bindings from the pinned DuckDB 2.0 client headers with
   appenders, and Arrow integration.
 - Generates native types, layouts, callbacks, and calling-convention adapters.
 - Includes integration tests for the native bindings.
-- Covers all 548 retained and 620 V2 functions in the pinned 2.0.0 release.
-- `Database.DuckDB.FFI` supports DuckDB 2.0.x releases. CI tests DuckDB 2.0.0.
-- `Database.DuckDB.FFI.V2` requires exactly DuckDB 2.0.0. Upstream marks the
+- Covers all 548 retained and 641 V2 functions in the pinned 2.0.1 release.
+- The retained C API has the same ABI in DuckDB 2.0.0 and 2.0.1. CI tests 2.0.1.
+- `Database.DuckDB.FFI.V2` requires exactly DuckDB 2.0.1. Upstream marks the
   complete V2 API as unstable: "The C API v2 is not yet stable. Its interface
   may change in upcoming releases." A later DuckDB release can require a new
   `duckdb-ffi` release for V2.
@@ -53,9 +53,9 @@ nix-shell dev/nix/shell.nix --run 'cabal build all --with-compiler=ghc -fsysteml
 ### Native library installation
 
 The automatic installer supports glibc Linux (x86_64 and aarch64) and macOS.
-It downloads the verified DuckDB 2.0.0 release into
-`$XDG_CACHE_HOME/duckdb-haskell/2.0.0` (usually
-`~/.cache/duckdb-haskell/2.0.0`). It verifies SHA256 before extraction.
+It downloads the verified DuckDB 2.0.1 release into
+`$XDG_CACHE_HOME/duckdb-haskell/2.0.1` (usually
+`~/.cache/duckdb-haskell/2.0.1`). It verifies SHA256 before extraction.
 It requires `curl`, `tar`, and `sha256sum` (`shasum` on macOS).
 The installer uses upstream `duckdb-shared-libs-PLATFORM.tar.gz` archives.
 It keeps shared-library symlinks and their versioned targets together.
@@ -70,7 +70,7 @@ As in [Hasktorch](https://github.com/hasktorch/hasktorch/blob/master/libtorch-ff
 cabal build all --configure-option="--duckdb-install-dir=$PWD/.duckdb"
 ```
 
-Setup appends the version and platform, for example `.duckdb/2.0.0/linux-amd64`.
+Setup appends the version and platform, for example `.duckdb/2.0.1/linux-amd64`.
 Use an absolute path. Cabal tracks this option and reconfigures the package
 when it changes. You can also set it in `cabal.project.local`:
 
@@ -98,8 +98,10 @@ When building this repository, you can also pass `-fsystemlib` and
 `--extra-lib-dirs=/absolute/path/to/duckdb` on the command line.
 Supplying `extra-lib-dirs` also skips the download without the flag.
 
-The supplied library must be a DuckDB 2.0.x release. The V2 API requires exactly
-DuckDB 2.0.0. `duckdb-simple` 1.0 uses V2 and has the same requirement.
+Supply DuckDB 2.0.1 for this package release. With DuckDB 2.0.0, use
+`duckdb-ffi` 2.0.0.x. The retained API is compatible across both releases,
+but a dynamically linked Haskell program can resolve symbols from both FFI
+modules at startup. Only DuckDB 2.0.1 exports the new V2 symbols.
 In Nix builds and shells, Setup uses Cabal and Nix to find the library and skips
 the download.
 
@@ -156,7 +158,7 @@ CI tests these GHC releases:
 The project and Docker use GHC 9.14.1 by default.
 Use `cabal build all --with-compiler=ghc-VERSION` to select another compiler.
 
-CI uses the pinned DuckDB 2.0.0 release archives on Linux and macOS ARM64.
+CI uses the pinned DuckDB 2.0.1 release archives on Linux and macOS ARM64.
 Three jobs use the automatic download. Docker builds and tests both packages
 with the same release. Nix builds the pinned source and tests both packages.
 The tests check the loaded native version. With GHC 9.14.1, CI also installs

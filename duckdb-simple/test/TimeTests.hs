@@ -338,8 +338,9 @@ nanosecondTimeTests =
       stored "TIME" "" time >>= (@?= [Only "03:04:05.123456"])
       stored "TIMESTAMPTZ" "::TIMESTAMPTZ_NS" instant >>= (@?= [Only "2026-01-02 03:04:05.123457+00"])
       stored "TIMESTAMPTZ" "" instant >>= (@?= [Only "2026-01-02 03:04:05.123456+00"])
+      nativeInterval <- query_ conn "SELECT ('2026-01-02 03:04:05.123456999'::TIMESTAMP_NS + INTERVAL 1 DAY)::VARCHAR" :: IO [Only Text.Text]
       (query conn "SELECT (?::TIMESTAMP_NS + INTERVAL 1 DAY)::VARCHAR" (Only local) :: IO [Only Text.Text])
-        >>= (@?= [Only "2026-01-03 03:04:05.123457"])
+        >>= (@?= nativeInterval)
       (query conn "SELECT (? + INTERVAL 1 DAY)::VARCHAR" (Only local) :: IO [Only Text.Text]) >>= (@?= [Only "2026-01-03 03:04:05.123456"])
   , testCase "nested time values keep their digits below a microsecond only for nanosecond leaves" $ withConnection ":memory:" $ \conn -> do
       let day = fromGregorian 2026 1 2
@@ -540,8 +541,13 @@ nanosecondTimeTests =
       stored array >>= (@?= [("ARRAY(1)", "['2026-01-02 03:04:05.123456']")])
       -- An element of a VARIANT list keeps the microsecond type, as the list has one element type.
       _ <- execute conn "INSERT INTO l VALUES (?)" (Only [local, LocalTime day (TimeOfDay 3 4 5)])
+      nativeList <-
+        query_
+          conn
+          "SELECT variant_typeof(x[1]), x::VARCHAR FROM (SELECT ['2026-01-02 03:04:05.123456'::TIMESTAMP, '2026-01-02 03:04:05'::TIMESTAMP]::VARIANT[] AS x)"
+          :: IO [(Text.Text, Text.Text)]
       (query_ conn "SELECT variant_typeof(x[1]), x::VARCHAR FROM l" :: IO [(Text.Text, Text.Text)])
-        >>= (@?= [("TIMESTAMP_MICROS", "[2026-01-02 03:04:05.123456, 2026-01-02 03:04:05]")])
+        >>= (@?= nativeList)
   , testCase "a UTCTime outside the nanosecond range binds as a LocalTime does" $ withConnection ":memory:" $ \conn -> do
       -- See Note [Nanosecond parameters] in "Database.DuckDB.Simple.ToField".
       let at year time = LocalTime (fromGregorian year 1 1) time
@@ -561,14 +567,11 @@ nanosecondTimeTests =
         >>= (@?= [Only "2000-01-01 00:00:00"])
       (query conn "SELECT count(*) FROM present WHERE z = ? OR true" (Only (localTimeToUTC utc (at 2300 digits))) :: IO [Only Int64])
         >>= (@?= [Only 1])
-      -- DuckDB does not mix TIMESTAMPTZ_NS and TIMESTAMPTZ in coalesce, so a
-      -- UTCTime there gets the Binder Error of DuckDB with and without digits.
-      let coalesced instant =
-            try (query conn "SELECT coalesce(z, ?) FROM present" (Only instant) :: IO [Only UTCTime]) >>= \case
-              Left SQLError{sqlErrorType} -> pure sqlErrorType
-              Right _ -> pure Nothing
-      coalesced (localTimeToUTC utc (at 2300 digits)) >>= (@?= Just ErrorQueryBinder)
-      coalesced (localTimeToUTC utc (at 2300 plain)) >>= (@?= Just ErrorQueryBinder)
+      -- The non-NULL first argument avoids evaluating an out-of-range fallback.
+      nativeCoalesced <- query_ conn "SELECT coalesce(z, '2300-01-01'::TIMESTAMPTZ) FROM present" :: IO [Only UTCTime]
+      forM_ [digits, plain] $ \time ->
+        (query conn "SELECT coalesce(z, ?) FROM present" (Only (localTimeToUTC utc (at 2300 time))) :: IO [Only UTCTime])
+          >>= (@?= nativeCoalesced)
       -- A plain parameter and a list element get the same error for each type.
       forM_ [(2300, digits), (2300, plain), (300000, digits), (300000, plain)] $ \(year, time) -> do
         let local = at year time
@@ -630,10 +633,12 @@ nanosecondTimeTests =
         >>= (@?= [Only "TIMESTAMP_MICROS"])
   , testCase "a Map or an Array of time values for VARIANT elements binds microsecond values" $ withConnection ":memory:" $ \conn -> do
       let precise = LocalTime (fromGregorian 2026 1 2) (TimeOfDay 3 4 5.123456789)
+      nativeMap <- query_ conn "SELECT MAP {'a': '2026-01-02 03:04:05.123456'::TIMESTAMP}::MAP(VARCHAR, VARIANT)::VARCHAR" :: IO [Only Text.Text]
       (query conn "SELECT (?::MAP(VARCHAR, VARIANT))::VARCHAR" (Only (Map.singleton ("a" :: Text.Text) precise)) :: IO [Only Text.Text])
-        >>= (@?= [Only "{a=2026-01-02 03:04:05.123456}"])
+        >>= (@?= nativeMap)
+      nativeArray <- query_ conn "SELECT ['2026-01-02 03:04:05.123456'::TIMESTAMP]::VARIANT[1]::VARCHAR" :: IO [Only Text.Text]
       (query conn "SELECT (?::VARIANT[1])::VARCHAR" (Only (sized [precise] :: SizedArray 1 LocalTime)) :: IO [Only Text.Text])
-        >>= (@?= [Only "[2026-01-02 03:04:05.123456]"])
+        >>= (@?= nativeArray)
   , testCase "nanosecond UTC targets reject finite overflow and sentinel collisions" $ withConnection ":memory:" $ \conn -> do
       forM_
         [ toInteger (minBound :: Int64) - 1
@@ -667,8 +672,8 @@ nanosecondTimeTests =
           -- Day 2147483647 is infinity.
           afterDay = addDays 2147483647 epoch
           local units count = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (count % units)))
-          firstTime = local 1000000 (-9223372022400000000)
-          beforeTime = local 1000000 (-9223372022400000001)
+          firstTime = local 1000000 (-9223372036854775808)
+          beforeTime = local 1000000 (-9223372036854775809)
           lastTime = local 1000000 9223372036854775806
           -- The microsecond value 2^63 - 1 is infinity.
           afterTime = local 1000000 9223372036854775807
@@ -733,10 +738,13 @@ nanosecondTimeTests =
         ]
         $ \(logical, column, units, largest) -> do
           let at count = structOf logical (FieldTimestamp (Finite (local units count)))
-          stored column (at (-9223372022400000000 * units `div` 1000000))
+          stored column (at (negate largest))
           stored column (at largest)
-          rejected column (at (-9223372022400000000 * units `div` 1000000 - 1))
+          rejected column (at (negate largest - 1))
           rejected column (at (largest + 1))
+          -- Cutting these finite microsecond values to whole units goes below the range.
+          rejected column (structOf logical (FieldTimestamp (Finite firstTime)))
+          rejected column (structOf logical (FieldTimestamp (Finite (local 1000000 (negate largest * 1000000 `div` units - 1)))))
   , testCase "each bind path checks the range of DuckDB for a date and a timestamp" $ withConnection ":memory:" $ \conn -> do
       -- See Note [Time ranges] in "Database.DuckDB.Simple.ToField".
       let epoch = fromGregorian 1970 1 1
@@ -750,7 +758,7 @@ nanosecondTimeTests =
                 assertBool (label <> ": " <> Text.unpack sqlErrorMessage) (bound `Text.isInfixOf` sqlErrorMessage)
               Right _ -> assertFailure (label <> ": expected the range error")
       forM_
-        [ ("below the smallest", addDays (-2147483648) epoch, local (-9223372022400000001))
+        [ ("below the smallest", addDays (-2147483648) epoch, local (-9223372036854775809))
         , ("above the largest", addDays 2147483647 epoch, local 9223372036854775807)
         ]
         $ \(bound, day, time) -> do

@@ -386,7 +386,7 @@ extractionStatement VariantState{variantConnection = connection, variantExtracti
 parseKept :: DuckDBV2ConnectionHandle -> Text -> (DuckDBV2SqlStatementHandle -> IO a) -> IO a
 parseKept connection sql keep =
   TextForeign.withCString sql \source ->
-    bracket (output (c_duckdb_v2_parse_sql connection (ConstPtr source))) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator -> do
+    bracket (output (c_duckdb_v2_parse_sql connection (ConstPtr source) 0)) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator -> do
       statement <- output (c_duckdb_v2_statement_iterator_next iterator)
       keep statement
 

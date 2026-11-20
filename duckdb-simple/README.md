@@ -11,8 +11,10 @@ precision and with a time zone, blobs, enums, bit strings, and bignums.
 
 The backend uses the generated DuckDB V2 API. Upstream marks the complete V2
 API as unstable: "The C API v2 is not yet stable. Its interface may change in
-upcoming releases." This release therefore requires exactly DuckDB 2.0.0.
-Creating an environment raises `SQLError` for another library version.
+upcoming releases." This release therefore requires exactly DuckDB 2.0.1.
+Creating an environment checks the loaded library version and raises `SQLError`
+on a mismatch. A native library missing required V2 symbols can fail to link
+before this check runs.
 
 The examples use the `OverloadedStrings` extension for `Query` and `Text`
 literals.
@@ -170,13 +172,13 @@ An `Integer` or a `Natural` parameter binds as a HUGEINT, a UHUGEINT, or a
 BIGNUM value, or raises an error, depending on its size and target type:
 note 1 of [Types](#types) gives the rule.
 
-In DuckDB 2.0.0 the casts from BIGNUM to the integer types have defects: some
-fail, and some store a wrong value with no error ([issue
-41](https://github.com/Tritlo/duckdb-haskell/issues/41)). A `SizedArray` or a
+DuckDB 2.0.1 fixes the integer casts from BIGNUM that could fail or store
+wrapped values in DuckDB 2.0.0 ([issue
+41](https://github.com/Tritlo/duckdb-haskell/issues/41)). A `BigNum` value,
+and a `SizedArray` or a list of `BigNum` values, now use these checked casts
+for integer targets. BIGNUM still has no cast to DECIMAL. A `SizedArray` or a
 list of `Integer` or `Natural` values takes the element type of its target when
-that type is an integer type or DECIMAL, so DuckDB checks each element. A
-`BigNum` value, and a `SizedArray` or a list of `BigNum` values, still have
-these defects for an integer target. For each other target, and for a parameter
+that type is an integer type or DECIMAL. For each other target, and for a parameter
 with no known type, a `SizedArray`, a list, or a `Map` of `Integer` or `Natural`
 values takes the type that its elements give, as a scalar `Integer` and a SQL
 list literal of the HUGEINT and BIGNUM values do: `[1, 2^64]` binds as
@@ -419,7 +421,7 @@ Notes:
    that has no integer or DECIMAL type. For each other integer or DECIMAL
    parameter, it raises an `SQLError` of the type `ErrorTypeConversion`. Bind a
    `BigNum` to bind a BIGNUM value in each case. [Querying Data](#querying-data)
-   gives the defects of the casts from BIGNUM in DuckDB 2.0.0, and the rule for
+   describes the casts from BIGNUM in DuckDB 2.0.1, and the rule for
    a list, a `SizedArray`, or a `Map` of `Integer` values.
 2. The value 0 reads as `False`, and each other value reads as `True`.
 3. "Each integer type" is TINYINT to UHUGEINT. A value that the Haskell type
@@ -428,9 +430,12 @@ Notes:
    value does not read as an integer type. Write `enum_code(c)::BIGINT` in SQL
    for its index, or `c::INTEGER` for the value of its label.
 4. A read returns the value of DuckDB's `c::DOUBLE` or `c::FLOAT` cast. This
-   includes a DECIMAL, and a BIGINT read as `Float`. As seen in CI, the DuckDB
-   2.0.0 build for macOS on Apple Silicon rounds some BIGINT values above 2^53 two
-   times in its cast to FLOAT, and the library gives the nearest value there. A
+   includes a DECIMAL. DuckDB 2.0.1 rounds a scale-zero DECIMAL directly to
+   the target type. Reads follow this change for HUGEINT storage, including
+   FLOAT values that previously rounded through DOUBLE. CI showed that the
+   DuckDB 2.0.0 build for macOS on Apple Silicon rounds some BIGINT values above
+   2^53 two times in its cast to FLOAT. The library gives the nearest `Float`
+   value there. A
    finite value that `Float` cannot hold raises a conversion error of the
    library, an `SQLError` with no type.
 5. A read of another SQL type returns the value of DuckDB's cast to the Haskell
@@ -468,8 +473,8 @@ Notes:
    for a `VARIANT` parameter: [Infinite dates and
    timestamps](#infinite-dates-and-timestamps) gives the rule. The range of
    `Day` is 5877642-06-25 (BC), the year -5877641 of `Data.Time`, to
-   5881580-07-10. The range of `LocalTime` and `UTCTime` is 290309-12-22 (BC)
-   00:00:00 to 294247-01-10 04:00:54.775806. A value outside its range raises an
+   5881580-07-10. The range of `LocalTime` and `UTCTime` is 290309-12-21 (BC)
+   19:59:05.224192 to 294247-01-10 04:00:54.775806. A value outside its range raises an
    `SQLError` of the type `ErrorTypeConversion`. A target of the type
    TIMESTAMP_NS or TIMESTAMPTZ_NS has a smaller range, about the years 1677 to
    2262, and a value outside it gets the same type in each position. A
@@ -901,7 +906,11 @@ When the elements that are not NULL have one type, the list has that type.
 When their types are different, DuckDB uses their common type: `{'a': 1}` and
 `{'b': 2}` give `STRUCT(a INTEGER, b INTEGER)[]`, with NULL for a field that an
 element does not have. A `BIGINT` field and a `DOUBLE` field give a `DOUBLE`
-field, so `9007199254740993` becomes `9007199254740992.0`, as in SQL. Elements
+field, so `9007199254740993` becomes `9007199254740992.0`, as in SQL.
+DuckDB 2.0.1 also merges UNION members. For example, `UNION(a INTEGER)` and
+`UNION(b VARCHAR)` give `UNION(a INTEGER, b VARCHAR)`. Matching members use
+the common type of their payloads. This rule also applies inside nested
+collections and to the values of a `Map`. Elements
 with no common type, such as `{'a': 1}` and `{'a': 'x'}`, raise the `SQLError`
 of DuckDB. The column type of an `INSERT` does not change the type of the
 list: DuckDB casts the list to the column type after it gives the list its
@@ -973,8 +982,10 @@ type `ErrorTypeConversion` when it binds, also as an element of a list, a
 `SizedArray`, or a `Map`, inside a STRUCT, a TUPLE, or a UNION, and in a VARIANT.
 For a `Day`, that range is the range of DATE, from -5877641-06-25 to 5881580-07-10.
 For a `LocalTime` or a `UTCTime` (in UTC), it is the range of TIMESTAMP,
-TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS, from -290308-12-22 00:00:00 to
-294247-01-10 04:00:54.775806. The dates are in the notation of `Data.Time`. A
+TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS, from -290308-12-21 19:59:05.224192 to
+294247-01-10 04:00:54.775806, except the negative infinity sentinel at
+-290308-12-21 19:59:05.224193. Second and millisecond targets accept whole
+units within this range. The dates are in the notation of `Data.Time`. A
 TIMESTAMP_NS or TIMESTAMPTZ_NS target has a smaller range, about the years
 1677 to 2262. A value outside that range also gets the type
 `ErrorTypeConversion` in each position. The position of the value determines

@@ -1,6 +1,6 @@
 cabal-version: 3.4
 name: duckdb-simple
-version: 1.0.0.0
+version: 1.0.0.1
 license: MPL-2.0
 license-file: LICENSE
 author: Matthias Pall Gissurarson
@@ -23,7 +23,7 @@ description:
   functions. The API follows the style of sqlite-simple and postgresql-simple.
 
   The backend uses the generated V2 API from duckdb-ffi. Upstream marks
-  that API as unstable, so this release requires exactly DuckDB 2.0.0.
+  that API as unstable, so this release requires exactly DuckDB 2.0.1.
   It provides shared environments and instances, function registration,
   native streaming, and Arrow batches.
 
@@ -125,7 +125,7 @@ library
     base >=4.18 && <5,
     bytestring >=0.11 && <0.13,
     containers >=0.6 && <0.9,
-    duckdb-ffi >=2.0.0.0 && <2.0.1,
+    duckdb-ffi >=2.0.1.0 && <2.0.2,
     geometry-simple >=0.1.1.0 && <0.2,
     hs-bindgen-runtime >=1.0.0.0 && <1.1,
     text >=2.0 && <2.2,
@@ -169,7 +169,7 @@ test-suite duckdb-simple-test
     bytestring,
     containers >=0.6 && <0.9,
     directory >=1.3 && <1.4,
-    duckdb-ffi >=2.0.0.0 && <2.0.1,
+    duckdb-ffi >=2.0.1.0 && <2.0.2,
     duckdb-simple,
     filepath >=1.4 && <1.6,
     geometry-simple >=0.1.1.0 && <0.2,
@@ -226,7 +226,7 @@ test-suite duckdb-simple-dataframe-test
     base >=4.18 && <5,
     dataframe-arrow-bridge >=1.0 && <1.1,
     dataframe-core >=2.5 && <2.6,
-    duckdb-ffi >=2.0.0.0 && <2.0.1,
+    duckdb-ffi >=2.0.1.0 && <2.0.2,
     duckdb-simple,
     hs-bindgen-runtime >=1.0.0.0 && <1.1,
     tasty >=1.4 && <1.6,

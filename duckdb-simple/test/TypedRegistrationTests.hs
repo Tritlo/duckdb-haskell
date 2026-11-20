@@ -2012,7 +2012,7 @@ closureKinds =
     , \token -> withConnection ":memory:" \conn -> do
         Logging.registerLogSink conn "closure_log" (\_ -> void (readIORef token)) (void (readIORef token))
         void
-          (execute_ conn "CALL enable_logging(); SET logging_storage = 'closure_log'; SELECT write_log('closure'); SET logging_storage = 'memory'")
+          (execute_ conn "CALL enable_logging(); SET logging_sink = 'closure_log'; SELECT write_log('closure'); SET logging_sink = 'memory'")
     )
   ]
 

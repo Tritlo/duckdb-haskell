@@ -621,7 +621,7 @@ factoryOutput connection create = withConnectionFactory connection (output . cre
 withSQLStatement :: DuckDBV2ConnectionHandle -> Text -> (DuckDBV2SqlStatementHandle -> IO a) -> IO a
 withSQLStatement connection sql action =
   TextForeign.withCString sql $ \source ->
-    bracket (output (c_duckdb_v2_parse_sql connection (ConstPtr source))) (destroy c_duckdb_v2_statement_iterator_destroy) $ \iterator ->
+    bracket (output (c_duckdb_v2_parse_sql connection (ConstPtr source) 0)) (destroy c_duckdb_v2_statement_iterator_destroy) $ \iterator ->
       bracket (output (c_duckdb_v2_statement_iterator_next iterator)) (destroy c_duckdb_v2_sql_statement_destroy) action
 
 -- | Borrow a factory during its native callback. Do not retain or destroy it.

@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MagicHash #-}
@@ -119,7 +120,7 @@ import qualified Data.ByteString as BS
 import Data.Coerce (Coercible, coerce)
 import Data.IORef (IORef, atomicModifyIORef', atomicWriteIORef, mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.IntMap.Strict as IntMap
-import Data.List (dropWhileEnd, find, intercalate, partition)
+import Data.List (dropWhileEnd, find, partition)
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -474,6 +475,7 @@ createEnvironment = mask_ do
 
 -- | Require the DuckDB release that the V2 bindings describe. Upstream marks
 -- the V2 API as unstable, so another release can change its functions.
+-- Use the package version because the native API version can stay unchanged.
 checkLibraryVersion :: IO ()
 checkLibraryVersion = do
   actual <- output c_duckdb_v2_library_version >>= readText
@@ -491,7 +493,7 @@ checkLibraryVersion = do
           Nothing
       )
   where
-    expected = Text.pack ('v' : intercalate "." (map show [dUCKDB_V2_API_VERSION_MAJOR, dUCKDB_V2_API_VERSION_MINOR, dUCKDB_V2_API_VERSION_PATCH]))
+    expected = "v" <> Text.intercalate "." (take 3 (Text.splitOn "." VERSION_duckdb_ffi))
 
 -- | Close an environment and its instances and connections.
 -- Wait for child creation and all descendant operations to finish before closing.
@@ -564,6 +566,7 @@ createInstance environment@Environment{environmentState} settings = keepAlive en
       [ "enable_logging"
       , "logging_mode"
       , "logging_level"
+      , "logging_sink"
       , "logging_storage"
       , "enabled_log_types"
       , "disabled_log_types"
@@ -673,7 +676,7 @@ withParsedStatements conn query action = withQueryError query $ withConnectionHa
 -- must transfer or release them under a mask.
 parseStatements :: DuckDBV2ConnectionHandle -> Query -> IO [DuckDBV2SqlStatementHandle]
 parseStatements raw query = mask_ $ withQueryCString query \sql -> do
-  iterator <- output (c_duckdb_v2_parse_sql raw sql)
+  iterator <- output (c_duckdb_v2_parse_sql raw sql 1)
   let destroyIterator = destroy c_duckdb_v2_statement_iterator_destroy iterator
       gather owned = do
         parsed <- flip onException (releaseParsed owned) do
@@ -712,7 +715,7 @@ createStatementFromParsedWithCollections parent query parsed collections = withQ
   flip onException (destroy c_duckdb_v2_prepared_statement_destroy handle) do
     -- The caller retains its parsed handle, so keep a separate metadata copy.
     text <- output (c_duckdb_v2_sql_statement_get_text parsed) >>= readText
-    copied <- withQueryCString (Query text) \sql -> bracket (output (c_duckdb_v2_parse_sql raw sql)) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator ->
+    copied <- withQueryCString (Query text) \sql -> bracket (output (c_duckdb_v2_parse_sql raw sql 0)) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator ->
       output (c_duckdb_v2_statement_iterator_next iterator)
     flip onException (destroy c_duckdb_v2_sql_statement_destroy copied) do
       addStatementCollections query collections copied

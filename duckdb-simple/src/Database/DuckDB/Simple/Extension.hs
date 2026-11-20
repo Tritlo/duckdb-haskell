@@ -70,7 +70,7 @@
 --   loaded extension apply. Extensions built with different GHC versions in one process are not tested. The runtime
 --   stays until the process ends. Do not call @hs_exit@.
 -- - The process supports one DuckDB implementation.
--- - The extension loads only into the DuckDB release of the pinned header, 2.0.0.
+-- - The extension loads only into the DuckDB release of the pinned header, 2.0.1.
 -- - In extension mode, duckdb-ffi exposes only "Database.DuckDB.FFI.V2".
 -- - A replacement scan of an extension belongs to the instance, not to one connection.
 -- - The example links the GHC and package libraries dynamically. It loads only on a machine where its run paths

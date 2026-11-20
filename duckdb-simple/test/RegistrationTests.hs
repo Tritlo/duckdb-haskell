@@ -592,9 +592,9 @@ testContextLog = do
           vector <- R.output (c_duckdb_v2_scalar_function_exec_get_result info)
           writeIntegers vector (replicate (fromIntegral count) 1)
     R.registerScalarFunction connection "managed_log" (scalarSignature []) [] (R.scalarCallbacks logged)
-    void $ execute_ connection "CALL enable_logging(); SET logging_storage = 'context_log'"
+    void $ execute_ connection "CALL enable_logging(); SET logging_sink = 'context_log'"
     query_ connection "SELECT managed_log()" >>= (@?= [Only (1 :: Int64)])
-    void $ execute_ connection "SET logging_storage = 'memory'"
+    void $ execute_ connection "SET logging_sink = 'memory'"
   received <- filter ((== "HaskellContext") . Logging.logEntryType) <$> readIORef entries
   map Logging.logEntryMessage received @?= ["from a callback"]
   map Logging.logEntryScope received @?= [Logging.LogScopeConnection]

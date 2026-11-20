@@ -2002,7 +2002,7 @@ variantPayloadType value = case value of
   FieldTimeTZ{} -> scalar LogicalTypeIdTimeTz
   FieldInterval{} -> scalar LogicalTypeIdInterval
   FieldBigNum{} -> scalar LogicalTypeIdBigNum
-  FieldType{} -> throwInvalidArgument "a TYPE value cannot bind as a VARIANT"
+  FieldType{} -> rejectPayload "a TYPE value" "DuckDB VARIANT has no TYPE payload"
   FieldBit{} -> scalar LogicalTypeIdBit
   FieldList{} -> pure (LogicalTypeList variant, value)
   FieldArray items -> pure (LogicalTypeList variant, FieldList (elems items))
@@ -2015,16 +2015,19 @@ variantPayloadType value = case value of
       throwInvalidArgument "DuckDB's C API cannot construct a VARIANT object with only an empty key"
     let types = fmap (\field -> field{structFieldValue = variant}) structValueTypes
     pure (LogicalTypeStruct types, FieldStruct structValue{structValueTypes = types})
-  FieldUnion{} -> throwInvalidArgument "a VARIANT keeps only the member value of a UNION, so a UNION value cannot bind as a VARIANT"
+  FieldUnion{} -> rejectPayload "a UNION value" "a VARIANT keeps only the member value of a UNION"
   FieldGeometry RawGeometry{rawGeometryCRS = Just crs} ->
-    throwInvalidArgument
-      ("a VARIANT does not keep the CRS of a GEOMETRY, so the GEOMETRY value with the CRS " <> quotedCRS crs <> " cannot bind as a VARIANT")
+    rejectPayload
+      ("the GEOMETRY value with the CRS " <> quotedCRS crs)
+      "a VARIANT does not keep the CRS of a GEOMETRY"
   FieldGeometry{} -> pure (LogicalTypeGeometry Nothing, value)
-  FieldMap{} -> throwInvalidArgument "a VARIANT stores a MAP as a list of key and value objects, so a MAP value cannot bind as a VARIANT"
-  FieldEnum{} -> throwInvalidArgument "a VARIANT stores an ENUM as its text, so an ENUM value cannot bind as a VARIANT"
+  FieldMap{} -> rejectPayload "a MAP value" "a VARIANT stores a MAP as a list of key and value objects"
+  FieldEnum{} -> rejectPayload "an ENUM value" "a VARIANT stores an ENUM as its text"
   where
     variant = LogicalTypeScalar LogicalTypeIdVariant
     scalar dtype = pure (LogicalTypeScalar dtype, value)
+    rejectPayload payload reason =
+      throwInvalidArgument (reason <> ", so " <> payload <> " cannot bind as a VARIANT")
 
 -- | Copy a logical type into an owned SQL TYPE value.
 typeDuckValue :: ValueBuilder -> LogicalTypeRep -> IO DuckDBV2ValueHandle

@@ -504,7 +504,8 @@ read type metadata only when the final conversion fails. These pairs are:
   another value. Write c::VARIANT. A VARIANT column decodes only to values of
   the VARIANT shape. A JSON type at any depth raises Incompatible, because
   DuckDB parses its text when it casts to VARIANT. Write c::VARIANT for the
-  parsed value. The bind side
+  parsed value. For a type that contains TYPE, the cast only accepts SQL NULL.
+  The bind side
   (variantPayloadType in "Database.DuckDB.Simple.ToField") accepts more: it
   binds a FieldArray and a FieldTuple as a VARIANT list, and the fields of each
   FieldStruct as VARIANT values.

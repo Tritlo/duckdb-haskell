@@ -46,33 +46,33 @@ variantObject entries =
 -- A STRUCT can have this shape if its fields have type VARIANT and its keys
 -- are in ascending order. A value of another shape fails
 -- with 'Incompatible', because the cast of DuckDB to VARIANT gives another
--- value. Write @c::VARIANT@ if DuckDB supports the cast. DuckDB cannot cast
--- TYPE to VARIANT. A column whose type is or contains JSON also fails with
--- 'Incompatible': DuckDB casts
--- JSON to VARIANT by parsing the text, so @c::VARIANT@ gives the parsed value,
--- not the text. See Note [Reads of another SQL type] in
+-- value. Write @c::VARIANT@ if DuckDB supports the cast. When the column
+-- type contains TYPE, DuckDB accepts only SQL NULL. A column whose type
+-- is or contains JSON also fails with 'Incompatible'. DuckDB parses JSON
+-- text when it casts to VARIANT. See Note [Reads of another SQL type] in
 -- "Database.DuckDB.Simple.FromField".
 instance FromField Variant where
   fromField field@Field{fieldName, fieldValue, fieldType} = do
     logical <- fieldType
-    if containsType isJson logical
-      then
-        returnError
-          Incompatible
-          field
-          (Text.concat [Text.pack "DuckDB casts JSON to VARIANT by parsing the text; write ", column, Text.pack "::VARIANT"])
-      else
-        if variantShape fieldValue
-          then pure (Variant fieldValue)
-          else returnError Incompatible field (variantShapeError logical)
+    case fieldValue of
+      _
+        | containsType isJson logical ->
+            returnError
+              Incompatible
+              field
+              (Text.concat [Text.pack "DuckDB casts JSON to VARIANT by parsing the text; write ", column, Text.pack "::VARIANT"])
+      FieldNull -> pure (Variant FieldNull)
+      _
+        | containsType (== LogicalTypeScalar LogicalTypeIdType) logical ->
+            returnError Incompatible field (Text.pack "a VARIANT cannot hold a TYPE value")
+        | variantShape fieldValue -> pure (Variant fieldValue)
+        | otherwise ->
+            returnError Incompatible field (Text.pack "a VARIANT does not hold a value of this shape; write c::VARIANT")
     where
       isJson (LogicalTypeAlias name (LogicalTypeScalar LogicalTypeIdVarchar)) = name == Text.pack "JSON"
       isJson (LogicalTypeAlias name LogicalTypeCollatedVarchar{}) = name == Text.pack "JSON"
       isJson _ = False
       column = if Text.null fieldName then Text.pack "c" else fieldName
-      variantShapeError logical
-        | containsType (== LogicalTypeScalar LogicalTypeIdType) logical = Text.pack "a VARIANT cannot hold a TYPE value"
-        | otherwise = Text.pack "a VARIANT does not hold a value of this shape; write c::VARIANT"
 
 -- | Whether a VARIANT can hold a decoded value. A VARIANT column decodes only to
 -- these values: a scalar other than TYPE or ENUM, a GEOMETRY with no CRS, a

@@ -500,7 +500,7 @@ tests =
         forM_
           [ (FieldMap [(FieldText "k", FieldInt32 1)], "a VARIANT stores a MAP as a list of key and value objects")
           , (FieldEnum 0 "a", "a VARIANT stores an ENUM as its text")
-          , (FieldType (LogicalTypeScalar LogicalTypeIdInteger), "a TYPE value cannot bind as a VARIANT")
+          , (FieldType (LogicalTypeScalar LogicalTypeIdInteger), "DuckDB VARIANT has no TYPE payload, so a TYPE value cannot bind as a VARIANT")
           ]
           \(payload, reason) -> forM_ (depths payload) \input -> do
             result <- try (query conn "SELECT ?" (Only (Variant input)) :: IO [Only Variant])
@@ -510,10 +510,12 @@ tests =
                 assertBool (Text.unpack sqlErrorMessage) (Text.pack reason `Text.isInfixOf` sqlErrorMessage)
               Right rows -> assertFailure ("expected the " <> reason <> " error, got " <> show rows)
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
-        try (query_ conn "SELECT get_type(1) AS c" :: IO [Only Variant]) >>= \case
-          Left SQLError{sqlErrorMessage} ->
-            sqlErrorMessage @?= "duckdb-simple: column c has type TYPE but expected Variant: a VARIANT cannot hold a TYPE value"
-          Right rows -> assertFailure ("expected Incompatible for TYPE, got " <> show rows)
+        forM_ [("get_type(1)", "TYPE"), ("[NULL::TYPE]", "TYPE[]")] \(expression, sqlName) ->
+          try (query_ conn (Query ("SELECT " <> expression <> " AS c")) :: IO [Only Variant]) >>= \case
+            Left SQLError{sqlErrorMessage} ->
+              sqlErrorMessage @?= ("duckdb-simple: column c has type " <> sqlName <> " but expected Variant: a VARIANT cannot hold a TYPE value")
+            Right rows -> assertFailure ("expected Incompatible for " <> Text.unpack sqlName <> ", got " <> show rows)
+        query_ conn "SELECT NULL::TYPE" >>= (@?= [Only (Variant FieldNull)])
     , testCase "a Variant read of a JSON type raises an error at each depth, and the cast reads the parsed value" $ withConnection ":memory:" \conn -> do
         let refused column expression sqlName =
               try (query_ conn (Query ("SELECT " <> expression <> " AS " <> column)) :: IO [Only Variant]) >>= \case

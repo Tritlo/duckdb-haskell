@@ -3,6 +3,18 @@
 See [MIGRATION.md](https://github.com/Tritlo/duckdb-haskell/blob/main/MIGRATION.md)
 for the upgrade instructions.
 
+## 2.0.1.0
+
+- Pin the headers, native libraries, and CLI to DuckDB 2.0.1. The 548 retained
+  C functions have the same signatures and ABI checks as in 2.0.0.
+- Expose 21 new V2 functions for optimizer statistics on scalar, aggregate,
+  and table functions. They let callbacks inspect or narrow nullability.
+- `c_duckdb_v2_parse_sql` takes a new boolean argument after the SQL string.
+  Pass 1 to apply the connection's transaction invalidation policy to parse
+  errors. Pass 0 to inspect SQL without invalidating an active transaction.
+- Rebuild V2 extensions for DuckDB 2.0.1. The function table layout changed
+  even though the API version in the headers is still 2.0.0.
+
 ## 2.0.0.0
 
 - Target DuckDB 2.0. The retained API supports DuckDB 2.0.x releases. Use the

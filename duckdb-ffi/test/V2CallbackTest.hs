@@ -90,6 +90,7 @@ testScalarCallbacks = do
   binds <- newIORef 0
   inits <- newIORef 0
   executions <- newIORef 0
+  statistics <- newIORef 0
   orders <- newIORef []
   -- The user data and the bind data point to two different cells, so an accessor that returns the other one fails.
   allocaBytes 1 $ \user -> allocaBytes 1 $ \bound -> do
@@ -116,6 +117,20 @@ testScalarCallbacks = do
           fileSystem <- output (c_duckdb_v2_context_get_file_system context)
           pathExists fileSystem executable >>= (@?= CBool 1)
           pathExists fileSystem (executable <> ".absent") >>= (@?= CBool 0)
+        stats info _context err = callbackGuard failures err $ do
+          countCall statistics
+          output (c_duckdb_v2_scalar_function_stats_get_user_data info) >>= (@?= user)
+          output (c_duckdb_v2_scalar_function_stats_get_bind_data info) >>= (@?= bound)
+          argCounts (c_duckdb_v2_scalar_function_stats_get_arg_count info) >>= (@?= (2, 2, 1, 2))
+          argument <- output (c_duckdb_v2_scalar_function_stats_get_arg_stats info 1)
+          output (c_duckdb_v2_stats_can_have_valid argument) >>= (@?= CBool 1)
+          c_duckdb_v2_stats_set_can_have_null argument 0 nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
+          result <- output (c_duckdb_v2_scalar_function_stats_get_result_stats info)
+          output (c_duckdb_v2_stats_can_have_null result) >>= (@?= CBool 1)
+          output (c_duckdb_v2_stats_can_have_valid result) >>= (@?= CBool 1)
+          checked (c_duckdb_v2_stats_set_can_have_null result 0)
+          checked (c_duckdb_v2_stats_set_can_have_valid result 1)
+          output (c_duckdb_v2_stats_can_have_null result) >>= (@?= CBool 0)
         initialize info _context err = callbackGuard failures err $ do
           countCall inits
           output (c_duckdb_v2_scalar_function_init_get_user_data info) >>= (@?= user)
@@ -139,39 +154,52 @@ testScalarCallbacks = do
               (DuckDBV2ScalarFunctionExecCallbackFn <$> toFunPtr (DuckDBV2ScalarFunctionExecCallbackFn_Aux execute))
               (freeHaskellFunPtr . getField @"unwrap")
               $ \executePtr ->
-                withConnection $ \conn -> withFactory conn $ \factory -> do
-                  withType factory "BIGINT" $ \ty ->
-                    withHandle (c_duckdb_v2_scalar_function_create factory) c_duckdb_v2_scalar_function_destroy $ \function -> do
-                      withView "v2_probe" $ \name -> checked (c_duckdb_v2_scalar_function_set_name function (coerce name))
-                      signature <- output (c_duckdb_v2_scalar_function_get_signature function)
-                      let parameter name value kind = withView name $ \view ->
-                            checked (c_duckdb_v2_function_signature_add_parameter signature (coerce view) ty value kind)
-                      parameter "p" (coerce nullPtr) DuckDBV2FunctionParameterKindPositionalOnly
-                      parameter "x" (coerce nullPtr) DuckDBV2FunctionParameterKindStandard
-                      parameter "args" (coerce nullPtr) DuckDBV2FunctionParameterKindPositionalVariadic
-                      withHandle (c_duckdb_v2_value_create_bigint factory 10) c_duckdb_v2_value_destroy $ \value ->
-                        parameter "n" value DuckDBV2FunctionParameterKindNamedOnly
-                      parameter "kwargs" (coerce nullPtr) DuckDBV2FunctionParameterKindNamedVariadic
-                      checked (c_duckdb_v2_function_signature_set_return_type signature ty)
-                      with (borrowedOpaque user) $ \opaque -> checked (c_duckdb_v2_scalar_function_set_user_data function opaque)
-                      checked (c_duckdb_v2_scalar_function_set_bind_callback function bindPtr)
-                      checked (c_duckdb_v2_scalar_function_set_init_callback function initializePtr)
-                      checked (c_duckdb_v2_scalar_function_set_exec_callback function executePtr)
-                      checked (c_duckdb_v2_connection_register_scalar_function conn function)
-                  -- The context gives the config of its connection, so the callback sees the session value.
-                  config <- output (c_duckdb_v2_connection_get_config conn)
-                  withView "default_order" $ \name -> withView "desc" $ \setting ->
-                    checked (c_duckdb_v2_config_set_option_text config (coerce name) setting DuckDBV2SettingScopeSession)
-                  -- The argument i is a column, so the engine cannot fold the call into a constant.
-                  withResult conn "SELECT v2_probe(i, 1, 2, 3, extra := 5, p := 6) FROM range(3) t(i)" $ \result ->
-                    readIntegers result >>= (@?= replicate 3 (Just 42))
-                  session <- readOption config "default_order"
-                  snd session @?= DuckDBV2SettingScopeSession
-                  readIORef orders >>= \seen -> assertBool ("the context config gives the session value: " <> show seen) (not (null seen) && all (== session) seen)
+                bracket
+                  (DuckDBV2ScalarFunctionStatsCallbackFn <$> toFunPtr (DuckDBV2ScalarFunctionStatsCallbackFn_Aux stats))
+                  (freeHaskellFunPtr . getField @"unwrap")
+                  $ \statsPtr ->
+                    withConnection $ \conn -> withFactory conn $ \factory -> do
+                      withType factory "BIGINT" $ \ty ->
+                        withHandle (c_duckdb_v2_scalar_function_create factory) c_duckdb_v2_scalar_function_destroy $ \function -> do
+                          withView "v2_probe" $ \name -> checked (c_duckdb_v2_scalar_function_set_name function (coerce name))
+                          signature <- output (c_duckdb_v2_scalar_function_get_signature function)
+                          let parameter name value kind = withView name $ \view ->
+                                checked (c_duckdb_v2_function_signature_add_parameter signature (coerce view) ty value kind)
+                          parameter "p" (coerce nullPtr) DuckDBV2FunctionParameterKindPositionalOnly
+                          parameter "x" (coerce nullPtr) DuckDBV2FunctionParameterKindStandard
+                          parameter "args" (coerce nullPtr) DuckDBV2FunctionParameterKindPositionalVariadic
+                          withHandle (c_duckdb_v2_value_create_bigint factory 10) c_duckdb_v2_value_destroy $ \value ->
+                            parameter "n" value DuckDBV2FunctionParameterKindNamedOnly
+                          parameter "kwargs" (coerce nullPtr) DuckDBV2FunctionParameterKindNamedVariadic
+                          checked (c_duckdb_v2_function_signature_set_return_type signature ty)
+                          with (borrowedOpaque user) $ \opaque -> checked (c_duckdb_v2_scalar_function_set_user_data function opaque)
+                          checked (c_duckdb_v2_scalar_function_set_bind_callback function bindPtr)
+                          checked (c_duckdb_v2_scalar_function_set_init_callback function initializePtr)
+                          checked (c_duckdb_v2_scalar_function_set_exec_callback function executePtr)
+                          checked (c_duckdb_v2_scalar_function_set_stats_callback function statsPtr)
+                          checked (c_duckdb_v2_connection_register_scalar_function conn function)
+                      -- The context gives the config of its connection, so the callback sees the session value.
+                      config <- output (c_duckdb_v2_connection_get_config conn)
+                      withView "default_order" $ \name -> withView "desc" $ \setting ->
+                        checked (c_duckdb_v2_config_set_option_text config (coerce name) setting DuckDBV2SettingScopeSession)
+                      -- The argument i is a column, so the engine cannot fold the call into a constant.
+                      withResult conn "SELECT v2_probe(i, 1, 2, 3, extra := 5, p := 6) FROM range(3) t(i)" $ \result ->
+                        readIntegers result >>= (@?= replicate 3 (Just 42))
+                      -- The result is always 42. The optimizer can remove the NULL test.
+                      before <- readIORef executions
+                      withResult conn "SELECT count(*) FROM range(3) t(i) WHERE v2_probe(i, 1, 2, 3, extra := 5, p := 6) IS NULL" $ \result ->
+                        readIntegers result >>= (@?= [Just 0])
+                      withResult conn "SELECT count(*) FROM range(3) t(i) WHERE v2_probe(i, 1, 2, 3, extra := 5, p := 6) IS NOT NULL" $ \result ->
+                        readIntegers result >>= (@?= [Just 3])
+                      readIORef executions >>= (@?= before)
+                      session <- readOption config "default_order"
+                      snd session @?= DuckDBV2SettingScopeSession
+                      readIORef orders >>= \seen -> assertBool ("the context config gives the session value: " <> show seen) (not (null seen) && all (== session) seen)
   readIORef failures >>= (@?= [])
   readIORef binds >>= assertBool "the bind callback was invoked" . (> 0)
   readIORef inits >>= assertBool "the init callback was invoked" . (> 0)
   readIORef executions >>= assertBool "the exec callback was invoked" . (> 0)
+  readIORef statistics >>= assertBool "the stats callback was invoked" . (> 0)
 
 -- | Write each BIGINT of the input vector, plus an offset, to the output vector.
 shiftBigints :: DuckDBIdx -> DuckDBV2VectorHandle -> DuckDBV2VectorHandle -> Int64 -> IO ()
@@ -260,7 +288,7 @@ testCustomOption = do
           reset <- output (c_duckdb_v2_custom_option_update_is_reset info)
           value <- withHandle (c_duckdb_v2_custom_option_update_get_value info) c_duckdb_v2_value_destroy (output . c_duckdb_v2_value_get_bigint)
           atomicModifyIORef' updates (\seen -> ((scope, reset, value) : seen, ()))
-          -- The callback stores ten times the value. A reset keeps the default value.
+          -- The callback stores ten times a SET value. A RESET removes the override.
           unless (reset == CBool 1) $ do
             factory <- output (c_duckdb_v2_context_get_factory context)
             withHandle (c_duckdb_v2_value_create_bigint factory (value * 10)) c_duckdb_v2_value_destroy $ \replaced ->
@@ -287,7 +315,10 @@ testCustomOption = do
           withResult conn "SET v2_probe_option = 2" consume
           expect (DuckDBV2SettingScopeSession, CBool 0, 2) 20
           withResult conn "RESET v2_probe_option" consume
-          expect (DuckDBV2SettingScopeSession, CBool 1, 1) 1
+          -- The callback sees the declared default. The session inherits GLOBAL.
+          expect (DuckDBV2SettingScopeSession, CBool 1, 1) 30
+          withResult conn "RESET GLOBAL v2_probe_option" consume
+          expect (DuckDBV2SettingScopeGlobal, CBool 1, 1) 1
           config <- output (c_duckdb_v2_connection_get_config conn)
           withHandle (c_duckdb_v2_value_create_bigint factory 4) c_duckdb_v2_value_destroy $ \value ->
             checked (c_duckdb_v2_config_set_option_value config (coerce name) value DuckDBV2SettingScopeDefault)
